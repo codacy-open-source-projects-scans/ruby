@@ -43,7 +43,6 @@ module Bundler
       setup_makes_kernel_gem_public
       silence_deprecations
       silence_root_warning
-      suppress_install_using_messages
       update_requires_all_flag
     ].freeze
 
@@ -75,6 +74,7 @@ module Bundler
       shebang
       system_bindir
       trust-policy
+      version
     ].freeze
 
     DEFAULT_CONFIG = {
@@ -84,6 +84,7 @@ module Bundler
       "BUNDLE_REDIRECT" => 5,
       "BUNDLE_RETRY" => 3,
       "BUNDLE_TIMEOUT" => 10,
+      "BUNDLE_VERSION" => "lockfile",
     }.freeze
 
     def initialize(root = nil)

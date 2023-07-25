@@ -590,6 +590,12 @@ rb_get_def_bmethod_proc(rb_method_definition_t *def)
     return def->body.bmethod.proc;
 }
 
+unsigned long
+rb_get_iseq_body_total_calls(const rb_iseq_t *iseq)
+{
+    return iseq->body->total_calls;
+}
+
 const rb_iseq_t *
 rb_get_iseq_body_local_iseq(const rb_iseq_t *iseq)
 {
@@ -1114,6 +1120,20 @@ void
 rb_yjit_assert_holding_vm_lock(void)
 {
     ASSERT_vm_locking();
+}
+
+// The number of stack slots that vm_sendish() pops for send and invokesuper.
+size_t
+rb_yjit_sendish_sp_pops(const struct rb_callinfo *ci)
+{
+    return 1 - sp_inc_of_sendish(ci); // + 1 to ignore return value push
+}
+
+// The number of stack slots that vm_sendish() pops for invokeblock.
+size_t
+rb_yjit_invokeblock_sp_pops(const struct rb_callinfo *ci)
+{
+    return 1 - sp_inc_of_invokeblock(ci); // + 1 to ignore return value push
 }
 
 // Primitives used by yjit.rb

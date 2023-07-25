@@ -325,6 +325,8 @@ fn main() {
         .allowlist_function("rb_yjit_icache_invalidate")
         .allowlist_function("rb_optimized_call")
         .allowlist_function("rb_yjit_assert_holding_vm_lock")
+        .allowlist_function("rb_yjit_sendish_sp_pops")
+        .allowlist_function("rb_yjit_invokeblock_sp_pops")
 
         // from vm_sync.h
         .allowlist_function("rb_vm_barrier")
@@ -356,6 +358,9 @@ fn main() {
         .allowlist_function("rb_attr_get")
         .allowlist_function("rb_ivar_defined")
         .allowlist_function("rb_ivar_get")
+
+        // From internal/vm.h
+        .allowlist_var("rb_vm_insns_count")
 
         // From include/ruby/internal/intern/vm.h
         .allowlist_function("rb_get_alloc_func")
@@ -391,6 +396,7 @@ fn main() {
         .allowlist_function("rb_get_def_iseq_ptr")
         .allowlist_function("rb_get_def_bmethod_proc")
         .allowlist_function("rb_iseq_encoded_size")
+        .allowlist_function("rb_get_iseq_body_total_calls")
         .allowlist_function("rb_get_iseq_body_local_iseq")
         .allowlist_function("rb_get_iseq_body_parent_iseq")
         .allowlist_function("rb_get_iseq_body_iseq_encoded")
