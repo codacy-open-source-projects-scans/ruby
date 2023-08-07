@@ -1,10 +1,6 @@
 # frozen_string_literal: true
 
 require "rubygems" unless defined?(Gem)
-begin
-  require "bundled_gems" unless defined?(Gem::BUNDLED_GEMS)
-rescue LoadError
-end
 
 module Bundler
   class RubygemsIntegration
@@ -234,8 +230,7 @@ module Bundler
       if Gem.respond_to?(:discover_gems_on_require=)
         Gem.discover_gems_on_require = false
       else
-        kernel = (class << ::Kernel; self; end)
-        [kernel, ::Kernel].each do |k|
+        [::Kernel.singleton_class, ::Kernel].each do |k|
           if k.private_method_defined?(:gem_original_require)
             redefine_method(k, :require, k.instance_method(:gem_original_require))
           end
@@ -249,16 +244,18 @@ module Bundler
       [::Kernel.singleton_class, ::Kernel].each do |kernel_class|
         kernel_class.send(:alias_method, :no_warning_require, :require)
         kernel_class.send(:define_method, :require) do |file|
+          file = File.path(file)
           name = file.tr("/", "-")
-          if (::Gem::BUNDLED_GEMS.keys - specs.to_a.map(&:name)).include?(name)
+          if (::Gem::BUNDLED_GEMS::SINCE.keys - specs.to_a.map(&:name)).include?(name)
             unless $LOADED_FEATURES.any? {|f| f.end_with?("#{name}.rb", "#{name}.#{RbConfig::CONFIG["DLEXT"]}") }
               target_file = begin
                               Bundler.default_gemfile.basename
                             rescue GemfileNotFound
                               "inline Gemfile"
                             end
-              warn "#{name} is not part of the default gems since Ruby #{::Gem::BUNDLED_GEMS[file]}." \
-              " Add it to your #{target_file}."
+              be = RUBY_VERSION < ::Gem::BUNDLED_GEMS::SINCE[name] ? "will be" : "is"
+              warn "#{name} #{be} not part of the default gems since Ruby #{::Gem::BUNDLED_GEMS::SINCE[name]}." \
+              " Add it to your #{target_file}.", uplevel: 1
             end
           end
           kernel_class.send(:no_warning_require, file)
@@ -274,8 +271,7 @@ module Bundler
     def replace_gem(specs, specs_by_name)
       executables = nil
 
-      kernel = (class << ::Kernel; self; end)
-      [kernel, ::Kernel].each do |kernel_class|
+      [::Kernel.singleton_class, ::Kernel].each do |kernel_class|
         redefine_method(kernel_class, :gem) do |dep, *reqs|
           if executables&.include?(File.basename(caller.first.split(":").first))
             break
@@ -388,7 +384,7 @@ module Bundler
     def replace_entrypoints(specs)
       specs_by_name = add_default_gems_to(specs)
 
-      if defined?(::Gem::BUNDLED_GEMS)
+      if defined?(::Gem::BUNDLED_GEMS::SINCE)
         replace_require(specs)
       else
         reverse_rubygems_kernel_mixin

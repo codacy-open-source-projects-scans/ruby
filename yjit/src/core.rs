@@ -417,7 +417,7 @@ impl RegTemps {
 /// Code generation context
 /// Contains information we can use to specialize/optimize code
 /// There are a lot of context objects so we try to keep the size small.
-#[derive(Clone, Copy, Default, Eq, Hash, PartialEq, Debug)]
+#[derive(Clone, Default, Eq, Hash, PartialEq, Debug)]
 pub struct Context {
     // Number of values currently on the temporary stack
     stack_size: u8,
@@ -474,6 +474,7 @@ pub enum BranchGenFn {
     JNZToTarget0,
     JZToTarget0,
     JBEToTarget0,
+    JBToTarget0,
     JITReturn,
 }
 
@@ -527,6 +528,9 @@ impl BranchGenFn {
             BranchGenFn::JBEToTarget0 => {
                 asm.jbe(target0)
             }
+            BranchGenFn::JBToTarget0 => {
+                asm.jb(target0)
+            }
             BranchGenFn::JITReturn => {
                 asm.comment("update cfp->jit_return");
                 asm.mov(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_JIT_RETURN), Opnd::const_ptr(target0.unwrap_code_ptr().raw_ptr()));
@@ -543,6 +547,7 @@ impl BranchGenFn {
             BranchGenFn::JNZToTarget0 |
             BranchGenFn::JZToTarget0 |
             BranchGenFn::JBEToTarget0 |
+            BranchGenFn::JBToTarget0 |
             BranchGenFn::JITReturn => BranchShape::Default,
         }
     }
@@ -563,6 +568,7 @@ impl BranchGenFn {
             BranchGenFn::JNZToTarget0 |
             BranchGenFn::JZToTarget0 |
             BranchGenFn::JBEToTarget0 |
+            BranchGenFn::JBToTarget0 |
             BranchGenFn::JITReturn => {
                 assert_eq!(new_shape, BranchShape::Default);
             }
@@ -1565,6 +1571,10 @@ impl Block {
 impl Context {
     pub fn get_stack_size(&self) -> u8 {
         self.stack_size
+    }
+
+    pub fn set_stack_size(&mut self, stack_size: u8) {
+        self.stack_size = stack_size;
     }
 
     /// Create a new Context that is compatible with self but doesn't have type information.

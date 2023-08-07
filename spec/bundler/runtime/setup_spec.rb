@@ -1567,9 +1567,9 @@ end
     G
 
     ruby <<-R
-      module Gem
-        remove_const :BUNDLED_GEMS if defined?(BUNDLED_GEMS)
-        BUNDLED_GEMS = { "csv" => "1.0.0" }
+      Gem.send(:remove_const, :BUNDLED_GEMS) if defined?(Gem::BUNDLED_GEMS)
+      module Gem::BUNDLED_GEMS
+        SINCE = { "csv" => "1.0.0" }
       end
       require 'bundler/setup'
       require 'csv'
@@ -1589,9 +1589,9 @@ end
     G
 
     ruby <<-R
-      module Gem
-        remove_const :BUNDLED_GEMS if defined?(BUNDLED_GEMS)
-        BUNDLED_GEMS = { "csv" => "1.0.0" }
+      Gem.send(:remove_const, :BUNDLED_GEMS) if defined?(Gem::BUNDLED_GEMS)
+      module Gem::BUNDLED_GEMS
+        SINCE = { "csv" => "1.0.0" }
       end
       require 'csv'
       require 'bundler/setup'
@@ -1612,9 +1612,9 @@ end
     G
 
     ruby <<-R
-      module Gem
-        remove_const :BUNDLED_GEMS if defined?(BUNDLED_GEMS)
-        BUNDLED_GEMS = { "csv" => "1.0.0" }
+      Gem.send(:remove_const, :BUNDLED_GEMS) if defined?(Gem::BUNDLED_GEMS)
+      module Gem::BUNDLED_GEMS
+        SINCE = { "csv" => "1.0.0" }
       end
       require 'bundler/setup'
       require 'csv'
@@ -1637,13 +1637,43 @@ end
     G
 
     ruby <<-R
-      module Gem
-        remove_const :BUNDLED_GEMS if defined?(BUNDLED_GEMS)
-        BUNDLED_GEMS = { "csv" => "1.0.0", "net-imap" => "0.0.1" }
+      Gem.send(:remove_const, :BUNDLED_GEMS) if defined?(Gem::BUNDLED_GEMS)
+      module Gem::BUNDLED_GEMS
+        SINCE = { "csv" => "1.0.0", "net-imap" => "0.0.1" }
       end
       require 'bundler/setup'
       begin
         require 'net/imap'
+      rescue LoadError
+      end
+    R
+
+    expect(err).to include("net-imap is not part of the default gems")
+  end
+
+  it "calls #to_path on the name to require" do
+    build_repo4 do
+      build_gem "net-imap" do |s|
+        s.write "lib/net/imap.rb", "NET_IMAP = '0.0.1'"
+      end
+      build_gem "csv"
+    end
+
+    install_gemfile <<-G
+      source "#{file_uri_for(gem_repo4)}"
+      gem "csv"
+    G
+
+    ruby <<-R
+      Gem.send(:remove_const, :BUNDLED_GEMS) if defined?(Gem::BUNDLED_GEMS)
+      module Gem::BUNDLED_GEMS
+        SINCE = { "csv" => "1.0.0", "net-imap" => "0.0.1" }
+      end
+      path = BasicObject.new
+      def path.to_path; 'net/imap'; end
+      require 'bundler/setup'
+      begin
+        require path
       rescue LoadError
       end
     R
