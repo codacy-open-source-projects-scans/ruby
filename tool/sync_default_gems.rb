@@ -371,7 +371,7 @@ module SyncDefaultGems
       `git checkout ext/digest/depend ext/digest/*/depend`
     when "set"
       sync_lib gem, upstream
-      cp_r("#{upstream}/test", ".")
+      cp_r(Dir.glob("#{upstream}/test/*"), "test/set")
     when "optparse"
       sync_lib gem, upstream
       rm_rf(%w[doc/optparse])
@@ -412,6 +412,7 @@ module SyncDefaultGems
       # Move all files in enc to be prefixed with yp_ in order
       # to deconflict them from non-yarp enc files
       (Dir.entries("yarp/enc/") - ["..", "."]).each do |f|
+        next if f.start_with?("yp_")
         mv "yarp/enc/#{f}", "yarp/enc/yp_#{f}"
       end
 
@@ -599,7 +600,7 @@ module SyncDefaultGems
         puts "Remove files added to toplevel: #{toplevels.join(', ')}"
         system(*%w"git rm -r --", *toplevels)
       end
-      tools = changed.select {|f|f.start_with?("test/lib/", "tool/")}
+      tools = changed.select {|f|f.start_with?("test/fixtures/", "test/lib/", "tool/")}
       unless tools.empty?
         system(*%W"git rm -r --", *tools)
         system(*%W"git checkout HEAD~ --", *tools)

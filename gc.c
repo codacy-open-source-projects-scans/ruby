@@ -707,6 +707,7 @@ typedef struct rb_size_pool_struct {
     size_t total_allocated_pages;
     size_t total_freed_pages;
     size_t force_major_gc_count;
+    size_t force_incremental_marking_finish_count;
 
     /* Sweeping statistics */
     size_t freed_slots;
@@ -1492,9 +1493,6 @@ asan_poison_object_restore(VALUE obj, void *ptr)
 #define RVALUE_PAGE_UNCOLLECTIBLE(page, obj)  MARKED_IN_BITMAP((page)->uncollectible_bits, (obj))
 #define RVALUE_PAGE_MARKING(page, obj)        MARKED_IN_BITMAP((page)->marking_bits, (obj))
 
-
-static int rgengc_remembered(rb_objspace_t *objspace, VALUE obj);
-static int rgengc_remembered_sweep(rb_objspace_t *objspace, VALUE obj);
 static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
 static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
 static void rgengc_rememberset_mark(rb_objspace_t *objspace, rb_heap_t *heap);
@@ -2507,7 +2505,7 @@ newobj_init(VALUE klass, VALUE flags, int wb_protected, rb_objspace_t *objspace,
         GC_ASSERT(RVALUE_OLD_P(obj) == FALSE);
         GC_ASSERT(RVALUE_WB_UNPROTECTED(obj) == FALSE);
 
-        if (rgengc_remembered(objspace, (VALUE)obj)) rb_bug("newobj: %s is remembered.", obj_info(obj));
+        if (RVALUE_REMEMBERED((VALUE)obj)) rb_bug("newobj: %s is remembered.", obj_info(obj));
     }
     RB_VM_LOCK_LEAVE_NO_BARRIER();
 #endif
@@ -5435,7 +5433,7 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
 #if RGENGC_CHECK_MODE
                     if (!is_full_marking(objspace)) {
                         if (RVALUE_OLD_P(vp)) rb_bug("page_sweep: %p - old while minor GC.", (void *)p);
-                        if (rgengc_remembered_sweep(objspace, vp)) rb_bug("page_sweep: %p - remembered.", (void *)p);
+                        if (RVALUE_REMEMBERED(vp)) rb_bug("page_sweep: %p - remembered.", (void *)p);
                     }
 #endif
                     if (obj_free(objspace, vp)) {
@@ -8507,6 +8505,7 @@ gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t 
     else {
         gc_report(2, objspace, "gc_marks_continue: no more pooled pages (stack depth: %"PRIdSIZE").\n",
                   mark_stack_size(&objspace->mark_stack));
+        size_pool->force_incremental_marking_finish_count++;
         gc_marks_rest(objspace);
     }
 
@@ -8579,12 +8578,6 @@ gc_report_body(int level, rb_objspace_t *objspace, const char *fmt, ...)
 /* bit operations */
 
 static int
-rgengc_remembersetbits_get(rb_objspace_t *objspace, VALUE obj)
-{
-    return RVALUE_REMEMBERED(obj);
-}
-
-static int
 rgengc_remembersetbits_set(rb_objspace_t *objspace, VALUE obj)
 {
     struct heap_page *page = GET_HEAP_PAGE(obj);
@@ -8607,7 +8600,7 @@ static int
 rgengc_remember(rb_objspace_t *objspace, VALUE obj)
 {
     gc_report(6, objspace, "rgengc_remember: %s %s\n", obj_info(obj),
-              rgengc_remembersetbits_get(objspace, obj) ? "was already remembered" : "is remembered now");
+              RVALUE_REMEMBERED(obj) ? "was already remembered" : "is remembered now");
 
     check_rvalue_consistency(obj);
 
@@ -8616,7 +8609,7 @@ rgengc_remember(rb_objspace_t *objspace, VALUE obj)
     }
 
 #if RGENGC_PROFILE > 0
-    if (!rgengc_remembered(objspace, obj)) {
+    if (!RVALUE_REMEMBERED(obj)) {
         if (RVALUE_WB_UNPROTECTED(obj) == 0) {
             objspace->profile.total_remembered_normal_object_count++;
 #if RGENGC_PROFILE >= 2
@@ -8627,21 +8620,6 @@ rgengc_remember(rb_objspace_t *objspace, VALUE obj)
 #endif /* RGENGC_PROFILE > 0 */
 
     return rgengc_remembersetbits_set(objspace, obj);
-}
-
-static int
-rgengc_remembered_sweep(rb_objspace_t *objspace, VALUE obj)
-{
-    int result = rgengc_remembersetbits_get(objspace, obj);
-    check_rvalue_consistency(obj);
-    return result;
-}
-
-static int
-rgengc_remembered(rb_objspace_t *objspace, VALUE obj)
-{
-    gc_report(6, objspace, "rgengc_remembered: %s\n", obj_info(obj));
-    return rgengc_remembered_sweep(objspace, obj);
 }
 
 #ifndef PROFILE_REMEMBERSET_MARK
@@ -8749,7 +8727,7 @@ gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_t *objspace)
     }
 
     /* mark `a' and remember (default behavior) */
-    if (!rgengc_remembered(objspace, a)) {
+    if (!RVALUE_REMEMBERED(a)) {
         RB_VM_LOCK_ENTER_NO_BARRIER();
         {
             rgengc_remember(objspace, a);
@@ -8844,7 +8822,7 @@ rb_gc_writebarrier_unprotect(VALUE obj)
         rb_objspace_t *objspace = &rb_objspace;
 
         gc_report(2, objspace, "rb_gc_writebarrier_unprotect: %s %s\n", obj_info(obj),
-                  rgengc_remembered(objspace, obj) ? " (already remembered)" : "");
+                  RVALUE_REMEMBERED(obj) ? " (already remembered)" : "");
 
         RB_VM_LOCK_ENTER_NO_BARRIER();
         {
@@ -11206,6 +11184,7 @@ enum gc_stat_heap_sym {
     gc_stat_heap_sym_total_allocated_pages,
     gc_stat_heap_sym_total_freed_pages,
     gc_stat_heap_sym_force_major_gc_count,
+    gc_stat_heap_sym_force_incremental_marking_finish_count,
     gc_stat_heap_sym_last
 };
 
@@ -11225,6 +11204,7 @@ setup_gc_stat_heap_symbols(void)
         S(total_allocated_pages);
         S(total_freed_pages);
         S(force_major_gc_count);
+        S(force_incremental_marking_finish_count);
 #undef S
     }
 }
@@ -11268,6 +11248,7 @@ gc_stat_heap_internal(int size_pool_idx, VALUE hash_or_sym)
     SET(total_allocated_pages, size_pool->total_allocated_pages);
     SET(total_freed_pages, size_pool->total_freed_pages);
     SET(force_major_gc_count, size_pool->force_major_gc_count);
+    SET(force_incremental_marking_finish_count, size_pool->force_incremental_marking_finish_count);
 #undef SET
 
     if (!NIL_P(key)) { /* matched key should return above */
@@ -13837,7 +13818,7 @@ Init_GC(void)
         rb_hash_aset(gc_constants, ID2SYM(rb_intern("RB_BUG_INSTEAD_OF_RB_MEMERROR")), Qtrue);
     }
     OBJ_FREEZE(gc_constants);
-    /* internal constants */
+    /* Internal constants in the garbage collector. */
     rb_define_const(rb_mGC, "INTERNAL_CONSTANTS", gc_constants);
 
     rb_mProfiler = rb_define_module_under(rb_mGC, "Profiler");

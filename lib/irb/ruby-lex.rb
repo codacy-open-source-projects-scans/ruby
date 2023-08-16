@@ -7,9 +7,34 @@
 require "ripper"
 require "jruby" if RUBY_ENGINE == "jruby"
 require_relative "nesting_parser"
+require_relative "statement"
 
 # :stopdoc:
 class RubyLex
+  ASSIGNMENT_NODE_TYPES = [
+    # Local, instance, global, class, constant, instance, and index assignment:
+    #   "foo = bar",
+    #   "@foo = bar",
+    #   "$foo = bar",
+    #   "@@foo = bar",
+    #   "::Foo = bar",
+    #   "a::Foo = bar",
+    #   "Foo = bar"
+    #   "foo.bar = 1"
+    #   "foo[1] = bar"
+    :assign,
+
+    # Operation assignment:
+    #   "foo += bar"
+    #   "foo -= bar"
+    #   "foo ||= bar"
+    #   "foo &&= bar"
+    :opassign,
+
+    # Multiple assignment:
+    #   "foo, bar = 1, 2
+    :massign,
+  ]
 
   class TerminateLineInput < StandardError
     def initialize
@@ -48,59 +73,6 @@ class RubyLex
   # io functions
   def set_input(&block)
     @input = block
-  end
-
-  def configure_io(io)
-    @io = io
-    if @io.respond_to?(:check_termination)
-      @io.check_termination do |code|
-        if Reline::IOGate.in_pasting?
-          rest = check_termination_in_prev_line(code)
-          if rest
-            Reline.delete_text
-            rest.bytes.reverse_each do |c|
-              Reline.ungetc(c)
-            end
-            true
-          else
-            false
-          end
-        else
-          # Accept any single-line input for symbol aliases or commands that transform args
-          next true if single_line_command?(code)
-
-          _tokens, _opens, terminated = check_code_state(code)
-          terminated
-        end
-      end
-    end
-    if @io.respond_to?(:dynamic_prompt)
-      @io.dynamic_prompt do |lines|
-        lines << '' if lines.empty?
-        tokens = self.class.ripper_lex_without_warning(lines.map{ |l| l + "\n" }.join, context: @context)
-        line_results = IRB::NestingParser.parse_by_line(tokens)
-        tokens_until_line = []
-        line_results.map.with_index do |(line_tokens, _prev_opens, next_opens, _min_depth), line_num_offset|
-          line_tokens.each do |token, _s|
-            # Avoid appending duplicated token. Tokens that include "\n" like multiline tstring_content can exist in multiple lines.
-            tokens_until_line << token if token != tokens_until_line.last
-          end
-          continue = should_continue?(tokens_until_line)
-          prompt(next_opens, continue, line_num_offset)
-        end
-      end
-    end
-
-    if @io.respond_to?(:auto_indent) and @context.auto_indent_mode
-      @io.auto_indent do |lines, line_index, byte_pointer, is_newline|
-        next nil if lines == [nil] # Workaround for exit IRB with CTRL+d
-        next nil if !is_newline && lines[line_index]&.byteslice(0, byte_pointer)&.match?(/\A\s*\z/)
-
-        code = lines[0..line_index].map { |l| "#{l}\n" }.join
-        tokens = self.class.ripper_lex_without_warning(code, context: @context)
-        process_indent_level(tokens, lines, line_index, is_newline)
-      end
-    end
   end
 
   def set_prompt(&block)
@@ -189,8 +161,7 @@ class RubyLex
   end
 
   def check_code_state(code)
-    check_target_code = code.gsub(/\s*\z/, '').concat("\n")
-    tokens = self.class.ripper_lex_without_warning(check_target_code, context: @context)
+    tokens = self.class.ripper_lex_without_warning(code, context: @context)
     opens = IRB::NestingParser.open_tokens(tokens)
     [tokens, opens, code_terminated?(code, tokens, opens)]
   end
@@ -213,11 +184,15 @@ class RubyLex
     prompt(opens, continue, line_num_offset)
   end
 
+  def increase_line_no(addition)
+    @line_no += addition
+  end
+
   def readmultiline
     save_prompt_to_context_io([], false, 0)
 
     # multiline
-    return @input.call if @io.respond_to?(:check_termination)
+    return @input.call if @context.io.respond_to?(:check_termination)
 
     # nomultiline
     code = ''
@@ -247,12 +222,44 @@ class RubyLex
       break unless code
 
       if code != "\n"
-        code.force_encoding(@io.encoding)
-        yield code, @line_no
+        yield build_statement(code), @line_no
       end
-      @line_no += code.count("\n")
+      increase_line_no(code.count("\n"))
     rescue TerminateLineInput
     end
+  end
+
+  def build_statement(code)
+    code.force_encoding(@context.io.encoding)
+    command_or_alias, arg = code.split(/\s/, 2)
+    # Transform a non-identifier alias (@, $) or keywords (next, break)
+    command_name = @context.command_aliases[command_or_alias.to_sym]
+    command = command_name || command_or_alias
+    command_class = IRB::ExtendCommandBundle.load_command(command)
+
+    if command_class
+      IRB::Statement::Command.new(code, command, arg, command_class)
+    else
+      IRB::Statement::Expression.new(code, assignment_expression?(code))
+    end
+  end
+
+  def assignment_expression?(code)
+    # Try to parse the code and check if the last of possibly multiple
+    # expressions is an assignment type.
+
+    # If the expression is invalid, Ripper.sexp should return nil which will
+    # result in false being returned. Any valid expression should return an
+    # s-expression where the second element of the top level array is an
+    # array of parsed expressions. The first element of each expression is the
+    # expression's type.
+    verbose, $VERBOSE = $VERBOSE, nil
+    code = "#{RubyLex.generate_local_variables_assign_code(@context.local_variables) || 'nil;'}\n#{code}"
+    # Get the last node_type of the line. drop(1) is to ignore the local_variables_assign_code part.
+    node_type = Ripper.sexp(code)&.dig(1)&.drop(1)&.dig(-1, 0)
+    ASSIGNMENT_NODE_TYPES.include?(node_type)
+  ensure
+    $VERBOSE = verbose
   end
 
   def should_continue?(tokens)
