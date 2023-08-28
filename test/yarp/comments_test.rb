@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
-require "yarp_test_helper"
+require_relative "test_helper"
 
 class CommentsTest < Test::Unit::TestCase
   include ::YARP::DSL
 
   def test_comment_inline
-    assert_comment "# comment", :inline, 0..9
+    source = "# comment"
+
+    assert_comment source, :inline, 0..9
+    assert_equal [0], YARP.const_get(:Debug).newlines(source)
   end
 
   def test_comment_inline_def
@@ -26,6 +29,12 @@ class CommentsTest < Test::Unit::TestCase
     RUBY
 
     assert_comment source, :__END__, 0..16
+  end
+
+  def test_comment___END__crlf
+    source = "__END__\r\ncomment\r\n"
+
+    assert_comment source, :__END__, 0..18
   end
 
   def test_comment_embedded_document
@@ -52,7 +61,7 @@ class CommentsTest < Test::Unit::TestCase
   def assert_comment(source, type, location)
     result = YARP.parse(source)
     assert result.errors.empty?, result.errors.map(&:message).join("\n")
-    result => YARP::ParseResult[comments: [YARP::Comment[type: type]]]
+    assert_equal result.comments.first.type, type
     assert_equal result.comments.first.location.start_offset, location.begin
     assert_equal result.comments.first.location.end_offset, location.end
   end

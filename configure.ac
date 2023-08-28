@@ -420,21 +420,6 @@ AC_SUBST(OUTFLAG)
 AC_SUBST(COUTFLAG)
 AC_SUBST(CSRCFLAG)
 
-: ${RJIT_CC=$CC}
-AS_IF([test "x$cross_compiling" = xno], [
-    AC_PATH_PROG([RJIT_CC], ${RJIT_CC})
-
-    # if $CC is in /usr/lib/ccache/$CC, search original $CC (disable ccache)
-    AS_IF([echo $RUBY_DEBUG | grep ci > /dev/null &&
-           echo $RJIT_CC | grep ^/usr/lib/ccache > /dev/null], [
-           PATH=`echo $PATH | sed "s/\/usr\/lib\/ccache://"` RJIT_CC=`which $CC`])
-
-    AS_CASE([$target_os],
-	[*mingw*], [command -v cygpath > /dev/null && RJIT_CC=`cygpath -ma $RJIT_CC`])
-    shift 2
-    RJIT_CC="$RJIT_CC${1+ }$*"
-])
-
 AS_CASE(["$build_os"],
   [darwin1*.*], [
     # Xcode linker warns for deprecated architecture and wrongly
@@ -2168,9 +2153,6 @@ AC_CHECK_FUNCS(__sinpi)
 AS_IF([test "x$ac_cv_member_struct_statx_stx_btime" = xyes],
     [AC_CHECK_FUNCS(statx)])
 
-AS_CASE(["$ac_cv_func_memset_s:$ac_cv_func_qsort_s"], [*yes*],
-    [RUBY_DEFINE_IF([!defined __STDC_WANT_LIB_EXT1__], [__STDC_WANT_LIB_EXT1__], 1)])
-
 AS_IF([test "$ac_cv_func_getcwd" = yes], [
     AC_CACHE_CHECK(if getcwd allocates buffer if NULL is given, [rb_cv_getcwd_malloc],
 	[AC_RUN_IFELSE([AC_LANG_SOURCE([[
@@ -2238,6 +2220,27 @@ AS_IF([test x$rb_cv_builtin___builtin_choose_expr = xyes], [
 RUBY_CHECK_BUILTIN_FUNC(__builtin_types_compatible_p, [__builtin_types_compatible_p(int, int)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_trap, [__builtin_trap()])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_expect, [__builtin_expect(0, 0)])
+
+AS_IF([test "$rb_cv_builtin___builtin_mul_overflow" != no], [
+  AC_CACHE_CHECK(for __builtin_mul_overflow with long long arguments, rb_cv_use___builtin_mul_overflow_long_long, [
+    AC_LINK_IFELSE([AC_LANG_SOURCE([[
+#pragma clang optimize off
+
+int
+main(void)
+{
+    long long x = 0, y;
+    __builtin_mul_overflow(x, x, &y);
+
+    return 0;
+}
+]])],
+	rb_cv_use___builtin_mul_overflow_long_long=yes,
+	rb_cv_use___builtin_mul_overflow_long_long=no)])
+])
+AS_IF([test "$rb_cv_use___builtin_mul_overflow_long_long" = yes], [
+  AC_DEFINE(USE___BUILTIN_MUL_OVERFLOW_LONG_LONG, 1)
+])
 
 AS_IF([test "$ac_cv_func_qsort_r" != no], [
   AC_CACHE_CHECK(whether qsort_r is GNU version, rb_cv_gnu_qsort_r,
@@ -2960,14 +2963,6 @@ LIBEXT=a
 
 AC_SUBST(DLDFLAGS)dnl
 AC_SUBST(ARCH_FLAG)dnl
-AC_SUBST(RJIT_CC)dnl
-AS_CASE(["$GCC:$target_os"],
-    [yes:aix*], [rjit_std_cflag="-std=gnu99"],
-    [rjit_std_cflag=])
-AC_SUBST(RJIT_CFLAGS, [${RJIT_CFLAGS-"-w ${rjit_std_cflag} ${orig_cflags}"}])dnl
-AC_SUBST(RJIT_OPTFLAGS, [${RJIT_OPTFLAGS-'$(optflags)'}])dnl
-AC_SUBST(RJIT_DEBUGFLAGS, [${RJIT_DEBUGFLAGS-'$(debugflags)'}])dnl
-AC_SUBST(RJIT_LDSHARED)dnl
 
 AC_SUBST(STATIC)dnl
 AC_SUBST(CCDLFLAGS)dnl
@@ -3084,8 +3079,7 @@ AC_SUBST(EXTOBJS)
 			: ${LIBPATHENV=DYLD_FALLBACK_LIBRARY_PATH}
 			: ${PRELOADENV=DYLD_INSERT_LIBRARIES}
                         AS_IF([test x"$enable_shared" = xyes], [
-                            # Resolve symbols from libruby.dylib when --enable-shared
-                            EXTDLDFLAGS='$(LIBRUBYARG_SHARED)'
+                            # Resolve symbols from libruby.dylib in $(LIBS) when --enable-shared
                         ], [test "x$EXTSTATIC" = x], [
                             # When building exts as bundles, a mach-o bundle needs to know its loader
                             # program to bind symbols from the ruby executable
@@ -4127,7 +4121,6 @@ AS_IF([test "${universal_binary-no}" = yes ], [
 ])
 }
 
-: ${RJIT_LDSHARED=`echo "$LDSHARED" | sed ['s|\$(LD)|'"${LD}"'|g;s|\$(CC)|$(RJIT_CC)|g']`}
 [end]_group
 
 MAINLIBS="$LIBS"

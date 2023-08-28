@@ -21,10 +21,12 @@ ProgramNode(0...74)(
            "raise"
          ),
          :b,
-         :+
+         :+,
+         0
        ),
        :a,
-       :+
+       :+,
+       0
      ),
      LocalVariableOperatorWriteNode(20...37)(
        (20...21),
@@ -49,7 +51,8 @@ ProgramNode(0...74)(
          (27...28)
        ),
        :a,
-       :+
+       :+,
+       0
      ),
      LocalVariableWriteNode(39...56)(
        :a,
@@ -71,7 +74,8 @@ ProgramNode(0...74)(
            "raise"
          ),
          :b,
-         :+
+         :+,
+         0
        ),
        (39...40),
        (41...42)

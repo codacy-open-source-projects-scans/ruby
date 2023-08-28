@@ -110,7 +110,7 @@ yp_constant_pool_init(yp_constant_pool_t *pool, size_t capacity) {
 // if any potential calls to resize fail.
 yp_constant_id_t
 yp_constant_pool_insert(yp_constant_pool_t *pool, const char *start, size_t length) {
-    if (pool->size >= pool->capacity * 0.75) {
+    if (pool->size >= (pool->capacity / 4 * 3)) {
         if (!yp_constant_pool_resize(pool)) return 0;
     }
 
@@ -122,7 +122,7 @@ yp_constant_pool_insert(yp_constant_pool_t *pool, const char *start, size_t leng
         // If there is a collision, then we need to check if the content is the
         // same as the content we are trying to insert. If it is, then we can
         // return the id of the existing constant.
-        if ((constant->length == length) && strncmp(constant->start, start, length) == 0) {
+        if ((constant->length == length) && memcmp(constant->start, start, length) == 0) {
             return pool->constants[index].id;
         }
 

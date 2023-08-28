@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "yarp_test_helper"
+require_relative "test_helper"
 
 class ErrorsTest < Test::Unit::TestCase
   include ::YARP::DSL
@@ -18,9 +18,10 @@ class ErrorsTest < Test::Unit::TestCase
       Location(),
       ConstantReadNode(),
       StatementsNode(
-        [ModuleNode([], Location(), MissingNode(), nil, Location())]
+        [ModuleNode([], Location(), MissingNode(), nil, Location(), "")]
       ),
-      Location()
+      Location(),
+      "Parent"
     )
 
     assert_errors expected, "module Parent module end", [
@@ -130,6 +131,14 @@ class ErrorsTest < Test::Unit::TestCase
     ]
   end
 
+  def test_unterminated_regular_expression_with_heredoc
+    source = "<<-END + /b\nEND\n"
+
+    assert_errors expression(source), source, [
+      ["Expected a closing delimiter for a regular expression.", 10..10]
+    ]
+  end
+
   def test_unterminated_xstring
     assert_errors expression("`hello"), "`hello", [
       ["Expected a closing delimiter for an xstring.", 1..1]
@@ -152,6 +161,19 @@ class ErrorsTest < Test::Unit::TestCase
     assert_errors expression('(1 + 2'), '(1 + 2', [
       ["Expected to be able to parse an expression.", 6..6],
       ["Expected a closing parenthesis.", 6..6]
+    ]
+  end
+
+  def test_unterminated_argument_expression
+    assert_errors expression('a %'), 'a %', [
+      ["Unexpected end of input", 2..3],
+      ["Expected a value after the operator.", 3..3],
+    ]
+  end
+
+  def test_cr_without_lf_in_percent_expression
+    assert_errors expression("%\r"), "%\r", [
+      ["Invalid %% token", 0..2],
     ]
   end
 
@@ -294,28 +316,10 @@ class ErrorsTest < Test::Unit::TestCase
       nil,
       Location(),
       Location(),
-      ArgumentsNode(
-        [KeywordHashNode(
-           [AssocSplatNode(
-              CallNode(
-                nil,
-                nil,
-                Location(),
-                nil,
-                nil,
-                nil,
-                nil,
-                0,
-                "kwargs"
-              ),
-              Location()
-            )]
-         ),
-         SplatNode(
-           Location(),
-           CallNode(nil, nil, Location(), nil, nil, nil, nil, 0, "args")
-         )]
-      ),
+      ArgumentsNode([
+        KeywordHashNode([AssocSplatNode(expression("kwargs"), Location())]),
+        SplatNode(Location(), expression("args"))
+      ]),
       Location(),
       nil,
       0,
@@ -362,19 +366,16 @@ class ErrorsTest < Test::Unit::TestCase
       nil,
       Location(),
       Location(),
-      ArgumentsNode(
-        [KeywordHashNode(
-           [AssocNode(
-              SymbolNode(nil, Location(), Location(), "foo"),
-              CallNode(nil, nil, Location(), nil, nil, nil, nil, 0, "bar"),
-              nil
-            )]
-         ),
-         SplatNode(
-           Location(),
-           CallNode(nil, nil, Location(), nil, nil, nil, nil, 0, "args")
-         )]
-      ),
+      ArgumentsNode([
+        KeywordHashNode(
+          [AssocNode(
+            SymbolNode(nil, Location(), Location(), "foo"),
+            expression("bar"),
+            nil
+          )]
+        ),
+        SplatNode(Location(), expression("args"))
+      ]),
       Location(),
       nil,
       0,
@@ -391,7 +392,7 @@ class ErrorsTest < Test::Unit::TestCase
       Location(),
       nil,
       nil,
-      StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location())]),
+      StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location(), "A")]),
       [],
       Location(),
       nil,
@@ -422,7 +423,7 @@ class ErrorsTest < Test::Unit::TestCase
            BlockNode(
              [],
              nil,
-             StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location())]),
+             StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location(), "Foo")]),
              Location(),
              Location()
            ),
@@ -463,7 +464,8 @@ class ErrorsTest < Test::Unit::TestCase
            nil,
            nil,
            nil,
-           Location()
+           Location(),
+           "A"
          )]
       ),
       [],
@@ -578,6 +580,8 @@ class ErrorsTest < Test::Unit::TestCase
   def test_do_not_allow_trailing_commas_in_lambda_parameters
     expected = LambdaNode(
       [:a, :b],
+      Location(),
+      Location(),
       Location(),
       BlockParametersNode(
         ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], [], nil, [], nil, nil),
@@ -922,6 +926,8 @@ class ErrorsTest < Test::Unit::TestCase
     expected = LambdaNode(
       [:"..."],
       Location(),
+      Location(),
+      Location(),
       BlockParametersNode(ParametersNode([], [], [], nil, [], ForwardingParameterNode(), nil), [], Location(), Location()),
       nil
     )
@@ -963,7 +969,8 @@ class ErrorsTest < Test::Unit::TestCase
       nil,
       nil,
       StatementsNode([ReturnNode(Location(), nil)]),
-      Location()
+      Location(),
+      "A"
     )
 
     assert_errors expected, "class A; return; end", [
@@ -977,7 +984,8 @@ class ErrorsTest < Test::Unit::TestCase
       Location(),
       ConstantReadNode(),
       StatementsNode([ReturnNode(Location(), nil)]),
-      Location()
+      Location(),
+      "A"
     )
 
     assert_errors expected, "module A; return; end", [
@@ -1005,23 +1013,27 @@ class ErrorsTest < Test::Unit::TestCase
   end
 
   def test_duplicated_parameter_names
-    expected = DefNode(
-      Location(),
-      nil,
-      ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b), RequiredParameterNode(:a)], [], [], nil, [], nil, nil),
-      nil,
-      [:a, :b],
-      Location(),
-      nil,
-      Location(),
-      Location(),
-      nil,
-      Location()
-    )
+    # For some reason, Ripper reports no error for Ruby 3.0 when you have
+    # duplicated parameter names for positional parameters.
+    unless RUBY_VERSION < "3.1.0"
+      expected = DefNode(
+        Location(),
+        nil,
+        ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b), RequiredParameterNode(:a)], [], [], nil, [], nil, nil),
+        nil,
+        [:a, :b],
+        Location(),
+        nil,
+        Location(),
+        Location(),
+        nil,
+        Location()
+      )
 
-    assert_errors expected, "def foo(a,b,a);end", [
-      ["Duplicated parameter name.", 12..13]
-    ]
+      assert_errors expected, "def foo(a,b,a);end", [
+        ["Duplicated parameter name.", 12..13]
+      ]
+    end
 
     expected = DefNode(
       Location(),
@@ -1076,15 +1088,32 @@ class ErrorsTest < Test::Unit::TestCase
     assert_errors expected, "def foo(a,b,&a);end", [
       ["Duplicated parameter name.", 13..14]
     ]
+
+    expected = DefNode(
+      Location(),
+      nil,
+      ParametersNode([], [OptionalParameterNode(:a, Location(), Location(), IntegerNode())], [RequiredParameterNode(:b)], RestParameterNode(Location(), Location()), [], nil, nil),
+      nil,
+      [:a, :b, :c],
+      Location(),
+      nil,
+      Location(),
+      Location(),
+      nil,
+      Location()
+    )
+
+    assert_errors expected, "def foo(a = 1,b,*c);end", [["Unexpected parameter *", 16..17]]
   end
 
   private
 
   def assert_errors(expected, source, errors)
-    assert_nil Ripper.sexp_raw(source)
+    # Ripper behaves differently on JRuby/TruffleRuby, so only check this on CRuby
+    assert_nil Ripper.sexp_raw(source) if RUBY_ENGINE == "ruby"
 
     result = YARP.parse(source)
-    result => YARP::ParseResult[value: YARP::ProgramNode[statements: YARP::StatementsNode[body: [*, node]]]]
+    node = result.value.statements.body.last
 
     assert_equal_nodes(expected, node, compare_location: false)
     assert_equal(errors, result.errors.map { |e| [e.message, e.location.start_offset..e.location.end_offset] })
@@ -1097,7 +1126,6 @@ class ErrorsTest < Test::Unit::TestCase
   end
 
   def expression(source)
-    YARP.parse(source) => YARP::ParseResult[value: YARP::ProgramNode[statements: YARP::StatementsNode[body: [*, node]]]]
-    node
+    YARP.parse(source).value.statements.body.last
   end
 end

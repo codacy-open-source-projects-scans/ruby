@@ -661,7 +661,7 @@ class TestYJIT < Test::Unit::TestCase
 
   def test_send_block
     # Setlocal_wc_0 sometimes side-exits on write barrier
-    assert_compiles(<<~'RUBY', result: "b:n/b:y/b:y/b:n", exits: { :setlocal_WC_0 => 0..1 })
+    assert_compiles(<<~'RUBY', result: "b:n/b:y/b:y/b:n")
       def internal_method(&b)
         "b:#{block_given? ? "y" : "n"}"
       end
@@ -1317,6 +1317,16 @@ class TestYJIT < Test::Unit::TestCase
       h = {"foo" => "bar"}
 
       h["foo"]
+    RUBY
+  end
+
+  def test_proc_block_arg
+    assert_compiles(<<~RUBY, result: [:proc, :no_block])
+      def yield_if_given = block_given? ? yield : :no_block
+
+      def call(block_arg = nil) = yield_if_given(&block_arg)
+
+      [call(-> { :proc }), call]
     RUBY
   end
 

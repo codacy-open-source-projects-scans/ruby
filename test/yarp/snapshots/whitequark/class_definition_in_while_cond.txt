@@ -3,6 +3,7 @@ ProgramNode(0...197)(
   StatementsNode(0...197)(
     [WhileNode(0...52)(
        (0...5),
+       (49...52),
        SingletonClassNode(6...40)(
          [:a],
          (6...11),
@@ -29,10 +30,12 @@ ProgramNode(0...197)(
          ),
          (37...40)
        ),
-       StatementsNode(42...47)([BreakNode(42...47)(nil, (42...47))])
+       StatementsNode(42...47)([BreakNode(42...47)(nil, (42...47))]),
+       0
      ),
      WhileNode(54...102)(
        (54...59),
+       (99...102),
        SingletonClassNode(60...90)(
          [],
          (60...65),
@@ -53,10 +56,12 @@ ProgramNode(0...197)(
          ),
          (87...90)
        ),
-       StatementsNode(92...97)([BreakNode(92...97)(nil, (92...97))])
+       StatementsNode(92...97)([BreakNode(92...97)(nil, (92...97))]),
+       0
      ),
      WhileNode(104...151)(
        (104...109),
+       (148...151),
        ClassNode(110...139)(
          [:a],
          (110...115),
@@ -82,12 +87,15 @@ ProgramNode(0...197)(
               (122...123)
             )]
          ),
-         (136...139)
+         (136...139),
+         "Foo"
        ),
-       StatementsNode(141...146)([BreakNode(141...146)(nil, (141...146))])
+       StatementsNode(141...146)([BreakNode(141...146)(nil, (141...146))]),
+       0
      ),
      WhileNode(153...197)(
        (153...158),
+       (194...197),
        ClassNode(159...185)(
          [],
          (159...164),
@@ -107,9 +115,11 @@ ProgramNode(0...197)(
               "tap"
             )]
          ),
-         (182...185)
+         (182...185),
+         "Foo"
        ),
-       StatementsNode(187...192)([BreakNode(187...192)(nil, (187...192))])
+       StatementsNode(187...192)([BreakNode(187...192)(nil, (187...192))]),
+       0
      )]
   )
 )
