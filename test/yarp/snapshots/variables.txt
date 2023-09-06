@@ -1,21 +1,23 @@
 ProgramNode(0...293)(
   [:abc, :foo, :bar, :baz],
   StatementsNode(0...293)(
-    [ClassVariableReadNode(0...5)(),
+    [ClassVariableReadNode(0...5)(:@@abc),
      ClassVariableWriteNode(7...16)(
+       :@@abc,
        (7...12),
        IntegerNode(15...16)(),
        (13...14)
      ),
      MultiWriteNode(18...34)(
-       [ClassVariableTargetNode(18...23)(),
-        ClassVariableTargetNode(25...30)()],
+       [ClassVariableTargetNode(18...23)(:@@foo),
+        ClassVariableTargetNode(25...30)(:@@bar)],
        (31...32),
        IntegerNode(33...34)(),
        nil,
        nil
      ),
      ClassVariableWriteNode(36...48)(
+       :@@foo,
        (36...41),
        ArrayNode(44...48)(
          [IntegerNode(44...45)(), IntegerNode(47...48)()],
@@ -25,13 +27,15 @@ ProgramNode(0...293)(
        (42...43)
      ),
      GlobalVariableWriteNode(50...58)(
+       :$abc,
        (50...54),
-       (55...56),
-       IntegerNode(57...58)()
+       IntegerNode(57...58)(),
+       (55...56)
      ),
-     GlobalVariableReadNode(60...64)(),
-     InstanceVariableReadNode(66...70)(),
+     GlobalVariableReadNode(60...64)(:$abc),
+     InstanceVariableReadNode(66...70)(:@abc),
      InstanceVariableWriteNode(72...80)(
+       :@abc,
        (72...76),
        IntegerNode(79...80)(),
        (77...78)
@@ -40,36 +44,38 @@ ProgramNode(0...293)(
      LocalVariableWriteNode(85...92)(
        :abc,
        0,
-       IntegerNode(91...92)(),
        (85...88),
+       IntegerNode(91...92)(),
        (89...90)
      ),
      MultiWriteNode(94...108)(
-       [GlobalVariableTargetNode(94...98)(),
-        GlobalVariableTargetNode(100...104)()],
+       [GlobalVariableTargetNode(94...98)(:$foo),
+        GlobalVariableTargetNode(100...104)(:$bar)],
        (105...106),
        IntegerNode(107...108)(),
        nil,
        nil
      ),
      GlobalVariableWriteNode(110...121)(
+       :$foo,
        (110...114),
-       (115...116),
        ArrayNode(117...121)(
          [IntegerNode(117...118)(), IntegerNode(120...121)()],
          nil,
          nil
-       )
+       ),
+       (115...116)
      ),
      MultiWriteNode(123...137)(
-       [InstanceVariableTargetNode(123...127)(),
-        InstanceVariableTargetNode(129...133)()],
+       [InstanceVariableTargetNode(123...127)(:@foo),
+        InstanceVariableTargetNode(129...133)(:@bar)],
        (134...135),
        IntegerNode(136...137)(),
        nil,
        nil
      ),
      InstanceVariableWriteNode(139...150)(
+       :@foo,
        (139...143),
        ArrayNode(146...150)(
          [IntegerNode(146...147)(), IntegerNode(149...150)()],
@@ -81,30 +87,30 @@ ProgramNode(0...293)(
      LocalVariableWriteNode(152...159)(
        :foo,
        0,
-       IntegerNode(158...159)(),
        (152...155),
+       IntegerNode(158...159)(),
        (156...157)
      ),
      LocalVariableWriteNode(161...171)(
        :foo,
        0,
+       (161...164),
        ArrayNode(167...171)(
          [IntegerNode(167...168)(), IntegerNode(170...171)()],
          nil,
          nil
        ),
-       (161...164),
        (165...166)
      ),
      LocalVariableWriteNode(173...183)(
        :foo,
        0,
+       (173...176),
        ArrayNode(179...183)(
          [IntegerNode(179...180)(), IntegerNode(182...183)()],
          nil,
          nil
        ),
-       (173...176),
        (177...178)
      ),
      MultiWriteNode(185...198)(
@@ -173,6 +179,7 @@ ProgramNode(0...293)(
      LocalVariableWriteNode(260...270)(
        :foo,
        0,
+       (260...263),
        ArrayNode(266...270)(
          [SplatNode(266...270)(
             (266...267),
@@ -181,7 +188,6 @@ ProgramNode(0...293)(
          nil,
          nil
        ),
-       (260...263),
        (264...265)
      ),
      ConstantWriteNode(272...282)(

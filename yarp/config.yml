@@ -361,7 +361,7 @@ flags:
         comment: "o - only interpolates values into the regular expression once"
 nodes:
   - name: AliasNode
-    child_nodes:
+    fields:
       - name: new_name
         type: node
       - name: old_name
@@ -374,7 +374,7 @@ nodes:
           alias foo bar
           ^^^^^^^^^^^^^
   - name: AlternationPatternNode
-    child_nodes:
+    fields:
       - name: left
         type: node
       - name: right
@@ -387,7 +387,7 @@ nodes:
           foo => bar | baz
                  ^^^^^^^^^
   - name: AndNode
-    child_nodes:
+    fields:
       - name: left
         type: node
       - name: right
@@ -400,7 +400,7 @@ nodes:
           left and right
           ^^^^^^^^^^^^^^
   - name: ArgumentsNode
-    child_nodes:
+    fields:
       - name: arguments
         type: node[]
     comment: |
@@ -409,7 +409,7 @@ nodes:
           return foo, bar, baz
                  ^^^^^^^^^^^^^
   - name: ArrayNode
-    child_nodes:
+    fields:
       - name: elements
         type: node[]
       - name: opening_loc
@@ -423,7 +423,7 @@ nodes:
           [1, 2, 3]
           ^^^^^^^^^
   - name: ArrayPatternNode
-    child_nodes:
+    fields:
       - name: constant
         type: node?
       - name: requireds
@@ -454,7 +454,7 @@ nodes:
           foo in Bar[1, 2, 3]
           ^^^^^^^^^^^^^^^^^^^
   - name: AssocNode
-    child_nodes:
+    fields:
       - name: key
         type: node
       - name: value
@@ -467,7 +467,7 @@ nodes:
           { a => b }
             ^^^^^^
   - name: AssocSplatNode
-    child_nodes:
+    fields:
       - name: value
         type: node?
       - name: operator_loc
@@ -484,7 +484,7 @@ nodes:
           $'
           ^^
   - name: BeginNode
-    child_nodes:
+    fields:
       - name: begin_keyword_loc
         type: location?
       - name: statements
@@ -510,7 +510,7 @@ nodes:
           end
           ^^^^^
   - name: BlockArgumentNode
-    child_nodes:
+    fields:
       - name: expression
         type: node?
       - name: operator_loc
@@ -520,8 +520,17 @@ nodes:
 
           bar(&args)
           ^^^^^^^^^^
+  - name: BlockLocalVariableNode
+    fields:
+      - name: name
+        type: constant
+    comment: |
+      Represents a block local variable.
+
+          a { |; b| }
+                 ^
   - name: BlockNode
-    child_nodes:
+    fields:
       - name: locals
         type: constant[]
       - name: parameters
@@ -539,7 +548,7 @@ nodes:
       [1, 2, 3].each { |i| puts x }
                      ^^^^^^^^^^^^^^
   - name: BlockParameterNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location?
       - name: operator_loc
@@ -551,12 +560,12 @@ nodes:
                 ^^
           end
   - name: BlockParametersNode
-    child_nodes:
+    fields:
       - name: parameters
         type: node?
         kind: ParametersNode
       - name: locals
-        type: location[]
+        type: node[]
       - name: opening_loc
         type: location?
       - name: closing_loc
@@ -571,7 +580,7 @@ nodes:
                  ^^^^^^^^^^^^^^^^^
           end
   - name: BreakNode
-    child_nodes:
+    fields:
       - name: arguments
         type: node?
         kind: ArgumentsNode
@@ -582,11 +591,42 @@ nodes:
 
           break foo
           ^^^^^^^^^
-  - name: CallNode
-    child_nodes:
+  - name: CallAndWriteNode
+    fields:
       - name: receiver
         type: node?
+      - name: call_operator_loc
+        type: location?
+      - name: message_loc
+        type: location?
+      - name: opening_loc
+        type: location?
+      - name: arguments
+        type: node?
+        kind: ArgumentsNode
+      - name: closing_loc
+        type: location?
+      - name: flags
+        type: flags
+        kind: CallNodeFlags
+      - name: read_name
+        type: string
+      - name: write_name
+        type: string
       - name: operator_loc
+        type: location
+      - name: value
+        type: node
+    comment: |
+      Represents the use of the `&&=` operator on a call.
+
+          foo.bar &&= value
+          ^^^^^^^^^^^^^^^^^
+  - name: CallNode
+    fields:
+      - name: receiver
+        type: node?
+      - name: call_operator_loc
         type: location?
       - name: message_loc
         type: location?
@@ -625,52 +665,72 @@ nodes:
 
           foo&.bar
           ^^^^^^^^
-  - name: CallOperatorAndWriteNode
-    child_nodes:
-      - name: target
-        type: node
-        kind: CallNode
-      - name: operator_loc
-        type: location
-      - name: value
-        type: node
-    comment: |
-      Represents the use of the `&&=` operator on a call.
-
-          foo.bar &&= value
-          ^^^^^^^^^^^^^^^^^
-  - name: CallOperatorOrWriteNode
-    child_nodes:
-      - name: target
-        type: node
-        kind: CallNode
-      - name: value
-        type: node
-      - name: operator_loc
-        type: location
-    comment: |
-      Represents the use of the `||=` operator on a call.
-
-          foo.bar ||= value
-          ^^^^^^^^^^^^^^^^^
   - name: CallOperatorWriteNode
-    child_nodes:
-      - name: target
-        type: node
-        kind: CallNode
-      - name: operator_loc
-        type: location
-      - name: value
-        type: node
+    fields:
+      - name: receiver
+        type: node?
+      - name: call_operator_loc
+        type: location?
+      - name: message_loc
+        type: location?
+      - name: opening_loc
+        type: location?
+      - name: arguments
+        type: node?
+        kind: ArgumentsNode
+      - name: closing_loc
+        type: location?
+      - name: flags
+        type: flags
+        kind: CallNodeFlags
+      - name: read_name
+        type: string
+      - name: write_name
+        type: string
       - name: operator
         type: constant
+      - name: operator_loc
+        type: location
+      - name: value
+        type: node
     comment: |
       Represents the use of an assignment operator on a call.
 
           foo.bar += baz
           ^^^^^^^^^^^^^^
+  - name: CallOrWriteNode
+    fields:
+      - name: receiver
+        type: node?
+      - name: call_operator_loc
+        type: location?
+      - name: message_loc
+        type: location?
+      - name: opening_loc
+        type: location?
+      - name: arguments
+        type: node?
+        kind: ArgumentsNode
+      - name: closing_loc
+        type: location?
+      - name: flags
+        type: flags
+        kind: CallNodeFlags
+      - name: read_name
+        type: string
+      - name: write_name
+        type: string
+      - name: operator_loc
+        type: location
+      - name: value
+        type: node
+    comment: |
+      Represents the use of the `||=` operator on a call.
+
+          foo.bar ||= value
+          ^^^^^^^^^^^^^^^^^
   - name: CapturePatternNode
-    child_nodes:
+    fields:
       - name: value
         type: node
       - name: target
@@ -683,7 +743,7 @@ nodes:
           foo => [bar => baz]
                  ^^^^^^^^^^^^
   - name: CaseNode
-    child_nodes:
+    fields:
       - name: predicate
         type: node?
       - name: conditions
@@ -703,7 +763,7 @@ nodes:
       when false
       end
   - name: ClassNode
-    child_nodes:
+    fields:
       - name: locals
         type: constant[]
       - name: class_keyword_loc
@@ -726,7 +786,9 @@ nodes:
           class Foo end
           ^^^^^^^^^^^^^
   - name: ClassVariableAndWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -739,7 +801,9 @@ nodes:
           @@target &&= value
           ^^^^^^^^^^^^^^^^
   - name: ClassVariableOperatorWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -754,7 +818,9 @@ nodes:
           @@target += value
           ^^^^^^^^^^^^^^^^^
   - name: ClassVariableOrWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -767,23 +833,31 @@ nodes:
           @@target ||= value
           ^^^^^^^^^^^^^^^^^^
   - name: ClassVariableReadNode
+    fields:
+      - name: name
+        type: constant
     comment: |
       Represents referencing a class variable.
 
           @@foo
           ^^^^^
   - name: ClassVariableTargetNode
+    fields:
+      - name: name
+        type: constant
     comment: |
       Represents writing to a class variable in a context that doesn't have an explicit value.
 
           @@foo, @@bar = baz
           ^^^^^  ^^^^^
   - name: ClassVariableWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: value
-        type: node?
+        type: node
       - name: operator_loc
         type: location?
     comment: |
@@ -792,7 +866,7 @@ nodes:
           @@foo = 1
           ^^^^^^^^^
   - name: ConstantAndWriteNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: operator_loc
@@ -805,7 +879,7 @@ nodes:
           Target &&= value
           ^^^^^^^^^^^^^^^^
   - name: ConstantOperatorWriteNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: operator_loc
@@ -820,7 +894,7 @@ nodes:
           Target += value
           ^^^^^^^^^^^^^^^
   - name: ConstantOrWriteNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: operator_loc
@@ -833,7 +907,7 @@ nodes:
           Target ||= value
           ^^^^^^^^^^^^^^^^
   - name: ConstantPathAndWriteNode
-    child_nodes:
+    fields:
       - name: target
         type: node
         kind: ConstantPathNode
@@ -847,7 +921,7 @@ nodes:
           Parent::Child &&= value
           ^^^^^^^^^^^^^^^^^^^^^^^
   - name: ConstantPathNode
-    child_nodes:
+    fields:
       - name: parent
         type: node?
       - name: child
@@ -860,7 +934,7 @@ nodes:
           Foo::Bar
           ^^^^^^^^
   - name: ConstantPathOperatorWriteNode
-    child_nodes:
+    fields:
       - name: target
         type: node
         kind: ConstantPathNode
@@ -876,7 +950,7 @@ nodes:
           Parent::Child += value
           ^^^^^^^^^^^^^^^^^^^^^^
   - name: ConstantPathOrWriteNode
-    child_nodes:
+    fields:
       - name: target
         type: node
         kind: ConstantPathNode
@@ -890,7 +964,7 @@ nodes:
           Parent::Child ||= value
           ^^^^^^^^^^^^^^^^^^^^^^^
   - name: ConstantPathTargetNode
-    child_nodes:
+    fields:
       - name: parent
         type: node?
       - name: child
@@ -903,7 +977,7 @@ nodes:
           Foo::Foo, Bar::Bar = baz
           ^^^^^^^^  ^^^^^^^^
   - name: ConstantPathWriteNode
-    child_nodes:
+    fields:
       - name: target
         type: node
         kind: ConstantPathNode
@@ -935,7 +1009,7 @@ nodes:
           Foo, Bar = baz
           ^^^  ^^^
   - name: ConstantWriteNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: value
@@ -948,7 +1022,7 @@ nodes:
           Foo = 1
           ^^^^^^^
   - name: DefNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: receiver
@@ -979,7 +1053,7 @@ nodes:
           end
           ^^^^^^^^^^
   - name: DefinedNode
-    child_nodes:
+    fields:
       - name: lparen_loc
         type: location?
       - name: value
@@ -994,7 +1068,7 @@ nodes:
           defined?(a)
           ^^^^^^^^^^^
   - name: ElseNode
-    child_nodes:
+    fields:
       - name: else_keyword_loc
         type: location
       - name: statements
@@ -1008,7 +1082,7 @@ nodes:
           if a then b else c end
                       ^^^^^^^^^^
   - name: EmbeddedStatementsNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location
       - name: statements
@@ -1022,7 +1096,7 @@ nodes:
           "foo #{bar}"
                ^^^^^^
   - name: EmbeddedVariableNode
-    child_nodes:
+    fields:
       - name: operator_loc
         type: location
       - name: variable
@@ -1033,7 +1107,7 @@ nodes:
           "foo #@bar"
                ^^^^^
   - name: EnsureNode
-    child_nodes:
+    fields:
       - name: ensure_keyword_loc
         type: location
       - name: statements
@@ -1057,7 +1131,7 @@ nodes:
           false
           ^^^^^
   - name: FindPatternNode
-    child_nodes:
+    fields:
       - name: constant
         type: node?
       - name: left
@@ -1082,7 +1156,7 @@ nodes:
           foo in Foo(*bar, baz, *qux)
           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
   - name: FlipFlopNode
-    child_nodes:
+    fields:
       - name: left
         type: node?
       - name: right
@@ -1104,7 +1178,7 @@ nodes:
           1.0
           ^^^
   - name: ForNode
-    child_nodes:
+    fields:
       - name: index
         type: node
       - name: collection
@@ -1141,7 +1215,7 @@ nodes:
                   ^^^
           end
   - name: ForwardingSuperNode
-    child_nodes:
+    fields:
       - name: block
         type: node?
         kind: BlockNode
@@ -1151,7 +1225,9 @@ nodes:
           super
           ^^^^^
   - name: GlobalVariableAndWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1164,7 +1240,9 @@ nodes:
           $target &&= value
           ^^^^^^^^^^^^^^^^^
   - name: GlobalVariableOperatorWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1179,7 +1257,9 @@ nodes:
           $target += value
           ^^^^^^^^^^^^^^^^
   - name: GlobalVariableOrWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1192,32 +1272,40 @@ nodes:
           $target ||= value
           ^^^^^^^^^^^^^^^^^
   - name: GlobalVariableReadNode
+    fields:
+      - name: name
+        type: constant
     comment: |
       Represents referencing a global variable.
 
           $foo
           ^^^^
   - name: GlobalVariableTargetNode
+    fields:
+      - name: name
+        type: constant
     comment: |
       Represents writing to a global variable in a context that doesn't have an explicit value.
 
           $foo, $bar = baz
           ^^^^  ^^^^
   - name: GlobalVariableWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
-        type: location
-      - name: operator_loc
         type: location
       - name: value
         type: node
+      - name: operator_loc
+        type: location
     comment: |
       Represents writing to a global variable.
 
           $foo = 1
           ^^^^^^^^
   - name: HashNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location
       - name: elements
@@ -1230,7 +1318,7 @@ nodes:
           { a => b }
           ^^^^^^^^^^
   - name: HashPatternNode
-    child_nodes:
+    fields:
       - name: constant
         type: node?
       - name: assocs
@@ -1250,7 +1338,7 @@ nodes:
           foo => { a: 1, b: 2, **c }
                  ^^^^^^^^^^^^^^^^^^^
   - name: IfNode
-    child_nodes:
+    fields:
       - name: if_keyword_loc
         type: location?
       - name: predicate
@@ -1272,7 +1360,7 @@ nodes:
           if foo then bar end
           ^^^^^^^^^^^^^^^^^^^
   - name: ImaginaryNode
-    child_nodes:
+    fields:
       - name: numeric
         type: node
     comment: |
@@ -1281,7 +1369,7 @@ nodes:
           1.0i
           ^^^^
   - name: InNode
-    child_nodes:
+    fields:
       - name: pattern
         type: node
       - name: statements
@@ -1297,7 +1385,9 @@ nodes:
           case a; in b then c end
                   ^^^^^^^^^^^
   - name: InstanceVariableAndWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1310,7 +1400,9 @@ nodes:
           @target &&= value
           ^^^^^^^^^^^^^^^^^
   - name: InstanceVariableOperatorWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1325,7 +1417,9 @@ nodes:
           @target += value
           ^^^^^^^^^^^^^^^^
   - name: InstanceVariableOrWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1338,19 +1432,27 @@ nodes:
           @target ||= value
           ^^^^^^^^^^^^^^^^^
   - name: InstanceVariableReadNode
+    fields:
+      - name: name
+        type: constant
     comment: |
       Represents referencing an instance variable.
 
           @foo
           ^^^^
   - name: InstanceVariableTargetNode
+    fields:
+      - name: name
+        type: constant
     comment: |
       Represents writing to an instance variable in a context that doesn't have an explicit value.
 
           @foo, @bar = baz
           ^^^^  ^^^^
   - name: InstanceVariableWriteNode
-    child_nodes:
+    fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: value
@@ -1369,7 +1471,7 @@ nodes:
           1
           ^
   - name: InterpolatedRegularExpressionNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location
       - name: parts
@@ -1386,7 +1488,7 @@ nodes:
           /foo #{bar} baz/
           ^^^^^^^^^^^^^^^^
   - name: InterpolatedStringNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location?
       - name: parts
@@ -1400,7 +1502,7 @@ nodes:
           "foo #{bar} baz"
           ^^^^^^^^^^^^^^^^
   - name: InterpolatedSymbolNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location?
       - name: parts
@@ -1414,7 +1516,7 @@ nodes:
           :"foo #{bar} baz"
           ^^^^^^^^^^^^^^^^^
   - name: InterpolatedXStringNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location
       - name: parts
@@ -1428,7 +1530,7 @@ nodes:
           `foo #{bar} baz`
           ^^^^^^^^^^^^^^^^
   - name: KeywordHashNode
-    child_nodes:
+    fields:
       - name: elements
         type: node[]
     comment: |
@@ -1437,7 +1539,7 @@ nodes:
           foo(a: b)
               ^^^^
   - name: KeywordParameterNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: value
@@ -1453,7 +1555,7 @@ nodes:
                 ^^^^
           end
   - name: KeywordRestParameterNode
-    child_nodes:
+    fields:
       - name: operator_loc
         type: location
       - name: name_loc
@@ -1465,7 +1567,7 @@ nodes:
                 ^^^
           end
   - name: LambdaNode
-    child_nodes:
+    fields:
       - name: locals
         type: constant[]
       - name: operator_loc
@@ -1485,7 +1587,7 @@ nodes:
           ->(value) { value * 2 }
           ^^^^^^^^^^^^^^^^^^^^^^^
   - name: LocalVariableAndWriteNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1502,7 +1604,7 @@ nodes:
           target &&= value
           ^^^^^^^^^^^^^^^^
   - name: LocalVariableOperatorWriteNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1521,7 +1623,7 @@ nodes:
           target += value
           ^^^^^^^^^^^^^^^
   - name: LocalVariableOrWriteNode
-    child_nodes:
+    fields:
       - name: name_loc
         type: location
       - name: operator_loc
@@ -1538,7 +1640,7 @@ nodes:
           target ||= value
           ^^^^^^^^^^^^^^^^
   - name: LocalVariableReadNode
-    child_nodes:
+    fields:
       - name: name
         type: constant
       - name: depth
@@ -1551,7 +1653,7 @@ nodes:
           foo
           ^^^
   - name: LocalVariableTargetNode
-    child_nodes:
+    fields:
       - name: name
         type: constant
       - name: depth
@@ -1562,15 +1664,15 @@ nodes:
           foo, bar = baz
           ^^^  ^^^
   - name: LocalVariableWriteNode
-    child_nodes:
+    fields:
       - name: name
         type: constant
       - name: depth
         type: uint32
-      - name: value
-        type: node
       - name: name_loc
         type: location
+      - name: value
+        type: node
       - name: operator_loc
         type: location
     comment: |
@@ -1579,7 +1681,7 @@ nodes:
           foo = 1
           ^^^^^^^
   - name: MatchPredicateNode
-    child_nodes:
+    fields:
       - name: value
         type: node
       - name: pattern
@@ -1592,7 +1694,7 @@ nodes:
           foo in bar
           ^^^^^^^^^^
   - name: MatchRequiredNode
-    child_nodes:
+    fields:
       - name: value
         type: node
       - name: pattern
@@ -1609,7 +1711,7 @@ nodes:
       Represents a node that is missing from the source and results in a syntax
       error.
   - name: ModuleNode
-    child_nodes:
+    fields:
       - name: locals
         type: constant[]
       - name: module_keyword_loc
@@ -1628,7 +1730,7 @@ nodes:
           module Foo end
           ^^^^^^^^^^^^^^
   - name: MultiWriteNode
-    child_nodes:
+    fields:
       - name: targets
         type: node[]
       - name: operator_loc
@@ -1645,7 +1747,7 @@ nodes:
           a, b, c = 1, 2, 3
           ^^^^^^^^^^^^^^^^^
   - name: NextNode
-    child_nodes:
+    fields:
       - name: arguments
         type: node?
         kind: ArgumentsNode
@@ -1663,7 +1765,7 @@ nodes:
           nil
           ^^^
   - name: NoKeywordsParameterNode
-    child_nodes:
+    fields:
       - name: operator_loc
         type: location
       - name: keyword_loc
@@ -1675,13 +1777,16 @@ nodes:
                 ^^^^^
           end
   - name: NumberedReferenceReadNode
+    fields:
+      - name: number
+        type: uint32
     comment: |
       Represents reading a numbered reference to a capture in the previous match.
 
           $1
           ^^
   - name: OptionalParameterNode
-    child_nodes:
+    fields:
       - name: name
         type: constant
       - name: name_loc
@@ -1697,7 +1802,7 @@ nodes:
                 ^^^^^
           end
   - name: OrNode
-    child_nodes:
+    fields:
       - name: left
         type: node
       - name: right
@@ -1710,7 +1815,7 @@ nodes:
           left or right
           ^^^^^^^^^^^^^
   - name: ParametersNode
-    child_nodes:
+    fields:
       - name: requireds
         type: node[]
       - name: optionals
@@ -1734,7 +1839,7 @@ nodes:
                 ^^^^^^^
           end
   - name: ParenthesesNode
-    child_nodes:
+    fields:
       - name: body
         type: node?
       - name: opening_loc
@@ -1748,7 +1853,7 @@ nodes:
           (10 + 34)
           ^^^^^^^^^
   - name: PinnedExpressionNode
-    child_nodes:
+    fields:
       - name: expression
         type: node
       - name: operator_loc
@@ -1764,7 +1869,7 @@ nodes:
           foo in ^(bar)
                  ^^^^^^
   - name: PinnedVariableNode
-    child_nodes:
+    fields:
       - name: variable
         type: node
       - name: operator_loc
@@ -1776,7 +1881,7 @@ nodes:
           foo in ^bar
                  ^^^^
   - name: PostExecutionNode
-    child_nodes:
+    fields:
       - name: statements
         type: node?
         kind: StatementsNode
@@ -1792,7 +1897,7 @@ nodes:
           END { foo }
           ^^^^^^^^^^^
   - name: PreExecutionNode
-    child_nodes:
+    fields:
       - name: statements
         type: node?
         kind: StatementsNode
@@ -1808,7 +1913,7 @@ nodes:
           BEGIN { foo }
           ^^^^^^^^^^^^^
   - name: ProgramNode
-    child_nodes:
+    fields:
       - name: locals
         type: constant[]
       - name: statements
@@ -1816,7 +1921,7 @@ nodes:
         kind: StatementsNode
     comment: The top level node of any parse tree.
   - name: RangeNode
-    child_nodes:
+    fields:
       - name: left
         type: node?
       - name: right
@@ -1835,7 +1940,7 @@ nodes:
           c if a =~ /left/ ... b =~ /right/
                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   - name: RationalNode
-    child_nodes:
+    fields:
       - name: numeric
         type: node
     comment: |
@@ -1850,7 +1955,7 @@ nodes:
           redo
           ^^^^
   - name: RegularExpressionNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location
       - name: content_loc
@@ -1868,7 +1973,7 @@ nodes:
           /foo/i
           ^^^^^^
   - name: RequiredDestructuredParameterNode
-    child_nodes:
+    fields:
       - name: parameters
         type: node[]
       - name: opening_loc
@@ -1882,7 +1987,7 @@ nodes:
                   ^^^^^^^^^^
           end
   - name: RequiredParameterNode
-    child_nodes:
+    fields:
       - name: name
         type: constant
     comment: |
@@ -1892,7 +1997,7 @@ nodes:
                 ^
           end
   - name: RescueModifierNode
-    child_nodes:
+    fields:
       - name: expression
         type: node
       - name: keyword_loc
@@ -1906,7 +2011,7 @@ nodes:
         foo rescue nil
         ^^^^^^^^^^^^^^
   - name: RescueNode
-    child_nodes:
+    fields:
       - name: keyword_loc
         type: location
       - name: exceptions
@@ -1933,7 +2038,7 @@ nodes:
       `Foo, *splat, Bar` are in the `exceptions` field.
       `ex` is in the `exception` field.
   - name: RestParameterNode
-    child_nodes:
+    fields:
       - name: operator_loc
         type: location
       - name: name_loc
@@ -1951,7 +2056,7 @@ nodes:
           retry
           ^^^^^
   - name: ReturnNode
-    child_nodes:
+    fields:
       - name: keyword_loc
         type: location
       - name: arguments
@@ -1969,7 +2074,7 @@ nodes:
           self
           ^^^^
   - name: SingletonClassNode
-    child_nodes:
+    fields:
       - name: locals
         type: constant[]
       - name: class_keyword_loc
@@ -1994,7 +2099,7 @@ nodes:
           __ENCODING__
           ^^^^^^^^^^^^
   - name: SourceFileNode
-    child_nodes:
+    fields:
       - name: filepath
         type: string
     comment: |
@@ -2009,7 +2114,7 @@ nodes:
           __LINE__
           ^^^^^^^^
   - name: SplatNode
-    child_nodes:
+    fields:
       - name: operator_loc
         type: location
       - name: expression
@@ -2020,7 +2125,7 @@ nodes:
           [*a]
            ^^
   - name: StatementsNode
-    child_nodes:
+    fields:
       - name: body
         type: node[]
     comment: |
@@ -2029,7 +2134,7 @@ nodes:
           foo; bar; baz
           ^^^^^^^^^^^^^
   - name: StringConcatNode
-    child_nodes:
+    fields:
       - name: left
         type: node
       - name: right
@@ -2040,7 +2145,7 @@ nodes:
           "foo" "bar"
           ^^^^^^^^^^^
   - name: StringNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location?
       - name: content_loc
@@ -2062,7 +2167,7 @@ nodes:
           "foo #{bar} baz"
            ^^^^      ^^^^
   - name: SuperNode
-    child_nodes:
+    fields:
       - name: keyword_loc
         type: location
       - name: lparen_loc
@@ -2084,7 +2189,7 @@ nodes:
           super foo, bar
           ^^^^^^^^^^^^^^
   - name: SymbolNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location?
       - name: value_loc
@@ -2108,7 +2213,7 @@ nodes:
           true
           ^^^^
   - name: UndefNode
-    child_nodes:
+    fields:
       - name: names
         type: node[]
       - name: keyword_loc
@@ -2119,7 +2224,7 @@ nodes:
           undef :foo, :bar, :baz
           ^^^^^^^^^^^^^^^^^^^^^^
   - name: UnlessNode
-    child_nodes:
+    fields:
       - name: keyword_loc
         type: location
       - name: predicate
@@ -2142,7 +2247,7 @@ nodes:
           unless foo then bar end
           ^^^^^^^^^^^^^^^^^^^^^^^
   - name: UntilNode
-    child_nodes:
+    fields:
       - name: keyword_loc
         type: location
       - name: closing_loc
@@ -2165,7 +2270,7 @@ nodes:
           until foo do bar end
           ^^^^^^^^^^^^^^^^^^^^
   - name: WhenNode
-    child_nodes:
+    fields:
       - name: keyword_loc
         type: location
       - name: conditions
@@ -2181,7 +2286,7 @@ nodes:
           ^^^^^^^^^
           end
   - name: WhileNode
-    child_nodes:
+    fields:
       - name: keyword_loc
         type: location
       - name: closing_loc
@@ -2204,7 +2309,7 @@ nodes:
           while foo do bar end
           ^^^^^^^^^^^^^^^^^^^^
   - name: XStringNode
-    child_nodes:
+    fields:
       - name: opening_loc
         type: location
       - name: content_loc
@@ -2219,7 +2324,7 @@ nodes:
           `foo`
           ^^^^^
   - name: YieldNode
-    child_nodes:
+    fields:
       - name: keyword_loc
         type: location
       - name: lparen_loc

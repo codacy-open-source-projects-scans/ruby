@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -35,10 +36,10 @@
 #endif
 
 // Windows versions before 2015 use _snprintf
-#if defined(_MSC_VER) && (_MSC_VER < 1900)
+#if !defined(snprintf) && defined(_MSC_VER) && (_MSC_VER < 1900)
 #   define snprintf _snprintf
 #endif
 
-int yp_strncasecmp(const char *string1, const char *string2, size_t length);
+int yp_strncasecmp(const uint8_t *string1, const uint8_t *string2, size_t length);
 
 #endif

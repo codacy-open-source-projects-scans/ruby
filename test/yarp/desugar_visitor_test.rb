@@ -2,56 +2,85 @@
 
 require_relative "test_helper"
 
-class DesugarVisitorTest < Test::Unit::TestCase
-  def test_and_write
-    assert_desugars("(AndNode (ClassVariableReadNode) (ClassVariableWriteNode (CallNode)))", "@@foo &&= bar")
-    assert_desugars("(AndNode (ConstantPathNode (ConstantReadNode) (ConstantReadNode)) (ConstantPathWriteNode (ConstantPathNode (ConstantReadNode) (ConstantReadNode)) (CallNode)))", "Foo::Bar &&= baz")
-    assert_desugars("(AndNode (ConstantReadNode) (ConstantWriteNode (CallNode)))", "Foo &&= bar")
-    assert_desugars("(AndNode (GlobalVariableReadNode) (GlobalVariableWriteNode (CallNode)))", "$foo &&= bar")
-    assert_desugars("(AndNode (InstanceVariableReadNode) (InstanceVariableWriteNode (CallNode)))", "@foo &&= bar")
-    assert_desugars("(AndNode (LocalVariableReadNode) (LocalVariableWriteNode (CallNode)))", "foo &&= bar")
-    assert_desugars("(AndNode (LocalVariableReadNode) (LocalVariableWriteNode (CallNode)))", "foo = 1; foo &&= bar")
-  end
+module YARP
+  class DesugarVisitorTest < TestCase
+    def test_and_write
+      assert_desugars("(AndNode (ClassVariableReadNode) (ClassVariableWriteNode (CallNode)))", "@@foo &&= bar")
+      assert_not_desugared("Foo::Bar &&= baz", "Desugaring would execute Foo twice or need temporary variables")
+      assert_desugars("(AndNode (ConstantReadNode) (ConstantWriteNode (CallNode)))", "Foo &&= bar")
+      assert_desugars("(AndNode (GlobalVariableReadNode) (GlobalVariableWriteNode (CallNode)))", "$foo &&= bar")
+      assert_desugars("(AndNode (InstanceVariableReadNode) (InstanceVariableWriteNode (CallNode)))", "@foo &&= bar")
+      assert_desugars("(AndNode (LocalVariableReadNode) (LocalVariableWriteNode (CallNode)))", "foo &&= bar")
+      assert_desugars("(AndNode (LocalVariableReadNode) (LocalVariableWriteNode (CallNode)))", "foo = 1; foo &&= bar")
+    end
 
-  def test_or_write
-    assert_desugars("(OrNode (ClassVariableReadNode) (ClassVariableWriteNode (CallNode)))", "@@foo ||= bar")
-    assert_desugars("(OrNode (ConstantPathNode (ConstantReadNode) (ConstantReadNode)) (ConstantPathWriteNode (ConstantPathNode (ConstantReadNode) (ConstantReadNode)) (CallNode)))", "Foo::Bar ||= baz")
-    assert_desugars("(OrNode (ConstantReadNode) (ConstantWriteNode (CallNode)))", "Foo ||= bar")
-    assert_desugars("(OrNode (GlobalVariableReadNode) (GlobalVariableWriteNode (CallNode)))", "$foo ||= bar")
-    assert_desugars("(OrNode (InstanceVariableReadNode) (InstanceVariableWriteNode (CallNode)))", "@foo ||= bar")
-    assert_desugars("(OrNode (LocalVariableReadNode) (LocalVariableWriteNode (CallNode)))", "foo ||= bar")
-    assert_desugars("(OrNode (LocalVariableReadNode) (LocalVariableWriteNode (CallNode)))", "foo = 1; foo ||= bar")
-  end
+    def test_or_write
+      assert_desugars("(IfNode (DefinedNode (ClassVariableReadNode)) (StatementsNode (ClassVariableReadNode)) (ElseNode (StatementsNode (ClassVariableWriteNode (CallNode)))))", "@@foo ||= bar")
+      assert_not_desugared("Foo::Bar ||= baz", "Desugaring would execute Foo twice or need temporary variables")
+      assert_desugars("(IfNode (DefinedNode (ConstantReadNode)) (StatementsNode (ConstantReadNode)) (ElseNode (StatementsNode (ConstantWriteNode (CallNode)))))", "Foo ||= bar")
+      assert_desugars("(IfNode (DefinedNode (GlobalVariableReadNode)) (StatementsNode (GlobalVariableReadNode)) (ElseNode (StatementsNode (GlobalVariableWriteNode (CallNode)))))", "$foo ||= bar")
+      assert_desugars("(OrNode (InstanceVariableReadNode) (InstanceVariableWriteNode (CallNode)))", "@foo ||= bar")
+      assert_desugars("(OrNode (LocalVariableReadNode) (LocalVariableWriteNode (CallNode)))", "foo ||= bar")
+      assert_desugars("(OrNode (LocalVariableReadNode) (LocalVariableWriteNode (CallNode)))", "foo = 1; foo ||= bar")
+    end
 
-  def test_operator_write
-    assert_desugars("(ClassVariableWriteNode (CallNode (ClassVariableReadNode) (ArgumentsNode (CallNode))))", "@@foo += bar")
-    assert_desugars("(ConstantPathWriteNode (ConstantPathNode (ConstantReadNode) (ConstantReadNode)) (CallNode (ConstantPathNode (ConstantReadNode) (ConstantReadNode)) (ArgumentsNode (CallNode))))", "Foo::Bar += baz")
-    assert_desugars("(ConstantWriteNode (CallNode (ConstantReadNode) (ArgumentsNode (CallNode))))", "Foo += bar")
-    assert_desugars("(GlobalVariableWriteNode (CallNode (GlobalVariableReadNode) (ArgumentsNode (CallNode))))", "$foo += bar")
-    assert_desugars("(InstanceVariableWriteNode (CallNode (InstanceVariableReadNode) (ArgumentsNode (CallNode))))", "@foo += bar")
-    assert_desugars("(LocalVariableWriteNode (CallNode (LocalVariableReadNode) (ArgumentsNode (CallNode))))", "foo += bar")
-    assert_desugars("(LocalVariableWriteNode (CallNode (LocalVariableReadNode) (ArgumentsNode (CallNode))))", "foo = 1; foo += bar")
-  end
+    def test_operator_write
+      assert_desugars("(ClassVariableWriteNode (CallNode (ClassVariableReadNode) (ArgumentsNode (CallNode))))", "@@foo += bar")
+      assert_not_desugared("Foo::Bar += baz", "Desugaring would execute Foo twice or need temporary variables")
+      assert_desugars("(ConstantWriteNode (CallNode (ConstantReadNode) (ArgumentsNode (CallNode))))", "Foo += bar")
+      assert_desugars("(GlobalVariableWriteNode (CallNode (GlobalVariableReadNode) (ArgumentsNode (CallNode))))", "$foo += bar")
+      assert_desugars("(InstanceVariableWriteNode (CallNode (InstanceVariableReadNode) (ArgumentsNode (CallNode))))", "@foo += bar")
+      assert_desugars("(LocalVariableWriteNode (CallNode (LocalVariableReadNode) (ArgumentsNode (CallNode))))", "foo += bar")
+      assert_desugars("(LocalVariableWriteNode (CallNode (LocalVariableReadNode) (ArgumentsNode (CallNode))))", "foo = 1; foo += bar")
+    end
 
-  private
+    private
 
-  def ast_inspect(node)
-    parts = [node.class.name.split("::").last]
+    def ast_inspect(node)
+      parts = [node.class.name.split("::").last]
 
-    node.deconstruct_keys(nil).each do |_, value|
-      case value
-      when YARP::Node
-        parts << ast_inspect(value)
-      when Array
-        parts.concat(value.map { |element| ast_inspect(element) })
+      node.deconstruct_keys(nil).each do |_, value|
+        case value
+        when Node
+          parts << ast_inspect(value)
+        when Array
+          parts.concat(value.map { |element| ast_inspect(element) })
+        end
+      end
+
+      "(#{parts.join(" ")})"
+    end
+
+    # Ensure every node is only present once in the AST.
+    # If the same node is present twice it would most likely indicate it is executed twice, which is invalid semantically.
+    # This also acts as a sanity check that Node#child_nodes returns only nodes or nil (which caught a couple bugs).
+    class EnsureEveryNodeOnceInAST < Visitor
+      def initialize
+        @all_nodes = {}.compare_by_identity
+      end
+
+      def visit(node)
+        if node
+          if @all_nodes.include?(node)
+            raise "#{node.inspect} is present multiple times in the desugared AST and likely executed multiple times"
+          else
+            @all_nodes[node] = true
+          end
+        end
+        super(node)
       end
     end
 
-    "(#{parts.join(" ")})"
-  end
+    def assert_desugars(expected, source)
+      ast = YARP.parse(source).value.accept(DesugarVisitor.new)
+      assert_equal expected, ast_inspect(ast.statements.body.last)
 
-  def assert_desugars(expected, source)
-    ast = YARP.parse(source).value.accept(YARP::DesugarVisitor.new)
-    assert_equal expected, ast_inspect(ast.statements.body.last)
+      ast.accept(EnsureEveryNodeOnceInAST.new)
+    end
+
+    def assert_not_desugared(source, reason)
+      ast = YARP.parse(source).value
+      assert_equal_nodes(ast, ast.accept(DesugarVisitor.new))
+    end
   end
 end
