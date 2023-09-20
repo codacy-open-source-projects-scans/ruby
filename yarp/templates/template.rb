@@ -5,7 +5,12 @@ require "fileutils"
 require "yaml"
 
 module YARP
-  COMMON_FLAGS = 1
+  COMMON_FLAGS = 2
+
+  SERIALIZE_ONLY_SEMANTICS_FIELDS = ENV.fetch("YARP_SERIALIZE_ONLY_SEMANTICS_FIELDS", false)
+
+  JAVA_BACKEND = ENV["YARP_JAVA_BACKEND"] || "truffleruby"
+  JAVA_STRING_TYPE = JAVA_BACKEND == "jruby" ? "org.jruby.RubySymbol" : "String"
 
   # This represents a field on a node. It contains all of the necessary
   # information to template out the code for that field.
@@ -14,6 +19,14 @@ module YARP
 
     def initialize(name:, type:, **options)
       @name, @type, @options = name, type, options
+    end
+
+    def semantic_field?
+      true
+    end
+
+    def should_be_serialized?
+      SERIALIZE_ONLY_SEMANTICS_FIELDS ? semantic_field? : true
     end
   end
 
@@ -81,7 +94,19 @@ module YARP
     end
 
     def java_type
-      "byte[]"
+      JAVA_STRING_TYPE
+    end
+  end
+
+  # This represents a field on a node that is the ID of a string interned
+  # through the parser's constant pool and can be optionally null.
+  class OptionalConstantField < Field
+    def rbs_class
+      "Symbol?"
+    end
+
+    def java_type
+      JAVA_STRING_TYPE
     end
   end
 
@@ -93,7 +118,7 @@ module YARP
     end
 
     def java_type
-      "byte[][]"
+      "#{JAVA_STRING_TYPE}[]"
     end
   end
 
@@ -110,6 +135,10 @@ module YARP
 
   # This represents a field on a node that is a location.
   class LocationField < Field
+    def semantic_field?
+      options[:semantic_field] || false
+    end
+
     def rbs_class
       "Location"
     end
@@ -121,6 +150,10 @@ module YARP
 
   # This represents a field on a node that is a location that is optional.
   class OptionalLocationField < Field
+    def semantic_field?
+      options[:semantic_field] || false
+    end
+
     def rbs_class
       "Location?"
     end
@@ -168,7 +201,7 @@ module YARP
       @name = config.fetch("name")
 
       type = @name.gsub(/(?<=.)[A-Z]/, "_\\0")
-      @type = "YP_NODE_#{type.upcase}"
+      @type = "YP_#{type.upcase}"
       @human = type.downcase
 
       @fields =
@@ -178,6 +211,10 @@ module YARP
 
       @newline = config.fetch("newline", true)
       @comment = config.fetch("comment")
+    end
+
+    def semantic_fields
+      @semantic_fields ||= @fields.select(&:semantic_field?)
     end
 
     # Should emit serialized length of node so implementations can skip
@@ -195,6 +232,7 @@ module YARP
       when "node[]"     then NodeListField
       when "string"     then StringField
       when "constant"   then ConstantField
+      when "constant?"  then OptionalConstantField
       when "constant[]" then ConstantListField
       when "location"   then LocationField
       when "location?"  then OptionalLocationField
@@ -275,7 +313,8 @@ module YARP
 
       HEADING
 
-      heading = if File.extname(filepath.gsub(".erb", "")) == ".rb"
+      heading =
+        if File.extname(filepath.gsub(".erb", "")) == ".rb"
           ruby_heading
         else
           non_ruby_heading

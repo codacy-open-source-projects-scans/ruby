@@ -14625,11 +14625,16 @@ set_LAST_READ_LINE(VALUE val, ID _x, VALUE *_y)
  *     ARGV.replace ["file2", "file3"]
  *     ARGF.read      # Returns the contents of file2 and file3
  *
- * If +ARGV+ is empty, ARGF acts as if it contained STDIN, i.e. the data
- * piped to your script. For example:
+ * If +ARGV+ is empty, ARGF acts as if it contained <tt>"-"</tt> that
+ * makes ARGF read from STDIN, i.e. the data piped or typed to your
+ * script. For example:
  *
  *     $ echo "glark" | ruby -e 'p ARGF.read'
  *     "glark\n"
+ *
+ *     $ echo Glark > file1
+ *     $ echo "glark" | ruby -e 'p ARGF.read' -- - file1
+ *     "glark\nGlark\n"
  */
 
 /*
@@ -14716,7 +14721,7 @@ set_LAST_READ_LINE(VALUE val, ID _x, VALUE *_y)
  *    #path method.
  *
  *  Also available are the options offered in String#encode,
- *  which may control conversion between external internal encoding.
+ *  which may control conversion between external and internal encoding.
  *
  *  == Basic \IO
  *

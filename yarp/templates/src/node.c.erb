@@ -55,12 +55,12 @@ yp_node_destroy(yp_parser_t *parser, yp_node_t *node) {
         <%- nodes.each do |node| -%>
 #line <%= __LINE__ + 1 %> "<%= File.basename(__FILE__) %>"
         case <%= node.type %>: {
-            <%- if node.fields.any? { |field| ![YARP::LocationField, YARP::OptionalLocationField, YARP::UInt32Field, YARP::FlagsField, YARP::ConstantField].include?(field.class) } -%>
+            <%- if node.fields.any? { |field| ![YARP::LocationField, YARP::OptionalLocationField, YARP::UInt32Field, YARP::FlagsField, YARP::ConstantField, YARP::OptionalConstantField].include?(field.class) } -%>
             yp_<%= node.human %>_t *cast = (yp_<%= node.human %>_t *) node;
             <%- end -%>
             <%- node.fields.each do |field| -%>
             <%- case field -%>
-            <%- when YARP::LocationField, YARP::OptionalLocationField, YARP::UInt32Field, YARP::FlagsField, YARP::ConstantField -%>
+            <%- when YARP::LocationField, YARP::OptionalLocationField, YARP::UInt32Field, YARP::FlagsField, YARP::ConstantField, YARP::OptionalConstantField -%>
             <%- when YARP::NodeField -%>
             yp_node_destroy(parser, (yp_node_t *)cast-><%= field.name %>);
             <%- when YARP::OptionalNodeField -%>
@@ -95,16 +95,24 @@ yp_node_memsize_node(yp_node_t *node, yp_memsize_t *memsize) {
     switch (YP_NODE_TYPE(node)) {
         // We do not calculate memsize of a ScopeNode
         // as it should never be generated
-        case YP_NODE_SCOPE_NODE:
+        case YP_SCOPE_NODE:
             return;
         <%- nodes.each do |node| -%>
 #line <%= __LINE__ + 1 %> "<%= File.basename(__FILE__) %>"
         case <%= node.type %>: {
             yp_<%= node.human %>_t *cast = (yp_<%= node.human %>_t *) node;
             memsize->memsize += sizeof(*cast);
+            <%- if node.fields.any? { |f| f.is_a?(YARP::NodeListField) } -%>
+            // Node lists will add in their own sizes below.
+            memsize->memsize -= sizeof(yp_node_list_t) * <%= node.fields.count { |f| f.is_a?(YARP::NodeListField) } %>;
+            <%- end -%>
+            <%- if node.fields.any? { |f| f.is_a?(YARP::ConstantListField) } -%>
+            // Constant id lists will add in their own sizes below.
+            memsize->memsize -= sizeof(yp_constant_id_list_t) * <%= node.fields.count { |f| f.is_a?(YARP::ConstantListField) } %>;
+            <%- end -%>
             <%- node.fields.each do |field| -%>
             <%- case field -%>
-            <%- when YARP::ConstantField, YARP::UInt32Field, YARP::FlagsField, YARP::LocationField, YARP::OptionalLocationField -%>
+            <%- when YARP::ConstantField, YARP::OptionalConstantField, YARP::UInt32Field, YARP::FlagsField, YARP::LocationField, YARP::OptionalLocationField -%>
             <%- when YARP::NodeField -%>
             yp_node_memsize_node((yp_node_t *)cast-><%= field.name %>, memsize);
             <%- when YARP::OptionalNodeField -%>
@@ -114,7 +122,7 @@ yp_node_memsize_node(yp_node_t *node, yp_memsize_t *memsize) {
             <%- when YARP::StringField -%>
             memsize->memsize += yp_string_memsize(&cast-><%= field.name %>);
             <%- when YARP::NodeListField -%>
-            yp_node_list_memsize(&cast-><%= field.name %>, memsize);
+            memsize->memsize += yp_node_list_memsize(&cast-><%= field.name %>, memsize);
             <%- when YARP::ConstantListField -%>
             memsize->memsize += yp_constant_id_list_memsize(&cast-><%= field.name %>);
             <%- else -%>

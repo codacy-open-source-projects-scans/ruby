@@ -46,8 +46,8 @@ module YARP
     end
 
     # To accurately compare against Ripper, we need to make sure that we're
-    # running on Ruby 3.2+.
-    ripper_enabled = RUBY_VERSION >= "3.2.0"
+    # running on CRuby 3.2+.
+    ripper_enabled = RUBY_ENGINE == "ruby" && RUBY_VERSION >= "3.2.0"
 
     # The FOCUS environment variable allows you to specify one particular fixture
     # to test, instead of all of them.
@@ -126,13 +126,6 @@ module YARP
         # Next, assert that the newlines are in the expected places.
         expected_newlines = [0]
         source.b.scan("\n") { expected_newlines << $~.offset(0)[0] + 1 }
-
-        # If there's a __END__, then we should trip out those newlines because we
-        # don't actually scan them during parsing (because we don't need to).
-        if found = result.comments.find { |comment| comment.type == :__END__ }
-          expected_newlines = expected_newlines[...found.location.start_line]
-        end
-
         assert_equal expected_newlines, Debug.newlines(source)
 
         if ripper_should_parse && ripper_should_match
@@ -186,7 +179,11 @@ module YARP
         # We only want to compare parent/child location overlap in the case that
         # we are not looking at a heredoc. That's because heredoc locations are
         # special in that they only use the declaration of the heredoc.
-        compare = !(current.is_a?(InterpolatedStringNode) || current.is_a?(InterpolatedXStringNode)) || !current.opening&.start_with?("<<")
+        compare = !(current.is_a?(StringNode) ||
+                    current.is_a?(XStringNode) ||
+                    current.is_a?(InterpolatedStringNode) ||
+                    current.is_a?(InterpolatedXStringNode)) ||
+        !current.opening&.start_with?("<<")
 
         current.child_nodes.each do |child|
           # child_nodes can return nil values, so we need to skip those.
@@ -207,7 +204,7 @@ module YARP
       queue = [program]
       while (node = queue.shift)
         return node if node.is_a?(SourceFileNode)
-        queue.concat(node.child_nodes.compact)
+        queue.concat(node.compact_child_nodes)
       end
     end
 
