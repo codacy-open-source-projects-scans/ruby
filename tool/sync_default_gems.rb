@@ -413,6 +413,8 @@ module SyncDefaultGems
       cp_r("#{upstream}/templates", "prism/")
       rm_rf("prism/templates/javascript")
       rm_rf("prism/templates/java")
+      rm_rf("prism/templates/rbi")
+      rm_rf("prism/templates/sig")
 
       rm("prism/extconf.rb")
     else
@@ -552,6 +554,10 @@ module SyncDefaultGems
     return true
   end
 
+  def preexisting?(base, file)
+    system(*%w"git cat-file -e", "#{base}:#{file}", err: File::NULL)
+  end
+
   def filter_pickup_files(changed, ignore_file_pattern, base)
     toplevels = {}
     remove = []
@@ -559,14 +565,13 @@ module SyncDefaultGems
     changed = changed.reject do |f|
       case
       when toplevels.fetch(top = f[%r[\A[^/]+(?=/|\z)]m]) {
-             remove << top if toplevels[top] =
-                              !system(*%w"git cat-file -e", "#{base}:#{top}", err: File::NULL)
+             remove << top if toplevels[top] = !preexisting?(base, top)
            }
         # Remove any new top-level directories.
         true
       when ignore_file_pattern.match?(f)
         # Forcibly reset any changes matching ignore_file_pattern.
-        ignore << f
+        (preexisting?(base, f) ? ignore : remove) << f
       end
     end
     return changed, remove, ignore

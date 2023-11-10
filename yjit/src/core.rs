@@ -564,7 +564,8 @@ impl BranchGenFn {
             }
             BranchGenFn::JITReturn => {
                 asm_comment!(asm, "update cfp->jit_return");
-                asm.mov(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_JIT_RETURN), Opnd::const_ptr(target0.unwrap_code_ptr().raw_ptr()));
+                let raw_ptr = asm.lea_jump_target(target0);
+                asm.mov(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_JIT_RETURN), raw_ptr);
             }
         }
     }
@@ -699,7 +700,7 @@ pub struct PendingBranch {
 impl Branch {
     // Compute the size of the branch code
     fn code_size(&self) -> usize {
-        (self.end_addr.get().raw_ptr() as usize) - (self.start_addr.raw_ptr() as usize)
+        (self.end_addr.get().as_offset() - self.start_addr.as_offset()) as usize
     }
 
     /// Get the address of one of the branch destination
@@ -1190,7 +1191,7 @@ pub extern "C" fn rb_yjit_iseq_mark(payload: *mut c_void) {
 
             // Walk over references to objects in generated code.
             for offset in block.gc_obj_offsets.iter() {
-                let value_address: *const u8 = cb.get_ptr(offset.as_usize()).raw_ptr();
+                let value_address: *const u8 = cb.get_ptr(offset.as_usize()).raw_ptr(cb);
                 // Creating an unaligned pointer is well defined unlike in C.
                 let value_address = value_address as *const VALUE;
 
@@ -1248,7 +1249,7 @@ pub extern "C" fn rb_yjit_iseq_update_references(payload: *mut c_void) {
             for offset in block.gc_obj_offsets.iter() {
                 let offset_to_value = offset.as_usize();
                 let value_code_ptr = cb.get_ptr(offset_to_value);
-                let value_ptr: *const u8 = value_code_ptr.raw_ptr();
+                let value_ptr: *const u8 = value_code_ptr.raw_ptr(cb);
                 // Creating an unaligned pointer is well defined unlike in C.
                 let value_ptr = value_ptr as *mut VALUE;
 
@@ -1466,7 +1467,7 @@ unsafe fn add_block_version(blockref: BlockRef, cb: &CodeBlock) {
 
     // Run write barriers for all objects in generated code.
     for offset in block.gc_obj_offsets.iter() {
-        let value_address: *const u8 = cb.get_ptr(offset.as_usize()).raw_ptr();
+        let value_address: *const u8 = cb.get_ptr(offset.as_usize()).raw_ptr(cb);
         // Creating an unaligned pointer is well defined unlike in C.
         let value_address: *const VALUE = value_address.cast();
 
@@ -1588,7 +1589,7 @@ impl Block {
 
     // Compute the size of the block code
     pub fn code_size(&self) -> usize {
-        (self.end_addr.get().into_usize()) - (self.start_addr.into_usize())
+        (self.end_addr.get().as_offset() - self.start_addr.as_offset()).try_into().unwrap()
     }
 }
 
@@ -2197,7 +2198,7 @@ fn gen_block_series_body(
 /// NOTE: this function assumes that the VM lock has been taken
 /// If jit_exception is true, compile JIT code for handling exceptions.
 /// See [jit_compile_exception] for details.
-pub fn gen_entry_point(iseq: IseqPtr, ec: EcPtr, jit_exception: bool) -> Option<CodePtr> {
+pub fn gen_entry_point(iseq: IseqPtr, ec: EcPtr, jit_exception: bool) -> Option<*const u8> {
     // Compute the current instruction index based on the current PC
     let cfp = unsafe { get_ec_cfp(ec) };
     let insn_idx: u16 = unsafe {
@@ -2233,7 +2234,9 @@ pub fn gen_entry_point(iseq: IseqPtr, ec: EcPtr, jit_exception: bool) -> Option<
         // Compilation failed
         None => {
             // Trigger code GC. This entry point will be recompiled later.
-            cb.code_gc(ocb);
+            if get_option!(code_gc) {
+                cb.code_gc(ocb);
+            }
             return None;
         }
 
@@ -2250,7 +2253,7 @@ pub fn gen_entry_point(iseq: IseqPtr, ec: EcPtr, jit_exception: bool) -> Option<
     incr_counter!(compiled_iseq_entry);
 
     // Compilation successful and block not empty
-    return code_ptr;
+    code_ptr.map(|ptr| ptr.raw_ptr(cb))
 }
 
 // Change the entry's jump target from an entry stub to a next entry
@@ -2299,8 +2302,10 @@ c_callable! {
                     .unwrap_or_else(|| {
                         // Trigger code GC (e.g. no space).
                         // This entry point will be recompiled later.
-                        cb.code_gc(ocb);
-                        CodegenGlobals::get_stub_exit_code().raw_ptr()
+                        if get_option!(code_gc) {
+                            cb.code_gc(ocb);
+                        }
+                        CodegenGlobals::get_stub_exit_code().raw_ptr(cb)
                     });
 
                 cb.mark_all_executable();
@@ -2361,7 +2366,7 @@ fn entry_stub_hit_body(
     }
 
     // Let the stub jump to the block
-    blockref.map(|block| unsafe { block.as_ref() }.start_addr.raw_ptr())
+    blockref.map(|block| unsafe { block.as_ref() }.start_addr.raw_ptr(cb))
 }
 
 /// Generate a stub that calls entry_stub_hit
@@ -2507,6 +2512,9 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
         _ => unreachable!("target_idx < 2 must always hold"),
     };
 
+    let cb = CodegenGlobals::get_inline_cb();
+    let ocb = CodegenGlobals::get_outlined_cb();
+
     let (target_blockid, target_ctx): (BlockId, Context) = unsafe {
         // SAFETY: no mutation of the target's Cell. Just reading out data.
         let target = branch.targets[target_idx].ref_unchecked().as_ref().unwrap();
@@ -2514,7 +2522,7 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
         // If this branch has already been patched, return the dst address
         // Note: recursion can cause the same stub to be hit multiple times
         if let BranchTarget::Block(_) = target.as_ref() {
-            return target.get_address().unwrap().raw_ptr();
+            return target.get_address().unwrap().raw_ptr(cb);
         }
 
         (target.get_blockid(), target.get_ctx())
@@ -2544,17 +2552,19 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
         // So we do it here instead.
         rb_set_cfp_sp(cfp, reconned_sp);
 
+        // Bail if code GC is disabled and we've already run out of spaces.
+        if !get_option!(code_gc) && (cb.has_dropped_bytes() || ocb.unwrap().has_dropped_bytes()) {
+            return CodegenGlobals::get_stub_exit_code().raw_ptr(cb);
+        }
+
         // Bail if we're about to run out of native stack space.
         // We've just reconstructed interpreter state.
         if rb_ec_stack_check(ec as _) != 0 {
-            return CodegenGlobals::get_stub_exit_code().raw_ptr();
+            return CodegenGlobals::get_stub_exit_code().raw_ptr(cb);
         }
 
         (cfp, original_interp_sp)
     };
-
-    let cb = CodegenGlobals::get_inline_cb();
-    let ocb = CodegenGlobals::get_outlined_cb();
 
     // Try to find an existing compiled version of this block
     let mut block = find_block_version(target_blockid, &target_ctx);
@@ -2562,7 +2572,6 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
     // If this block hasn't yet been compiled
     if block.is_none() {
         let branch_old_shape = branch.gen_fn.get_shape();
-
 
         // If the new block can be generated right after the branch (at cb->write_pos)
         if cb.get_write_ptr() == branch.end_addr.get() {
@@ -2621,7 +2630,9 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
             // because incomplete code could be used when cb.dropped_bytes is flipped
             // by code GC. So this place, after all compilation, is the safest place
             // to hook code GC on branch_stub_hit.
-            cb.code_gc(ocb);
+            if get_option!(code_gc) {
+                cb.code_gc(ocb);
+            }
 
             // Failed to service the stub by generating a new block so now we
             // need to exit to the interpreter at the stubbed location. We are
@@ -2641,11 +2652,11 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
     assert!(
         new_branch_size <= branch_size_on_entry,
         "branch stubs should never enlarge branches (start_addr: {:?}, old_size: {}, new_size: {})",
-        branch.start_addr.raw_ptr(), branch_size_on_entry, new_branch_size,
+        branch.start_addr.raw_ptr(cb), branch_size_on_entry, new_branch_size,
     );
 
     // Return a pointer to the compiled block version
-    dst_addr.raw_ptr()
+    dst_addr.raw_ptr(cb)
 }
 
 /// Generate a "stub", a piece of code that calls the compiler back when run.
@@ -3075,7 +3086,7 @@ pub fn invalidate_block_version(blockref: &BlockRef) {
                 cb.get_write_ptr() <= block_end,
                 "invalidation wrote past end of block (code_size: {:?}, new_size: {})",
                 block.code_size(),
-                cb.get_write_ptr().into_i64() - block_start.into_i64(),
+                cb.get_write_ptr().as_offset() - block_start.as_offset(),
             );
             cb.set_write_ptr(cur_pos);
             cb.set_dropped_bytes(cur_dropped_bytes);
@@ -3139,7 +3150,7 @@ pub fn invalidate_block_version(blockref: &BlockRef) {
         if !target_next && branch.code_size() > old_branch_size {
             panic!(
                 "invalidated branch grew in size (start_addr: {:?}, old_size: {}, new_size: {})",
-                branch.start_addr.raw_ptr(), old_branch_size, branch.code_size()
+                branch.start_addr.raw_ptr(cb), old_branch_size, branch.code_size()
             );
         }
     }

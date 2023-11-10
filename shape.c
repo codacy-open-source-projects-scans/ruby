@@ -19,12 +19,26 @@
 #define SHAPE_DEBUG (VM_CHECK_MODE > 0)
 #endif
 
+#if SIZEOF_SHAPE_T == 4
+#if RUBY_DEBUG
+#define SHAPE_BUFFER_SIZE 0x8000
+#else
+#define SHAPE_BUFFER_SIZE 0x80000
+#endif
+#else
+#define SHAPE_BUFFER_SIZE 0x8000
+#endif
+
+#define REDBLACK_CACHE_SIZE (SHAPE_BUFFER_SIZE * 32)
+
 #define SINGLE_CHILD_TAG 0x1
 #define TAG_SINGLE_CHILD(x) (struct rb_id_table *)((uintptr_t)x | SINGLE_CHILD_TAG)
 #define SINGLE_CHILD_MASK (~((uintptr_t)SINGLE_CHILD_TAG))
 #define SINGLE_CHILD_P(x) (((uintptr_t)x) & SINGLE_CHILD_TAG)
 #define SINGLE_CHILD(x) (rb_shape_t *)((uintptr_t)x & SINGLE_CHILD_MASK)
 #define ANCESTOR_CACHE_THRESHOLD 10
+#define MAX_SHAPE_ID (SHAPE_BUFFER_SIZE - 1)
+#define ANCESTOR_SEARCH_MAX_DEPTH 2
 
 static ID id_frozen;
 static ID id_t_object;
@@ -118,6 +132,10 @@ redblack_id_for(redblack_node_t * node)
 static redblack_node_t *
 redblack_new(char color, ID key, rb_shape_t * value, redblack_node_t * left, redblack_node_t * right)
 {
+    if (GET_SHAPE_TREE()->cache_size + 1 >= REDBLACK_CACHE_SIZE) {
+        // We're out of cache, just quit
+        return LEAF;
+    }
     redblack_node_t * redblack_nodes = GET_SHAPE_TREE()->shape_cache;
     redblack_node_t * node = &redblack_nodes[(GET_SHAPE_TREE()->cache_size)++];
     node->key = key;
@@ -414,18 +432,21 @@ rb_shape_alloc_new_child(ID id, rb_shape_t * shape, enum shape_type shape_type)
 
     switch (shape_type) {
       case SHAPE_IVAR:
+        if (UNLIKELY(shape->next_iv_index >= shape->capacity)) {
+            RUBY_ASSERT(shape->next_iv_index == shape->capacity);
+            new_shape->capacity = (uint32_t)rb_malloc_grow_capa(shape->capacity, sizeof(VALUE));
+        }
+        RUBY_ASSERT(new_shape->capacity > shape->next_iv_index);
         new_shape->next_iv_index = shape->next_iv_index + 1;
         if (new_shape->next_iv_index > ANCESTOR_CACHE_THRESHOLD) {
             redblack_cache_ancestors(new_shape);
         }
         break;
-      case SHAPE_CAPACITY_CHANGE:
       case SHAPE_FROZEN:
       case SHAPE_T_OBJECT:
         new_shape->next_iv_index = shape->next_iv_index;
         break;
       case SHAPE_OBJ_TOO_COMPLEX:
-      case SHAPE_INITIAL_CAPACITY:
       case SHAPE_ROOT:
         rb_bug("Unreachable");
         break;
@@ -444,64 +465,60 @@ get_next_shape_internal(rb_shape_t * shape, ID id, enum shape_type shape_type, b
 
     *variation_created = false;
 
-    if (GET_SHAPE_TREE()->next_shape_id <= MAX_SHAPE_ID) {
-        RB_VM_LOCK_ENTER();
-        {
-            // If the current shape has children
-            if (shape->edges) {
-                // Check if it only has one child
-                if (SINGLE_CHILD_P(shape->edges)) {
-                    rb_shape_t * child = SINGLE_CHILD(shape->edges);
-                    // If the one child has a matching edge name, then great,
-                    // we found what we want.
-                    if (child->edge_name == id) {
-                        res = child;
-                    }
-                    else {
-                        // Otherwise we're going to have to create a new shape
-                        // and insert it as a child node, so create an id
-                        // table and insert the existing child
-                        shape->edges = rb_id_table_create(2);
-                        rb_id_table_insert(shape->edges, child->edge_name, (VALUE)child);
-                    }
-                }
-                else {
-                    // If it has more than one child, do a hash lookup to find it.
-                    VALUE lookup_result;
-                    if (rb_id_table_lookup(shape->edges, id, &lookup_result)) {
-                        res = (rb_shape_t *)lookup_result;
-                    }
-                }
-
-                // If the shape we were looking for above was found,
-                // then `res` will be set to the child.  If it isn't set, then
-                // we know we need a new child shape, and that we must insert
-                // it in to the table.
-                if (!res) {
-                    if (new_variations_allowed) {
-                        *variation_created = true;
-                        rb_shape_t * new_shape = rb_shape_alloc_new_child(id, shape, shape_type);
-                        rb_id_table_insert(shape->edges, id, (VALUE)new_shape);
-                        res = new_shape;
-                    }
-                    else {
-                        res = rb_shape_get_shape_by_id(OBJ_TOO_COMPLEX_SHAPE_ID);
-                    }
+    RB_VM_LOCK_ENTER();
+    {
+        // If the current shape has children
+        if (shape->edges) {
+            // Check if it only has one child
+            if (SINGLE_CHILD_P(shape->edges)) {
+                rb_shape_t * child = SINGLE_CHILD(shape->edges);
+                // If the one child has a matching edge name, then great,
+                // we found what we want.
+                if (child->edge_name == id) {
+                    res = child;
                 }
             }
             else {
-                // If the shape didn't have any outgoing edges, then create
-                // the new outgoing edge and tag the pointer.
+                // If it has more than one child, do a hash lookup to find it.
+                VALUE lookup_result;
+                if (rb_id_table_lookup(shape->edges, id, &lookup_result)) {
+                    res = (rb_shape_t *)lookup_result;
+                }
+            }
+        }
+
+        // If we didn't find the shape we're looking for we create it.
+        if (!res) {
+            // If we're not allowed to create a new variation, of if we're out of shapes
+            // we return TOO_COMPLEX_SHAPE.
+            if (!new_variations_allowed || GET_SHAPE_TREE()->next_shape_id > MAX_SHAPE_ID) {
+                res = rb_shape_get_shape_by_id(OBJ_TOO_COMPLEX_SHAPE_ID);
+            }
+            else {
                 rb_shape_t * new_shape = rb_shape_alloc_new_child(id, shape, shape_type);
-                shape->edges = TAG_SINGLE_CHILD(new_shape);
+
+                if (!shape->edges) {
+                    // If the shape had no edge yet, we can directly set the new child
+                    shape->edges = TAG_SINGLE_CHILD(new_shape);
+                }
+                else {
+                    // If the edge was single child we need to allocate a table.
+                    if (SINGLE_CHILD_P(shape->edges)) {
+                        rb_shape_t * old_child = SINGLE_CHILD(shape->edges);
+                        shape->edges = rb_id_table_create(2);
+                        rb_id_table_insert(shape->edges, old_child->edge_name, (VALUE)old_child);
+                    }
+
+                    rb_id_table_insert(shape->edges, new_shape->edge_name, (VALUE)new_shape);
+                    *variation_created = true;
+                }
+
                 res = new_shape;
             }
         }
-        RB_VM_LOCK_LEAVE();
     }
-    else {
-        res = rb_shape_get_shape_by_id(OBJ_TOO_COMPLEX_SHAPE_ID);
-    }
+    RB_VM_LOCK_LEAVE();
+
     return res;
 }
 
@@ -526,7 +543,7 @@ move_iv(VALUE obj, ID id, attr_index_t from, attr_index_t to)
       default: {
         struct gen_ivtbl *ivtbl;
         rb_gen_ivtbl_get(obj, id, &ivtbl);
-        ivtbl->ivptr[to] = ivtbl->ivptr[from];
+        ivtbl->as.shape.ivptr[to] = ivtbl->as.shape.ivptr[from];
         break;
       }
     }
@@ -557,7 +574,7 @@ remove_shape_recursive(VALUE obj, ID id, rb_shape_t * shape, VALUE * removed)
               default: {
                 struct gen_ivtbl *ivtbl;
                 rb_gen_ivtbl_get(obj, id, &ivtbl);
-                *removed = ivtbl->ivptr[index];
+                *removed = ivtbl->as.shape.ivptr[index];
                 break;
               }
             }
@@ -570,8 +587,16 @@ remove_shape_recursive(VALUE obj, ID id, rb_shape_t * shape, VALUE * removed)
             // We found a new parent.  Create a child of the new parent that
             // has the same attributes as this shape.
             if (new_parent) {
+                if (UNLIKELY(new_parent->type == SHAPE_OBJ_TOO_COMPLEX)) {
+                    return new_parent;
+                }
+
                 bool dont_care;
                 rb_shape_t * new_child = get_next_shape_internal(new_parent, shape->edge_name, shape->type, &dont_care, true);
+                if (UNLIKELY(new_child->type == SHAPE_OBJ_TOO_COMPLEX)) {
+                    return new_child;
+                }
+
                 new_child->capacity = shape->capacity;
                 if (new_child->type == SHAPE_IVAR) {
                     move_iv(obj, id, shape->next_iv_index - 1, new_child->next_iv_index - 1);
@@ -588,13 +613,22 @@ remove_shape_recursive(VALUE obj, ID id, rb_shape_t * shape, VALUE * removed)
     }
 }
 
-void
+bool
 rb_shape_transition_shape_remove_ivar(VALUE obj, ID id, rb_shape_t *shape, VALUE * removed)
 {
+    if (UNLIKELY(shape->type == SHAPE_OBJ_TOO_COMPLEX)) {
+        return false;
+    }
+
     rb_shape_t * new_shape = remove_shape_recursive(obj, id, shape, removed);
     if (new_shape) {
+        if (UNLIKELY(new_shape->type == SHAPE_OBJ_TOO_COMPLEX)) {
+            return false;
+        }
+
         rb_shape_set_shape(obj, new_shape);
     }
+    return true;
 }
 
 rb_shape_t *
@@ -637,7 +671,9 @@ rb_shape_t *
 rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
 {
     RUBY_ASSERT(!is_instance_id(id) || RTEST(rb_sym2str(ID2SYM(id))));
-    RUBY_ASSERT(shape->type != SHAPE_OBJ_TOO_COMPLEX);
+    if (UNLIKELY(shape->type == SHAPE_OBJ_TOO_COMPLEX)) {
+        return shape;
+    }
 
     bool allow_new_shape = true;
 
@@ -647,7 +683,7 @@ rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
     }
 
     bool variation_created = false;
-    rb_shape_t * new_shape = get_next_shape_internal(shape, id, SHAPE_IVAR, &variation_created, allow_new_shape);
+    rb_shape_t *new_shape = get_next_shape_internal(shape, id, SHAPE_IVAR, &variation_created, allow_new_shape);
 
     // Check if we should update max_iv_count on the object's class
     if (BUILTIN_TYPE(obj) == T_OBJECT) {
@@ -674,23 +710,60 @@ rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
     return new_shape;
 }
 
-static inline rb_shape_t *
-rb_shape_transition_shape_capa_create(rb_shape_t* shape, size_t new_capacity)
+// Same as rb_shape_get_iv_index, but uses a provided valid shape id and index
+// to return a result faster if branches of the shape tree are closely related.
+bool
+rb_shape_get_iv_index_with_hint(shape_id_t shape_id, ID id, attr_index_t *value, shape_id_t *shape_id_hint)
 {
-    RUBY_ASSERT(new_capacity < (size_t)MAX_IVARS);
+    attr_index_t index_hint = *value;
+    rb_shape_t *shape = rb_shape_get_shape_by_id(shape_id);
+    rb_shape_t *initial_shape = shape;
 
-    ID edge_name = rb_make_temporary_id(new_capacity);
-    bool dont_care;
-    rb_shape_t * new_shape = get_next_shape_internal(shape, edge_name, SHAPE_CAPACITY_CHANGE, &dont_care, true);
-    RUBY_ASSERT(rb_shape_id(new_shape) != OBJ_TOO_COMPLEX_SHAPE_ID);
-    new_shape->capacity = (uint32_t)new_capacity;
-    return new_shape;
-}
+    if (*shape_id_hint == INVALID_SHAPE_ID) {
+        *shape_id_hint = shape_id;
+        return rb_shape_get_iv_index(shape, id, value);
+    }
 
-rb_shape_t *
-rb_shape_transition_shape_capa(rb_shape_t* shape)
-{
-    return rb_shape_transition_shape_capa_create(shape, rb_malloc_grow_capa(shape->capacity, sizeof(VALUE)));
+    rb_shape_t * shape_hint = rb_shape_get_shape_by_id(*shape_id_hint);
+
+    // We assume it's likely shape_id_hint and shape_id have a close common
+    // ancestor, so we check up to ANCESTOR_SEARCH_MAX_DEPTH ancestors before
+    // eventually using the index, as in case of a match it will be faster.
+    // However if the shape doesn't have an index, we walk the entire tree.
+    int depth = INT_MAX;
+    if (shape->ancestor_index && shape->next_iv_index >= ANCESTOR_CACHE_THRESHOLD) {
+        depth = ANCESTOR_SEARCH_MAX_DEPTH;
+    }
+
+    while (depth > 0 && shape->next_iv_index > index_hint) {
+        while (shape_hint->next_iv_index > shape->next_iv_index) {
+            shape_hint = rb_shape_get_parent(shape_hint);
+        }
+
+        if (shape_hint == shape) {
+            // We've found a common ancestor so use the index hint
+            *value = index_hint;
+            *shape_id_hint = rb_shape_id(shape);
+            return true;
+        }
+        if (shape->edge_name == id) {
+            // We found the matching id before a common ancestor
+            *value = shape->next_iv_index - 1;
+            *shape_id_hint = rb_shape_id(shape);
+            return true;
+        }
+
+        shape = rb_shape_get_parent(shape);
+        depth--;
+    }
+
+    // If the original shape had an index but its ancestor doesn't
+    // we switch back to the original one as it will be faster.
+    if (!shape->ancestor_index && initial_shape->ancestor_index) {
+        shape = initial_shape;
+    }
+    *shape_id_hint = shape_id;
+    return rb_shape_get_iv_index(shape, id, value);
 }
 
 bool
@@ -723,9 +796,7 @@ rb_shape_get_iv_index(rb_shape_t * shape, ID id, attr_index_t *value)
                     RUBY_ASSERT(shape->next_iv_index > 0);
                     *value = shape->next_iv_index - 1;
                     return true;
-                  case SHAPE_CAPACITY_CHANGE:
                   case SHAPE_ROOT:
-                  case SHAPE_INITIAL_CAPACITY:
                   case SHAPE_T_OBJECT:
                     return false;
                   case SHAPE_OBJ_TOO_COMPLEX:
@@ -791,8 +862,6 @@ rb_shape_traverse_from_new_root(rb_shape_t *initial_shape, rb_shape_t *dest_shap
         }
         break;
       case SHAPE_ROOT:
-      case SHAPE_CAPACITY_CHANGE:
-      case SHAPE_INITIAL_CAPACITY:
       case SHAPE_T_OBJECT:
         break;
       case SHAPE_OBJ_TOO_COMPLEX:
@@ -806,12 +875,18 @@ rb_shape_traverse_from_new_root(rb_shape_t *initial_shape, rb_shape_t *dest_shap
 rb_shape_t *
 rb_shape_rebuild_shape(rb_shape_t * initial_shape, rb_shape_t * dest_shape)
 {
+    RUBY_ASSERT(rb_shape_id(initial_shape) != OBJ_TOO_COMPLEX_SHAPE_ID);
+    RUBY_ASSERT(rb_shape_id(dest_shape) != OBJ_TOO_COMPLEX_SHAPE_ID);
+
     rb_shape_t * midway_shape;
 
     RUBY_ASSERT(initial_shape->type == SHAPE_T_OBJECT);
 
     if (dest_shape->type != initial_shape->type) {
         midway_shape = rb_shape_rebuild_shape(initial_shape, rb_shape_get_parent(dest_shape));
+        if (UNLIKELY(rb_shape_id(midway_shape) == OBJ_TOO_COMPLEX_SHAPE_ID)) {
+            return midway_shape;
+        }
     }
     else {
         midway_shape = initial_shape;
@@ -819,17 +894,10 @@ rb_shape_rebuild_shape(rb_shape_t * initial_shape, rb_shape_t * dest_shape)
 
     switch ((enum shape_type)dest_shape->type) {
       case SHAPE_IVAR:
-        if (midway_shape->capacity <= midway_shape->next_iv_index) {
-            // There isn't enough room to write this IV, so we need to increase the capacity
-            midway_shape = rb_shape_transition_shape_capa(midway_shape);
-        }
-
         midway_shape = rb_shape_get_next_iv_shape(midway_shape, dest_shape->edge_name);
         break;
       case SHAPE_ROOT:
       case SHAPE_FROZEN:
-      case SHAPE_CAPACITY_CHANGE:
-      case SHAPE_INITIAL_CAPACITY:
       case SHAPE_T_OBJECT:
         break;
       case SHAPE_OBJ_TOO_COMPLEX:
@@ -1099,7 +1167,7 @@ Init_default_shapes(void)
     id_t_object = rb_make_internal_id();
 
 #ifdef HAVE_MMAP
-    rb_shape_tree_ptr->shape_cache = (redblack_node_t *)mmap(NULL, rb_size_mul_or_raise(SHAPE_BUFFER_SIZE * 32, sizeof(redblack_node_t), rb_eRuntimeError),
+    rb_shape_tree_ptr->shape_cache = (redblack_node_t *)mmap(NULL, rb_size_mul_or_raise(REDBLACK_CACHE_SIZE, sizeof(redblack_node_t), rb_eRuntimeError),
                          PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     rb_shape_tree_ptr->cache_size = 0;
 #endif
@@ -1110,8 +1178,8 @@ Init_default_shapes(void)
     }
 
     // Root shape
-    rb_shape_t * root = rb_shape_alloc_with_parent_id(0, INVALID_SHAPE_ID);
-    root->capacity = (uint32_t)((rb_size_pool_slot_size(0) - offsetof(struct RObject, as.ary)) / sizeof(VALUE));
+    rb_shape_t *root = rb_shape_alloc_with_parent_id(0, INVALID_SHAPE_ID);
+    root->capacity = 0;
     root->type = SHAPE_ROOT;
     root->size_pool_index = 0;
     GET_SHAPE_TREE()->root_shape = root;
@@ -1119,9 +1187,8 @@ Init_default_shapes(void)
 
     // Shapes by size pool
     for (int i = 1; i < SIZE_POOL_COUNT; i++) {
-        size_t capa = ((rb_size_pool_slot_size(i) - offsetof(struct RObject, as.ary)) / sizeof(VALUE));
-        rb_shape_t * new_shape = rb_shape_transition_shape_capa_create(root, capa);
-        new_shape->type = SHAPE_INITIAL_CAPACITY;
+        rb_shape_t *new_shape = rb_shape_alloc_with_parent_id(0, INVALID_SHAPE_ID);
+        new_shape->type = SHAPE_ROOT;
         new_shape->size_pool_index = i;
         new_shape->ancestor_index = LEAF;
         RUBY_ASSERT(rb_shape_id(new_shape) == (shape_id_t)i);
@@ -1133,6 +1200,7 @@ Init_default_shapes(void)
         bool dont_care;
         rb_shape_t * t_object_shape =
             get_next_shape_internal(shape, id_t_object, SHAPE_T_OBJECT, &dont_care, true);
+        t_object_shape->capacity = (uint32_t)((rb_size_pool_slot_size(i) - offsetof(struct RObject, as.ary)) / sizeof(VALUE));
         t_object_shape->edges = rb_id_table_create(0);
         t_object_shape->ancestor_index = LEAF;
         RUBY_ASSERT(rb_shape_id(t_object_shape) == (shape_id_t)(i + SIZE_POOL_COUNT));
@@ -1182,6 +1250,10 @@ Init_shape(void)
     rb_define_const(rb_cShape, "SPECIAL_CONST_SHAPE_ID", INT2NUM(SPECIAL_CONST_SHAPE_ID));
     rb_define_const(rb_cShape, "OBJ_TOO_COMPLEX_SHAPE_ID", INT2NUM(OBJ_TOO_COMPLEX_SHAPE_ID));
     rb_define_const(rb_cShape, "SHAPE_MAX_VARIATIONS", INT2NUM(SHAPE_MAX_VARIATIONS));
+    rb_define_const(rb_cShape, "SIZEOF_RB_SHAPE_T", INT2NUM(sizeof(rb_shape_t)));
+    rb_define_const(rb_cShape, "SIZEOF_REDBLACK_NODE_T", INT2NUM(sizeof(redblack_node_t)));
+    rb_define_const(rb_cShape, "SHAPE_BUFFER_SIZE", INT2NUM(sizeof(rb_shape_t) * SHAPE_BUFFER_SIZE));
+    rb_define_const(rb_cShape, "REDBLACK_CACHE_SIZE", INT2NUM(sizeof(redblack_node_t) * REDBLACK_CACHE_SIZE));
 
     rb_define_singleton_method(rb_cShape, "transition_tree", shape_transition_tree, 0);
     rb_define_singleton_method(rb_cShape, "find_by_id", rb_shape_find_by_id, 1);
