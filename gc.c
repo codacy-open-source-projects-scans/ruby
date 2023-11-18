@@ -2769,7 +2769,7 @@ size_pool_idx_for_size(size_t size)
     size_t size_pool_idx = 64 - nlz_int64(slot_count - 1);
 
     if (size_pool_idx >= SIZE_POOL_COUNT) {
-        rb_bug("size_pool_idx_for_size: allocation size too large");
+        rb_bug("size_pool_idx_for_size: allocation size too large (size=%lu, size_pool_idx=%lu)", size, size_pool_idx);
     }
 
 #if RGENGC_CHECK_MODE
@@ -3188,7 +3188,7 @@ rb_objspace_data_type_memsize(VALUE obj)
     size_t size = 0;
     if (RTYPEDDATA_P(obj)) {
         const rb_data_type_t *type = RTYPEDDATA_TYPE(obj);
-        const void *ptr = RTYPEDDATA_DATA(obj);
+        const void *ptr = RTYPEDDATA_GET_DATA(obj);
 
         if (RTYPEDDATA_TYPE(obj)->flags & RUBY_TYPED_EMBEDDABLE && !RTYPEDDATA_EMBEDDED_P(obj)) {
 #ifdef HAVE_MALLOC_USABLE_SIZE
@@ -3471,10 +3471,10 @@ obj_free_object_id(rb_objspace_t *objspace, VALUE obj)
 static bool
 rb_data_free(rb_objspace_t *objspace, VALUE obj)
 {
-    if (DATA_PTR(obj)) {
+    void *data = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
+    if (data) {
         int free_immediately = false;
         void (*dfree)(void *);
-        void *data = DATA_PTR(obj);
 
         if (RTYPEDDATA_P(obj)) {
             free_immediately = (RANY(obj)->as.typeddata.type->flags & RUBY_TYPED_FREE_IMMEDIATELY) != 0;
@@ -4943,24 +4943,22 @@ obj_memsize_of(VALUE obj, int use_all_types)
         break;
       case T_MODULE:
       case T_CLASS:
-        if (RCLASS_EXT(obj)) {
-            if (RCLASS_M_TBL(obj)) {
-                size += rb_id_table_memsize(RCLASS_M_TBL(obj));
-            }
-            // class IV sizes are allocated as powers of two
-            size += SIZEOF_VALUE << bit_length(RCLASS_IV_COUNT(obj));
-            if (RCLASS_CVC_TBL(obj)) {
-                size += rb_id_table_memsize(RCLASS_CVC_TBL(obj));
-            }
-            if (RCLASS_EXT(obj)->const_tbl) {
-                size += rb_id_table_memsize(RCLASS_EXT(obj)->const_tbl);
-            }
-            if (RCLASS_CC_TBL(obj)) {
-                size += cc_table_memsize(RCLASS_CC_TBL(obj));
-            }
-            if (FL_TEST_RAW(obj, RCLASS_SUPERCLASSES_INCLUDE_SELF)) {
-                size += (RCLASS_SUPERCLASS_DEPTH(obj) + 1) * sizeof(VALUE);
-            }
+        if (RCLASS_M_TBL(obj)) {
+            size += rb_id_table_memsize(RCLASS_M_TBL(obj));
+        }
+        // class IV sizes are allocated as powers of two
+        size += SIZEOF_VALUE << bit_length(RCLASS_IV_COUNT(obj));
+        if (RCLASS_CVC_TBL(obj)) {
+            size += rb_id_table_memsize(RCLASS_CVC_TBL(obj));
+        }
+        if (RCLASS_EXT(obj)->const_tbl) {
+            size += rb_id_table_memsize(RCLASS_EXT(obj)->const_tbl);
+        }
+        if (RCLASS_CC_TBL(obj)) {
+            size += cc_table_memsize(RCLASS_CC_TBL(obj));
+        }
+        if (FL_TEST_RAW(obj, RCLASS_SUPERCLASSES_INCLUDE_SELF)) {
+            size += (RCLASS_SUPERCLASS_DEPTH(obj) + 1) * sizeof(VALUE);
         }
         break;
       case T_ICLASS:
@@ -4969,7 +4967,7 @@ obj_memsize_of(VALUE obj, int use_all_types)
                 size += rb_id_table_memsize(RCLASS_M_TBL(obj));
             }
         }
-        if (RCLASS_EXT(obj) && RCLASS_CC_TBL(obj)) {
+        if (RCLASS_CC_TBL(obj)) {
             size += cc_table_memsize(RCLASS_CC_TBL(obj));
         }
         break;
@@ -10699,7 +10697,7 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
       case T_DATA:
         /* Call the compaction callback, if it exists */
         {
-            void *const ptr = DATA_PTR(obj);
+            void *const ptr = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
             if (ptr) {
                 if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(any->as.typeddata.type)) {
                     gc_ref_update_from_offset(objspace, obj);

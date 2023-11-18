@@ -723,7 +723,7 @@ module Prism
           nil
         ),
         nil,
-        [:*, :&, :"...", :a],
+        [:"...", :a],
         Location(),
         nil,
         Location(),
@@ -800,7 +800,7 @@ module Prism
         nil,
         ParametersNode([], [], nil, [], [], ForwardingParameterNode(), nil),
         nil,
-        [:*, :&, :"..."],
+        [:"..."],
         Location(),
         nil,
         Location(),
@@ -1419,6 +1419,266 @@ module Prism
       source = "{x:'y':}"
       assert_errors expression(source), source, [
         ["Expected a closing delimiter for the string literal", 7..7],
+      ]
+    end
+
+    def test_while_endless_method
+      source = "while def f = g do end"
+      assert_errors expression(source), source, [
+        ['Expected a predicate expression for the `while` statement', 22..22],
+        ['Cannot parse the expression', 22..22],
+        ['Expected an `end` to close the `while` statement', 22..22]
+      ]
+    end
+
+    def test_match_plus
+      source = <<~RUBY
+        a in b + c
+        a => b + c
+      RUBY
+      message1 = 'Expected a newline or semicolon after the statement'
+      message2 = 'Cannot parse the expression'
+      assert_errors expression(source), source, [
+        [message1, 6..6],
+        [message2, 6..6],
+        [message1, 17..17],
+        [message2, 17..17],
+      ]
+    end
+
+    def test_rational_number_with_exponential_portion
+      source = '1e1r; 1e1ri'
+      message = 'Expected a newline or semicolon after the statement'
+      assert_errors expression(source), source, [
+        [message, 3..3],
+        [message, 9..9]
+      ]
+    end
+
+    def test_check_value_expression
+      source = <<~RUBY
+        1 => ^(return)
+        while true
+          1 => ^(break)
+          1 => ^(next)
+          1 => ^(redo)
+          1 => ^(retry)
+          1 => ^(2 => a)
+        end
+        1 => ^(if 1; (return) else (return) end)
+        1 => ^(unless 1; (return) else (return) end)
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 7..13],
+        [message, 35..40],
+        [message, 51..55],
+        [message, 66..70],
+        [message, 81..86],
+        [message, 97..103],
+        [message, 123..129],
+        [message, 168..174],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_statement
+      source = <<~RUBY
+        if (return)
+        end
+        unless (return)
+        end
+        while (return)
+        end
+        until (return)
+        end
+        case (return)
+        when 1
+        end
+        class A < (return)
+        end
+        for x in (return)
+        end
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 4..10],
+        [message, 24..30],
+        [message, 43..49],
+        [message, 62..68],
+        [message, 80..86],
+        [message, 110..116],
+        [message, 132..138],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_def
+      source = <<~RUBY
+        def (return).x
+        end
+        def x(a = return)
+        end
+        def x(a: return)
+        end
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 5..11],
+        [message, 29..35],
+        [message, 50..56],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_assignment
+      source = <<~RUBY
+        a = return
+        a = 1, return
+        a, b = return, 1
+        a, b = 1, *return
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 4..10],
+        [message, 18..24],
+        [message, 32..38],
+        [message, 53..59],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_modifier
+      source = <<~RUBY
+        1 if (return)
+        1 unless (return)
+        1 while (return)
+        1 until (return)
+        (return) => a
+        (return) in a
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 6..12],
+        [message, 24..30],
+        [message, 41..47],
+        [message, 58..64],
+        [message, 67..73],
+        [message, 81..87]
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_expression
+      source = <<~RUBY
+        (return) ? 1 : 1
+        (return)..1
+        1..(return)
+        (return)...1
+        1...(return)
+        (..(return))
+        (...(return))
+        ((return)..)
+        ((return)...)
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 1..7],
+        [message, 18..24],
+        [message, 33..39],
+        [message, 42..48],
+        [message, 59..65],
+        [message, 71..77],
+        [message, 85..91],
+        [message, 96..102],
+        [message, 109..115]
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_hash
+      source = <<~RUBY
+        { return => 1 }
+        { 1 => return }
+        { a: return }
+        { **return }
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 2..8],
+        [message, 23..29],
+        [message, 37..43],
+        [message, 50..56],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_call
+      source = <<~RUBY
+        (return).foo
+        (return).(1)
+        (return)[1]
+        (return)[1] = 2
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 1..7],
+        [message, 14..20],
+        [message, 27..33],
+        [message, 39..45],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_arguments
+      source = <<~RUBY
+        foo(return)
+        foo(1, return)
+        foo(*return)
+        foo(**return)
+        foo(&return)
+        foo(return => 1)
+        foo(:a => return)
+        foo(a: return)
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 4..10],
+        [message, 19..25],
+        [message, 32..38],
+        [message, 46..52],
+        [message, 59..65],
+        [message, 71..77],
+        [message, 94..100],
+        [message, 109..115],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_unary_call
+      source = <<~RUBY
+        +(return)
+        not return
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 2..8],
+        [message, 14..20],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_binary_call
+      source = <<~RUBY
+        1 + (return)
+        (return) + 1
+        1 and (return)
+        (return) and 1
+        1 or (return)
+        (return) or 1
+      RUBY
+      message = 'Unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 5..11],
+        [message, 14..20],
+        [message, 42..48],
+        [message, 71..77],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_trailing_comma_in_calls
+      assert_errors expression("foo 1,"), "foo 1,", [
+        ["Expected an argument", 5..6]
       ]
     end
 
