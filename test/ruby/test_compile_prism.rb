@@ -268,6 +268,28 @@ module Prism
 
     def test_LocalVariableWriteNode
       assert_prism_eval("pit = 1")
+      assert_prism_eval(<<-CODE)
+        a = 0
+        [].each do
+          a = 1
+        end
+        a
+      CODE
+
+      assert_prism_eval(<<-CODE)
+        a = 1
+        d = 1
+        [1].each do
+          b = 2
+          a = 2
+          [2].each do
+            c = 3
+            d = 4
+            a = 2
+          end
+        end
+        [a, d]
+      CODE
     end
 
     def test_MatchWriteNode
@@ -328,6 +350,14 @@ module Prism
 
     def test_LocalVariableTargetNode
       assert_prism_eval("pit, pit1 = 1")
+      assert_prism_eval(<<-CODE)
+        a = 1
+        [1].each do
+          c = 2
+          a, b = 2
+        end
+        a
+      CODE
     end
 
     def test_MultiTargetNode
@@ -387,6 +417,7 @@ module Prism
     def test_InterpolatedStringNode
       assert_prism_eval('$pit = 1; "1 #$pit 1"')
       assert_prism_eval('"1 #{1 + 2} 1"')
+      assert_prism_eval('"Prism" "::" "TestCompilePrism"')
     end
 
     def test_InterpolatedSymbolNode
@@ -427,10 +458,8 @@ module Prism
 
       assert_prism_eval('/pit/me')
       assert_prism_eval('/pit/ne')
-    end
 
-    def test_StringConcatNode
-      assert_prism_eval('"Prism" "::" "TestCompilePrism"')
+      assert_prism_eval('2.times.map { /#{1}/o }')
     end
 
     def test_StringNode
@@ -732,6 +761,10 @@ module Prism
     def test_YieldNode
       assert_prism_eval("def prism_test_yield_node; yield; end")
       assert_prism_eval("def prism_test_yield_node; yield 1, 2; end")
+
+      # Test case where there's a call directly after the yield call
+      assert_prism_eval("def prism_test_yield_node; yield; 1; end")
+      assert_prism_eval("def prism_test_yield_node; yield 1, 2; 1; end")
     end
 
     ############################################################################

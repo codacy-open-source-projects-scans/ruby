@@ -654,12 +654,19 @@ rb_shape_get_next_iv_shape(rb_shape_t* shape, ID id)
 }
 
 rb_shape_t *
-rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
+rb_shape_get_next(rb_shape_t *shape, VALUE obj, ID id)
 {
     RUBY_ASSERT(!is_instance_id(id) || RTEST(rb_sym2str(ID2SYM(id))));
     if (UNLIKELY(shape->type == SHAPE_OBJ_TOO_COMPLEX)) {
         return shape;
     }
+
+#if RUBY_DEBUG
+    attr_index_t index;
+    if (rb_shape_get_iv_index(shape, id, &index)) {
+        rb_bug("rb_shape_get_next: trying to create ivar that already exists at index %u", index);
+    }
+#endif
 
     bool allow_new_shape = true;
 
@@ -752,48 +759,72 @@ rb_shape_get_iv_index_with_hint(shape_id_t shape_id, ID id, attr_index_t *value,
     return rb_shape_get_iv_index(shape, id, value);
 }
 
+static bool
+shape_get_iv_index(rb_shape_t *shape, ID id, attr_index_t *value)
+{
+    while (shape->parent_id != INVALID_SHAPE_ID) {
+        if (shape->edge_name == id) {
+            enum shape_type shape_type;
+            shape_type = (enum shape_type)shape->type;
+
+            switch (shape_type) {
+              case SHAPE_IVAR:
+                RUBY_ASSERT(shape->next_iv_index > 0);
+                *value = shape->next_iv_index - 1;
+                return true;
+              case SHAPE_ROOT:
+              case SHAPE_T_OBJECT:
+                return false;
+              case SHAPE_OBJ_TOO_COMPLEX:
+              case SHAPE_FROZEN:
+                rb_bug("Ivar should not exist on transition");
+            }
+        }
+
+        shape = rb_shape_get_parent(shape);
+    }
+
+    return false;
+}
+
+static bool
+shape_cache_get_iv_index(rb_shape_t *shape, ID id, attr_index_t *value)
+{
+    if (shape->ancestor_index && shape->next_iv_index >= ANCESTOR_CACHE_THRESHOLD) {
+        redblack_node_t *node = redblack_find(shape->ancestor_index, id);
+        if (node) {
+            rb_shape_t *shape = redblack_value(node);
+            *value = shape->next_iv_index - 1;
+
+#if RUBY_DEBUG
+            attr_index_t shape_tree_index;
+            RUBY_ASSERT(shape_get_iv_index(shape, id, &shape_tree_index));
+            RUBY_ASSERT(shape_tree_index == *value);
+#endif
+
+            return true;
+        }
+
+        /* Verify the cache is correct by checking that this instance variable
+        * does not exist in the shape tree either. */
+        RUBY_ASSERT(!shape_get_iv_index(shape, id, value));
+    }
+
+    return false;
+}
+
 bool
-rb_shape_get_iv_index(rb_shape_t * shape, ID id, attr_index_t *value)
+rb_shape_get_iv_index(rb_shape_t *shape, ID id, attr_index_t *value)
 {
     // It doesn't make sense to ask for the index of an IV that's stored
     // on an object that is "too complex" as it uses a hash for storing IVs
     RUBY_ASSERT(rb_shape_id(shape) != OBJ_TOO_COMPLEX_SHAPE_ID);
 
-    while (shape->parent_id != INVALID_SHAPE_ID) {
-        // Try the ancestor cache if it's available
-        if (shape->ancestor_index && shape->next_iv_index >= ANCESTOR_CACHE_THRESHOLD) {
-            redblack_node_t * node = redblack_find(shape->ancestor_index, id);
-            if (node) {
-                rb_shape_t * shape = redblack_value(node);
-                *value = shape->next_iv_index - 1;
-                return true;
-            }
-            else {
-                return false;
-            }
-        }
-        else {
-            if (shape->edge_name == id) {
-                enum shape_type shape_type;
-                shape_type = (enum shape_type)shape->type;
-
-                switch (shape_type) {
-                  case SHAPE_IVAR:
-                    RUBY_ASSERT(shape->next_iv_index > 0);
-                    *value = shape->next_iv_index - 1;
-                    return true;
-                  case SHAPE_ROOT:
-                  case SHAPE_T_OBJECT:
-                    return false;
-                  case SHAPE_OBJ_TOO_COMPLEX:
-                  case SHAPE_FROZEN:
-                    rb_bug("Ivar should not exist on transition");
-                }
-            }
-        }
-        shape = rb_shape_get_parent(shape);
+    if (!shape_cache_get_iv_index(shape, id, value)) {
+        return shape_get_iv_index(shape, id, value);
     }
-    return false;
+
+    return true;
 }
 
 void
@@ -1057,6 +1088,15 @@ rb_shape_shapes_available(VALUE self)
     return INT2NUM(MAX_SHAPE_ID - (GET_SHAPE_TREE()->next_shape_id - 1));
 }
 
+static VALUE
+rb_shape_exhaust(int argc, VALUE *argv, VALUE self)
+{
+    rb_check_arity(argc, 0, 1);
+    int offset = argc == 1 ? NUM2INT(argv[0]) : 0;
+    GET_SHAPE_TREE()->next_shape_id = MAX_SHAPE_ID - offset + 1;
+    return Qnil;
+}
+
 VALUE rb_obj_shape(rb_shape_t* shape);
 
 static enum rb_id_table_iterator_result collect_keys_and_values(ID key, VALUE value, void *ref)
@@ -1239,5 +1279,6 @@ Init_shape(void)
     rb_define_singleton_method(rb_cShape, "of", rb_shape_debug_shape, 1);
     rb_define_singleton_method(rb_cShape, "root_shape", rb_shape_root_shape, 0);
     rb_define_singleton_method(rb_cShape, "shapes_available", rb_shape_shapes_available, 0);
+    rb_define_singleton_method(rb_cShape, "exhaust_shapes", rb_shape_exhaust, -1);
 #endif
 }

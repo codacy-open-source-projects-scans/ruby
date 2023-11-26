@@ -11131,7 +11131,7 @@ struct ibf_load {
 
 struct pinned_list {
     long size;
-    VALUE * buffer;
+    VALUE buffer[1];
 };
 
 static void
@@ -11146,25 +11146,14 @@ pinned_list_mark(void *ptr)
     }
 }
 
-static void
-pinned_list_free(void *ptr)
-{
-    struct pinned_list *list = (struct pinned_list *)ptr;
-    xfree(list->buffer);
-    xfree(ptr);
-}
-
-static size_t
-pinned_list_memsize(const void *ptr)
-{
-    struct pinned_list *list = (struct pinned_list *)ptr;
-    return sizeof(struct pinned_list) + (list->size * sizeof(VALUE *));
-}
-
 static const rb_data_type_t pinned_list_type = {
     "pinned_list",
-    {pinned_list_mark, pinned_list_free, pinned_list_memsize,},
-    0, 0, RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_FREE_IMMEDIATELY
+    {
+        pinned_list_mark,
+        RUBY_DEFAULT_FREE,
+        NULL, // No external memory to report,
+    },
+    0, 0, RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_EMBEDDABLE
 };
 
 static VALUE
@@ -11198,13 +11187,10 @@ pinned_list_store(VALUE list, long offset, VALUE object)
 static VALUE
 pinned_list_new(long size)
 {
-    struct pinned_list * ptr;
-    VALUE obj_list =
-        TypedData_Make_Struct(0, struct pinned_list, &pinned_list_type, ptr);
-
-    ptr->buffer = xcalloc(size, sizeof(VALUE));
+    size_t memsize = offsetof(struct pinned_list, buffer) + size * sizeof(VALUE);
+    VALUE obj_list = rb_data_typed_object_zalloc(0, memsize, &pinned_list_type);
+    struct pinned_list * ptr = RTYPEDDATA_GET_DATA(obj_list);
     ptr->size = size;
-
     return obj_list;
 }
 
@@ -13202,14 +13188,13 @@ ibf_dump_free(void *ptr)
         st_free_table(dump->iseq_table);
         dump->iseq_table = 0;
     }
-    ruby_xfree(dump);
 }
 
 static size_t
 ibf_dump_memsize(const void *ptr)
 {
     struct ibf_dump *dump = (struct ibf_dump *)ptr;
-    size_t size = sizeof(*dump);
+    size_t size = 0;
     if (dump->iseq_table) size += st_memsize(dump->iseq_table);
     if (dump->global_buffer.obj_table) size += st_memsize(dump->global_buffer.obj_table);
     return size;
@@ -13218,7 +13203,7 @@ ibf_dump_memsize(const void *ptr)
 static const rb_data_type_t ibf_dump_type = {
     "ibf_dump",
     {ibf_dump_mark, ibf_dump_free, ibf_dump_memsize,},
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_EMBEDDABLE
 };
 
 static void
@@ -13281,8 +13266,6 @@ rb_iseq_ibf_dump(const rb_iseq_t *iseq, VALUE opt)
     ibf_dump_overwrite(dump, &header, sizeof(header), 0);
 
     str = dump->global_buffer.str;
-    ibf_dump_free(dump);
-    DATA_PTR(dump_obj) = NULL;
     RB_GC_GUARD(dump_obj);
     return str;
 }

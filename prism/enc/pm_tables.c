@@ -98,6 +98,30 @@ static uint8_t pm_encoding_cp855_table[256] = {
 
 /**
  * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding GB1988 character.
+ */
+static uint8_t pm_encoding_gb1988_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
  * piece of information about the corresponding IBM437 character.
  */
 static uint8_t pm_encoding_ibm437_table[256] = {
@@ -317,6 +341,126 @@ static uint8_t pm_encoding_ibm861_table[256] = {
  * piece of information about the corresponding IBM862 character.
  */
 static uint8_t pm_encoding_ibm862_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding IBM863 character.
+ */
+static uint8_t pm_encoding_ibm863_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding IBM864 character.
+ */
+static uint8_t pm_encoding_ibm864_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding IBM865 character.
+ */
+static uint8_t pm_encoding_ibm865_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding IBM866 character.
+ */
+static uint8_t pm_encoding_ibm866_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding IBM869 character.
+ */
+static uint8_t pm_encoding_ibm869_table[256] = {
 //  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
@@ -722,6 +866,102 @@ static uint8_t pm_encoding_koi8_r_table[256] = {
 
 /**
  * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding KOI8-U character.
+ */
+static uint8_t pm_encoding_koi8_u_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 3, 3, 0, 3, 3, 0, 0, 0, 0, 0, 3, 0, 0, // Ax
+    0, 0, 0, 7, 7, 0, 7, 7, 0, 0, 0, 0, 0, 7, 0, 0, // Bx
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // Cx
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // Dx
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // Ex
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding macCentEuro character.
+ */
+static uint8_t pm_encoding_mac_cent_euro_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding macCroatian character.
+ */
+static uint8_t pm_encoding_mac_croatian_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+ /**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding macCyrillic character.
+ */
+static uint8_t pm_encoding_mac_cyrillic_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ax
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Bx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Cx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
  * piece of information about the corresponding macGreek character.
  */
 static uint8_t pm_encoding_mac_greek_table[256] = {
@@ -838,6 +1078,30 @@ static uint8_t pm_encoding_mac_thai_table[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Dx
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Ex
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Fx
+};
+
+/**
+ * Each element of the following table contains a bitfield that indicates a
+ * piece of information about the corresponding TIS-620 character.
+ */
+static uint8_t pm_encoding_tis_620_table[256] = {
+//  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 2x
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, // 3x
+    0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // 4x
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, // 5x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 6x
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, // 7x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 8x
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 9x
+    0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // Ax
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // Bx
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // Cx
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 3, // Dx
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // Ex
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, // Fx
 };
 
 /**
@@ -1178,7 +1442,7 @@ pm_encoding_single_char_width(PRISM_ATTRIBUTE_UNUSED const uint8_t *b, PRISM_ATT
  * checking if it's a valid codepoint in KOI-8 and if it is returning 1.
  */
 static size_t
-pm_encoding_koi8_r_char_width(const uint8_t *b, PRISM_ATTRIBUTE_UNUSED ptrdiff_t n) {
+pm_encoding_koi8_char_width(const uint8_t *b, PRISM_ATTRIBUTE_UNUSED ptrdiff_t n) {
     return ((*b >= 0x20 && *b <= 0x7E) || (*b >= 0x80)) ? 1 : 0;
 }
 
@@ -1196,6 +1460,7 @@ pm_encoding_koi8_r_char_width(const uint8_t *b, PRISM_ATTRIBUTE_UNUSED ptrdiff_t
 PRISM_ENCODING_TABLE(cp850)
 PRISM_ENCODING_TABLE(cp852)
 PRISM_ENCODING_TABLE(cp855)
+PRISM_ENCODING_TABLE(gb1988)
 PRISM_ENCODING_TABLE(ibm437)
 PRISM_ENCODING_TABLE(ibm720)
 PRISM_ENCODING_TABLE(ibm737)
@@ -1206,6 +1471,11 @@ PRISM_ENCODING_TABLE(ibm857)
 PRISM_ENCODING_TABLE(ibm860)
 PRISM_ENCODING_TABLE(ibm861)
 PRISM_ENCODING_TABLE(ibm862)
+PRISM_ENCODING_TABLE(ibm863)
+PRISM_ENCODING_TABLE(ibm864)
+PRISM_ENCODING_TABLE(ibm865)
+PRISM_ENCODING_TABLE(ibm866)
+PRISM_ENCODING_TABLE(ibm869)
 PRISM_ENCODING_TABLE(iso_8859_1)
 PRISM_ENCODING_TABLE(iso_8859_2)
 PRISM_ENCODING_TABLE(iso_8859_3)
@@ -1222,6 +1492,10 @@ PRISM_ENCODING_TABLE(iso_8859_14)
 PRISM_ENCODING_TABLE(iso_8859_15)
 PRISM_ENCODING_TABLE(iso_8859_16)
 PRISM_ENCODING_TABLE(koi8_r)
+PRISM_ENCODING_TABLE(koi8_u)
+PRISM_ENCODING_TABLE(mac_cent_euro)
+PRISM_ENCODING_TABLE(mac_croatian)
+PRISM_ENCODING_TABLE(mac_cyrillic)
 PRISM_ENCODING_TABLE(mac_greek)
 PRISM_ENCODING_TABLE(mac_iceland)
 PRISM_ENCODING_TABLE(mac_roman)
@@ -1229,6 +1503,7 @@ PRISM_ENCODING_TABLE(mac_romania)
 PRISM_ENCODING_TABLE(mac_thai)
 PRISM_ENCODING_TABLE(mac_turkish)
 PRISM_ENCODING_TABLE(mac_ukraine)
+PRISM_ENCODING_TABLE(tis_620)
 PRISM_ENCODING_TABLE(windows_1250)
 PRISM_ENCODING_TABLE(windows_1251)
 PRISM_ENCODING_TABLE(windows_1252)
@@ -1289,6 +1564,16 @@ pm_encoding_t pm_encoding_cp855 = {
     .alnum_char = pm_encoding_cp855_alnum_char,
     .alpha_char = pm_encoding_cp855_alpha_char,
     .isupper_char = pm_encoding_cp855_isupper_char,
+    .multibyte = false
+};
+
+/** GB1988 */
+pm_encoding_t pm_encoding_gb1988 = {
+    .name = "GB1988",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_gb1988_alnum_char,
+    .alpha_char = pm_encoding_gb1988_alpha_char,
+    .isupper_char = pm_encoding_gb1988_isupper_char,
     .multibyte = false
 };
 
@@ -1389,6 +1674,56 @@ pm_encoding_t pm_encoding_ibm862 = {
     .alnum_char = pm_encoding_ibm862_alnum_char,
     .alpha_char = pm_encoding_ibm862_alpha_char,
     .isupper_char = pm_encoding_ibm862_isupper_char,
+    .multibyte = false
+};
+
+/** IBM863 */
+pm_encoding_t pm_encoding_ibm863 = {
+    .name = "IBM863",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_ibm863_alnum_char,
+    .alpha_char = pm_encoding_ibm863_alpha_char,
+    .isupper_char = pm_encoding_ibm863_isupper_char,
+    .multibyte = false
+};
+
+/** IBM864 */
+pm_encoding_t pm_encoding_ibm864 = {
+    .name = "IBM864",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_ibm864_alnum_char,
+    .alpha_char = pm_encoding_ibm864_alpha_char,
+    .isupper_char = pm_encoding_ibm864_isupper_char,
+    .multibyte = false
+};
+
+/** IBM866 */
+pm_encoding_t pm_encoding_ibm865 = {
+    .name = "IBM865",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_ibm865_alnum_char,
+    .alpha_char = pm_encoding_ibm865_alpha_char,
+    .isupper_char = pm_encoding_ibm865_isupper_char,
+    .multibyte = false
+};
+
+/** IBM866 */
+pm_encoding_t pm_encoding_ibm866 = {
+    .name = "IBM866",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_ibm866_alnum_char,
+    .alpha_char = pm_encoding_ibm866_alpha_char,
+    .isupper_char = pm_encoding_ibm866_isupper_char,
+    .multibyte = false
+};
+
+/** IBM869 */
+pm_encoding_t pm_encoding_ibm869 = {
+    .name = "IBM869",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_ibm869_alnum_char,
+    .alpha_char = pm_encoding_ibm869_alpha_char,
+    .isupper_char = pm_encoding_ibm869_isupper_char,
     .multibyte = false
 };
 
@@ -1545,10 +1880,50 @@ pm_encoding_t pm_encoding_iso_8859_16 = {
 /** KOI8-R */
 pm_encoding_t pm_encoding_koi8_r = {
     .name = "KOI8-R",
-    .char_width = pm_encoding_koi8_r_char_width,
+    .char_width = pm_encoding_koi8_char_width,
     .alnum_char = pm_encoding_koi8_r_alnum_char,
     .alpha_char = pm_encoding_koi8_r_alpha_char,
     .isupper_char = pm_encoding_koi8_r_isupper_char,
+    .multibyte = false
+};
+
+/** KOI8-U */
+pm_encoding_t pm_encoding_koi8_u = {
+    .name = "KOI8-U",
+    .char_width = pm_encoding_koi8_char_width,
+    .alnum_char = pm_encoding_koi8_u_alnum_char,
+    .alpha_char = pm_encoding_koi8_u_alpha_char,
+    .isupper_char = pm_encoding_koi8_u_isupper_char,
+    .multibyte = false
+};
+
+/** macCentEuro */
+pm_encoding_t pm_encoding_mac_cent_euro = {
+    .name = "macCentEuro",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_mac_cent_euro_alnum_char,
+    .alpha_char = pm_encoding_mac_cent_euro_alpha_char,
+    .isupper_char = pm_encoding_mac_cent_euro_isupper_char,
+    .multibyte = false
+};
+
+/** macCroatian */
+pm_encoding_t pm_encoding_mac_croatian = {
+    .name = "macCroatian",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_mac_croatian_alnum_char,
+    .alpha_char = pm_encoding_mac_croatian_alpha_char,
+    .isupper_char = pm_encoding_mac_croatian_isupper_char,
+    .multibyte = false
+};
+
+/** macCyrillic */
+pm_encoding_t pm_encoding_mac_cyrillic = {
+    .name = "macCyrillic",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_mac_cyrillic_alnum_char,
+    .alpha_char = pm_encoding_mac_cyrillic_alpha_char,
+    .isupper_char = pm_encoding_mac_cyrillic_isupper_char,
     .multibyte = false
 };
 
@@ -1619,6 +1994,16 @@ pm_encoding_t pm_encoding_mac_ukraine = {
     .alnum_char = pm_encoding_mac_ukraine_alnum_char,
     .alpha_char = pm_encoding_mac_ukraine_alpha_char,
     .isupper_char = pm_encoding_mac_ukraine_isupper_char,
+    .multibyte = false
+};
+
+/** TIS-620 */
+pm_encoding_t pm_encoding_tis_620 = {
+    .name = "TIS-620",
+    .char_width = pm_encoding_single_char_width,
+    .alnum_char = pm_encoding_tis_620_alnum_char,
+    .alpha_char = pm_encoding_tis_620_alpha_char,
+    .isupper_char = pm_encoding_tis_620_isupper_char,
     .multibyte = false
 };
 

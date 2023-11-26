@@ -83,13 +83,13 @@ module Prism
           CallNode(
             expression("1"),
             nil,
+            :+,
             Location(),
             nil,
             ArgumentsNode([MissingNode()], 0),
             nil,
             nil,
-            0,
-            :+
+            0
           )
         ]),
         Location(),
@@ -341,6 +341,7 @@ module Prism
       expected = CallNode(
         nil,
         nil,
+        :a,
         Location(),
         Location(),
         ArgumentsNode([
@@ -349,8 +350,7 @@ module Prism
         ], 1),
         Location(),
         nil,
-        0,
-        :a
+        0
       )
 
       assert_errors expected, "a(**kwargs, *args)", [
@@ -362,13 +362,13 @@ module Prism
       expected = CallNode(
         nil,
         nil,
+        :a,
         Location(),
         Location(),
         ArgumentsNode([expression("foo")], 0),
         Location(),
         BlockArgumentNode(expression("block"), Location()),
-        0,
-        :a
+        0
       )
 
       assert_errors expected, "a(&block, foo)", [
@@ -388,6 +388,7 @@ module Prism
       expected = CallNode(
         nil,
         nil,
+        :a,
         Location(),
         Location(),
         ArgumentsNode([
@@ -402,8 +403,7 @@ module Prism
         ], 0),
         Location(),
         nil,
-        0,
-        :a
+        0
       )
 
       assert_errors expected, "a(foo: bar, *args)", [
@@ -442,6 +442,7 @@ module Prism
           [CallNode(
             nil,
             nil,
+            :bar,
             Location(),
             nil,
             nil,
@@ -453,8 +454,7 @@ module Prism
               Location(),
               Location()
             ),
-            0,
-            :bar
+            0
           )]
         ),
         [],
@@ -563,15 +563,15 @@ module Prism
       end
       RUBY
       assert_errors expected, source, [
-        ["Token reserved for a numbered parameter", 8..10],
-        ["Token reserved for a numbered parameter", 14..16],
-        ["Token reserved for a numbered parameter", 20..22],
-        ["Token reserved for a numbered parameter", 26..28],
-        ["Token reserved for a numbered parameter", 32..34],
-        ["Token reserved for a numbered parameter", 40..42],
-        ["Token reserved for a numbered parameter", 46..48],
-        ["Token reserved for a numbered parameter", 52..54],
-        ["Token reserved for a numbered parameter", 58..60],
+        ["_1 is reserved for a numbered parameter", 8..10],
+        ["_2 is reserved for a numbered parameter", 14..16],
+        ["_3 is reserved for a numbered parameter", 20..22],
+        ["_4 is reserved for a numbered parameter", 26..28],
+        ["_5 is reserved for a numbered parameter", 32..34],
+        ["_6 is reserved for a numbered parameter", 40..42],
+        ["_7 is reserved for a numbered parameter", 46..48],
+        ["_8 is reserved for a numbered parameter", 52..54],
+        ["_9 is reserved for a numbered parameter", 58..60],
       ]
     end
 
@@ -937,7 +937,7 @@ module Prism
     end
 
     def test_case_without_when_clauses_errors_on_else_clause
-      expected = CaseNode(
+      expected = CaseMatchNode(
         SymbolNode(Location(), Location(), nil, "a"),
         [],
         ElseNode(Location(), nil, Location()),
@@ -1004,6 +1004,7 @@ module Prism
       expected = CallNode(
         nil,
         nil,
+        :a,
         Location(),
         nil,
         nil,
@@ -1015,8 +1016,7 @@ module Prism
           Location(),
           Location()
         ),
-        0,
-        :a
+        0
       )
 
       assert_errors expected, "a {|...|}", [
@@ -1225,6 +1225,11 @@ module Prism
       assert_error_messages "Foo::foo,", error_messages
       assert_error_messages "foo[foo],", error_messages
       assert_error_messages "(foo, bar)", error_messages
+      assert_error_messages "foo((foo, bar))", error_messages
+      assert_error_messages "foo((*))", error_messages
+      assert_error_messages "foo(((foo, bar), *))", error_messages
+      assert_error_messages "(foo, bar) + 1", error_messages
+      assert_error_messages "(foo, bar) in baz", error_messages
     end
 
     def test_call_with_block_and_write
@@ -1253,14 +1258,21 @@ module Prism
 
     def test_writing_numbered_parameter
       assert_errors expression("-> { _1 = 0 }"), "-> { _1 = 0 }", [
-        ["Token reserved for a numbered parameter", 5..7]
+        ["_1 is reserved for a numbered parameter", 5..7]
       ]
     end
 
     def test_targeting_numbered_parameter
       assert_errors expression("-> { _1, = 0 }"), "-> { _1, = 0 }", [
-        ["Token reserved for a numbered parameter", 5..7]
+        ["_1 is reserved for a numbered parameter", 5..7]
       ]
+    end
+
+    def test_defining_numbered_parameter
+      error_messages = ["_1 is reserved for a numbered parameter"]
+
+      assert_error_messages "def _1; end", error_messages
+      assert_error_messages "def self._1; end", error_messages
     end
 
     def test_double_scope_numbered_parameters
@@ -1312,7 +1324,7 @@ module Prism
     def test_numbered_parameters_in_block_arguments
       source = "foo { |_1| }"
       assert_errors expression(source), source, [
-        ["Token reserved for a numbered parameter", 7..9],
+        ["_1 is reserved for a numbered parameter", 7..9],
       ]
     end
 
@@ -1398,7 +1410,7 @@ module Prism
         /(?<_1>)/ =~ a
       RUBY
 
-      message = "Token reserved for a numbered parameter"
+      message = "_1 is reserved for a numbered parameter"
       assert_errors expression(source), source, [
         [message, 5..7],
         [message, 13..15],
@@ -1496,6 +1508,8 @@ module Prism
         end
         class A < (return)
         end
+        class << (return)
+        end
         for x in (return)
         end
       RUBY
@@ -1508,6 +1522,7 @@ module Prism
         [message, 80..86],
         [message, 110..116],
         [message, 132..138],
+        [message, 154..160],
       ], compare_ripper: false # Ripper does not check 'void value expression'.
     end
 
@@ -1682,6 +1697,97 @@ module Prism
       ]
     end
 
+    def test_argument_after_ellipsis
+      source = 'def foo(...); foo(..., 1); end'
+      assert_errors expression(source), source, [
+        ['Unexpected argument after `...`', 23..24]
+      ]
+    end
+
+    def test_ellipsis_in_no_paren_call
+      source = 'def foo(...); foo 1, ...; end'
+      assert_errors expression(source), source, [
+        ['Unexpected `...` in an non-parenthesized call', 21..24]
+      ]
+    end
+
+    def test_non_assoc_range
+      source = '1....2'
+      assert_errors expression(source), source, [
+        ['Expected a newline or semicolon after the statement', 4..4],
+        ['Cannot parse the expression', 4..4],
+      ]
+    end
+
+    def test_upcase_end_in_def
+      assert_warning_messages "def foo; END { }; end", [
+        "END in method; use at_exit"
+      ]
+    end
+
+    def test_statement_operators
+      source = <<~RUBY
+        alias x y + 1
+        alias x y.z
+        BEGIN { bar } + 1
+        BEGIN { bar }.z
+        END { bar } + 1
+        END { bar }.z
+        undef x + 1
+        undef x.z
+      RUBY
+      message1 = 'Expected a newline or semicolon after the statement'
+      message2 = 'Cannot parse the expression'
+      assert_errors expression(source), source, [
+        [message1, 9..9],
+        [message2, 9..9],
+        [message1, 23..23],
+        [message2, 23..23],
+        [message1, 39..39],
+        [message2, 39..39],
+        [message1, 57..57],
+        [message2, 57..57],
+        [message1, 71..71],
+        [message2, 71..71],
+        [message1, 87..87],
+        [message2, 87..87],
+        [message1, 97..97],
+        [message2, 97..97],
+        [message1, 109..109],
+        [message2, 109..109],
+      ]
+    end
+
+    def test_statement_at_non_statement
+      source = <<~RUBY
+        foo(alias x y)
+        foo(BEGIN { bar })
+        foo(END { bar })
+        foo(undef x)
+      RUBY
+      assert_errors expression(source), source, [
+        ['Unexpected an `alias` at a non-statement position', 4..9],
+        ['Unexpected a `BEGIN` at a non-statement position', 19..24],
+        ['Unexpected an `END` at a non-statement position', 38..41],
+        ['Unexpected an `undef` at a non-statement position', 55..60],
+      ]
+    end
+
+    def test_binary_range_with_left_unary_range
+      source = <<~RUBY
+        ..1..
+        ...1..
+      RUBY
+      message1 = 'Expected a newline or semicolon after the statement'
+      message2 =  'Cannot parse the expression'
+      assert_errors expression(source), source, [
+        [message1, 3..3],
+        [message2, 3..3],
+        [message1, 10..10],
+        [message2, 10..10],
+      ]
+    end
+
     private
 
     def assert_errors(expected, source, errors, compare_ripper: RUBY_ENGINE == "ruby")
@@ -1699,6 +1805,11 @@ module Prism
       assert_nil Ripper.sexp_raw(source) if compare_ripper
       result = Prism.parse(source)
       assert_equal(errors, result.errors.map(&:message))
+    end
+
+    def assert_warning_messages(source, warnings)
+      result = Prism.parse(source)
+      assert_equal(warnings, result.warnings.map(&:message))
     end
 
     def expression(source)
