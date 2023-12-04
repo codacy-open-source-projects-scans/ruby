@@ -195,17 +195,18 @@ struct enumerator {
     int kw_splat;
 };
 
-RUBY_REFERENCES_START(enumerator_refs)
-    REF_EDGE(enumerator, obj),
-    REF_EDGE(enumerator, args),
-    REF_EDGE(enumerator, fib),
-    REF_EDGE(enumerator, dst),
-    REF_EDGE(enumerator, lookahead),
-    REF_EDGE(enumerator, feedvalue),
-    REF_EDGE(enumerator, stop_exc),
-    REF_EDGE(enumerator, size),
-    REF_EDGE(enumerator, procs),
-RUBY_REFERENCES_END
+RUBY_REFERENCES(enumerator_refs) = {
+    RUBY_REF_EDGE(struct enumerator, obj),
+    RUBY_REF_EDGE(struct enumerator, args),
+    RUBY_REF_EDGE(struct enumerator, fib),
+    RUBY_REF_EDGE(struct enumerator, dst),
+    RUBY_REF_EDGE(struct enumerator, lookahead),
+    RUBY_REF_EDGE(struct enumerator, feedvalue),
+    RUBY_REF_EDGE(struct enumerator, stop_exc),
+    RUBY_REF_EDGE(struct enumerator, size),
+    RUBY_REF_EDGE(struct enumerator, procs),
+    RUBY_REF_END
+};
 
 static VALUE rb_cGenerator, rb_cYielder, rb_cEnumProducer;
 
@@ -259,7 +260,7 @@ VALUE rb_cArithSeq;
 static const rb_data_type_t enumerator_data_type = {
     "enumerator",
     {
-        REFS_LIST_PTR(enumerator_refs),
+        RUBY_REFS_LIST_PTR(enumerator_refs),
         RUBY_TYPED_DEFAULT_FREE,
         NULL, // Nothing allocated externally, so don't need a memsize function
         NULL,
@@ -295,22 +296,15 @@ proc_entry_compact(void *p)
     ptr->memo = rb_gc_location(ptr->memo);
 }
 
-#define proc_entry_free RUBY_TYPED_DEFAULT_FREE
-
-static size_t
-proc_entry_memsize(const void *p)
-{
-    return p ? sizeof(struct proc_entry) : 0;
-}
-
 static const rb_data_type_t proc_entry_data_type = {
     "proc_entry",
     {
         proc_entry_mark,
-        proc_entry_free,
-        proc_entry_memsize,
+        RUBY_TYPED_DEFAULT_FREE,
+        NULL, // Nothing allocated externally, so don't need a memsize function
         proc_entry_compact,
     },
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
 
 static struct proc_entry *
@@ -1302,7 +1296,7 @@ static const rb_data_type_t yielder_data_type = {
         NULL,
         yielder_compact,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_EMBEDDABLE
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
 
 static struct yielder *
@@ -1341,7 +1335,7 @@ yielder_init(VALUE obj, VALUE proc)
         rb_raise(rb_eArgError, "unallocated yielder");
     }
 
-    ptr->proc = proc;
+    RB_OBJ_WRITE(obj, &ptr->proc, proc);
 
     return obj;
 }
@@ -1434,7 +1428,7 @@ static const rb_data_type_t generator_data_type = {
         NULL,
         generator_compact,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_EMBEDDABLE
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
 
 static struct generator *
@@ -1474,7 +1468,7 @@ generator_init(VALUE obj, VALUE proc)
         rb_raise(rb_eArgError, "unallocated generator");
     }
 
-    ptr->proc = proc;
+    RB_OBJ_WRITE(obj, &ptr->proc, proc);
 
     return obj;
 }
@@ -1522,7 +1516,7 @@ generator_init_copy(VALUE obj, VALUE orig)
         rb_raise(rb_eArgError, "unallocated generator");
     }
 
-    ptr1->proc = ptr0->proc;
+    RB_OBJ_WRITE(obj, &ptr1->proc, ptr0->proc);
 
     return obj;
 }
@@ -1689,7 +1683,7 @@ lazy_generator_init(VALUE enumerator, VALUE procs)
                   lazy_init_block, rb_ary_new3(2, obj, procs));
 
     gen_ptr = generator_ptr(generator);
-    gen_ptr->obj = obj;
+    RB_OBJ_WRITE(generator, &gen_ptr->obj, obj);
 
     return generator;
 }
@@ -1874,10 +1868,10 @@ lazy_add_method(VALUE obj, int argc, VALUE *argv, VALUE args, VALUE memo,
     VALUE entry_obj = TypedData_Make_Struct(rb_cObject, struct proc_entry,
                                             &proc_entry_data_type, entry);
     if (rb_block_given_p()) {
-        entry->proc = rb_block_proc();
+        RB_OBJ_WRITE(entry_obj, &entry->proc, rb_block_proc());
     }
     entry->fn = fn;
-    entry->memo = args;
+    RB_OBJ_WRITE(entry_obj, &entry->memo, args);
 
     lazy_set_args(entry_obj, memo);
 
@@ -2945,7 +2939,7 @@ static const rb_data_type_t producer_data_type = {
         producer_memsize,
         producer_compact,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_EMBEDDABLE
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
 
 static struct producer *
@@ -2985,8 +2979,8 @@ producer_init(VALUE obj, VALUE init, VALUE proc)
         rb_raise(rb_eArgError, "unallocated producer");
     }
 
-    ptr->init = init;
-    ptr->proc = proc;
+    RB_OBJ_WRITE(obj, &ptr->init, init);
+    RB_OBJ_WRITE(obj, &ptr->proc, proc);
 
     return obj;
 }

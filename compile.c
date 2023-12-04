@@ -1375,7 +1375,7 @@ new_adjust_body(rb_iseq_t *iseq, LABEL *label, int line)
 }
 
 static void
-iseq_insn_each_markable_object(INSN *insn, void (*func)(VALUE *, VALUE), VALUE data)
+iseq_insn_each_markable_object(INSN *insn, void (*func)(VALUE, VALUE), VALUE data)
 {
     const char *types = insn_op_types(insn->insn_id);
     for (int j = 0; types[j]; j++) {
@@ -1386,7 +1386,7 @@ iseq_insn_each_markable_object(INSN *insn, void (*func)(VALUE *, VALUE), VALUE d
           case TS_VALUE:
           case TS_IC: // constant path array
           case TS_CALLDATA: // ci is stored.
-            func(&OPERAND_AT(insn, j), data);
+            func(OPERAND_AT(insn, j), data);
             break;
           default:
             break;
@@ -1395,9 +1395,9 @@ iseq_insn_each_markable_object(INSN *insn, void (*func)(VALUE *, VALUE), VALUE d
 }
 
 static void
-iseq_insn_each_object_write_barrier(VALUE *obj_ptr, VALUE iseq)
+iseq_insn_each_object_write_barrier(VALUE obj, VALUE iseq)
 {
-    RB_OBJ_WRITTEN(iseq, Qundef, *obj_ptr);
+    RB_OBJ_WRITTEN(iseq, Qundef, obj);
 }
 
 static INSN *
@@ -2796,9 +2796,11 @@ iseq_set_exception_table(rb_iseq_t *iseq)
     struct iseq_catch_table_entry *entry;
 
     ISEQ_BODY(iseq)->catch_table = NULL;
-    if (NIL_P(ISEQ_COMPILE_DATA(iseq)->catch_table_ary)) return COMPILE_OK;
-    tlen = (int)RARRAY_LEN(ISEQ_COMPILE_DATA(iseq)->catch_table_ary);
-    tptr = RARRAY_CONST_PTR(ISEQ_COMPILE_DATA(iseq)->catch_table_ary);
+
+    VALUE catch_table_ary = ISEQ_COMPILE_DATA(iseq)->catch_table_ary;
+    if (NIL_P(catch_table_ary)) return COMPILE_OK;
+    tlen = (int)RARRAY_LEN(catch_table_ary);
+    tptr = RARRAY_CONST_PTR(catch_table_ary);
 
     if (tlen > 0) {
         struct iseq_catch_table *table = xmalloc(iseq_catch_table_bytes(tlen));
@@ -2833,6 +2835,8 @@ iseq_set_exception_table(rb_iseq_t *iseq)
         ISEQ_BODY(iseq)->catch_table = table;
         RB_OBJ_WRITE(iseq, &ISEQ_COMPILE_DATA(iseq)->catch_table_ary, 0); /* free */
     }
+
+    RB_GC_GUARD(catch_table_ary);
 
     return COMPILE_OK;
 }
@@ -4209,11 +4213,28 @@ compile_dstr(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node)
 }
 
 static int
-compile_dregx(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node)
+compile_dregx(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, int popped)
 {
     int cnt;
+
+    if (!RNODE_DREGX(node)->nd_next) {
+        VALUE match = RNODE_DREGX(node)->nd_lit;
+        if (RB_TYPE_P(match, T_REGEXP)) {
+            if (!popped) {
+                ADD_INSN1(ret, node, putobject, match);
+                RB_OBJ_WRITTEN(iseq, Qundef, match);
+            }
+            return COMPILE_OK;
+        }
+    }
+
     CHECK(compile_dstr_fragments(iseq, ret, node, &cnt));
     ADD_INSN2(ret, node, toregexp, INT2FIX(RNODE_DREGX(node)->nd_cflag), INT2FIX(cnt));
+
+    if (popped) {
+        ADD_INSN(ret, node, pop);
+    }
+
     return COMPILE_OK;
 }
 
@@ -9897,14 +9918,9 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const no
       case NODE_EVSTR:
         CHECK(compile_evstr(iseq, ret, RNODE_EVSTR(node)->nd_body, popped));
         break;
-      case NODE_DREGX:{
-        compile_dregx(iseq, ret, node);
-
-        if (popped) {
-            ADD_INSN(ret, node, pop);
-        }
+      case NODE_DREGX:
+        compile_dregx(iseq, ret, node, popped);
         break;
-      }
       case NODE_ONCE:{
         int ic_index = body->ise_size++;
         const rb_iseq_t *block_iseq;
@@ -10861,13 +10877,13 @@ iseq_build_kw(rb_iseq_t *iseq, VALUE params, VALUE keywords)
 }
 
 static void
-iseq_insn_each_object_mark_and_move(VALUE *obj_ptr, VALUE _)
+iseq_insn_each_object_mark_and_pin(VALUE obj, VALUE _)
 {
-    rb_gc_mark_and_move(obj_ptr);
+    rb_gc_mark(obj);
 }
 
 void
-rb_iseq_mark_and_move_insn_storage(struct iseq_compile_data_storage *storage)
+rb_iseq_mark_and_pin_insn_storage(struct iseq_compile_data_storage *storage)
 {
     INSN *iobj = 0;
     size_t size = sizeof(INSN);
@@ -10892,7 +10908,7 @@ rb_iseq_mark_and_move_insn_storage(struct iseq_compile_data_storage *storage)
             iobj = (INSN *)&storage->buff[pos];
 
             if (iobj->operands) {
-                iseq_insn_each_markable_object(iobj, iseq_insn_each_object_mark_and_move, (VALUE)0);
+                iseq_insn_each_markable_object(iobj, iseq_insn_each_object_mark_and_pin, (VALUE)0);
             }
             pos += (int)size;
         }
@@ -12859,8 +12875,12 @@ ibf_load_object_bignum(const struct ibf_load *load, const struct ibf_object_head
     const struct ibf_object_bignum *bignum = IBF_OBJBODY(struct ibf_object_bignum, offset);
     int sign = bignum->slen > 0;
     ssize_t len = sign > 0 ? bignum->slen : -1 * bignum->slen;
-    VALUE obj = rb_integer_unpack(bignum->digits, len * 2, 2, 0,
-                                  INTEGER_PACK_LITTLE_ENDIAN | (sign == 0 ? INTEGER_PACK_NEGATIVE : 0));
+    const int big_unpack_flags = /* c.f. rb_big_unpack() */
+        INTEGER_PACK_LSWORD_FIRST |
+        INTEGER_PACK_NATIVE_BYTE_ORDER;
+    VALUE obj = rb_integer_unpack(bignum->digits, len, sizeof(BDIGIT), 0,
+                                  big_unpack_flags |
+                                  (sign == 0 ? INTEGER_PACK_NEGATIVE : 0));
     if (header->internal) rb_obj_hide(obj);
     if (header->frozen)   rb_obj_freeze(obj);
     return obj;

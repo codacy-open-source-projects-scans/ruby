@@ -589,7 +589,6 @@ nodes:
         type: constant[]
       - name: parameters
         type: node?
-        kind: BlockParametersNode
       - name: body
         type: node?
       - name: opening_loc
@@ -1453,6 +1452,21 @@ nodes:
 
           { Foo: }
             ^^^^
+  - name: ImplicitRestNode
+    comment: |
+      Represents using a trailing comma to indicate an implicit rest parameter.
+
+          foo { |bar,| }
+                    ^
+
+          foo in [bar,]
+                     ^
+
+          for foo, in bar do end
+                 ^
+
+          foo, = bar
+             ^
   - name: InNode
     fields:
       - name: pattern
@@ -1755,7 +1769,6 @@ nodes:
         type: location
       - name: parameters
         type: node?
-        kind: BlockParametersNode
       - name: body
         type: node?
     comment: |
@@ -2007,6 +2020,16 @@ nodes:
           def a(**nil)
                 ^^^^^
           end
+  - name: NumberedParametersNode
+    fields:
+      - name: maximum
+        type: uint8
+    comment: |
+      Represents an implicit set of parameters through the use of numbered
+      parameters within a block or lambda.
+
+          -> { _1 + _2 }
+          ^^^^^^^^^^^^^^
   - name: NumberedReferenceReadNode
     fields:
       - name: number
@@ -2067,7 +2090,6 @@ nodes:
         type: node[]
       - name: rest
         type: node?
-        kind: RestParameterNode
       - name: posts
         type: node[]
       - name: keywords

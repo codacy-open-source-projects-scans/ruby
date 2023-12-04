@@ -33,7 +33,9 @@
         │   │   │       │   │   │           ├── operator_loc: (1,9)-(1,11) = "->"
         │   │   │       │   │   │           ├── opening_loc: (1,11)-(1,12) = "{"
         │   │   │       │   │   │           ├── closing_loc: (1,14)-(1,15) = "}"
-        │   │   │       │   │   │           ├── parameters: ∅
+        │   │   │       │   │   │           ├── parameters:
+        │   │   │       │   │   │           │   @ NumberedParametersNode (location: (1,9)-(1,15))
+        │   │   │       │   │   │           │   └── maximum: 1
         │   │   │       │   │   │           └── body:
         │   │   │       │   │   │               @ StatementsNode (location: (1,12)-(1,14))
         │   │   │       │   │   │               └── body: (length: 1)
@@ -90,7 +92,9 @@
             │   │       │   │   │           ├── operator_loc: (3,8)-(3,10) = "->"
             │   │       │   │   │           ├── opening_loc: (3,10)-(3,11) = "{"
             │   │       │   │   │           ├── closing_loc: (3,13)-(3,14) = "}"
-            │   │       │   │   │           ├── parameters: ∅
+            │   │       │   │   │           ├── parameters:
+            │   │       │   │   │           │   @ NumberedParametersNode (location: (3,8)-(3,14))
+            │   │       │   │   │           │   └── maximum: 1
             │   │       │   │   │           └── body:
             │   │       │   │   │               @ StatementsNode (location: (3,11)-(3,13))
             │   │       │   │   │               └── body: (length: 1)

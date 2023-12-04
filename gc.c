@@ -2769,7 +2769,8 @@ size_pool_idx_for_size(size_t size)
     size_t size_pool_idx = 64 - nlz_int64(slot_count - 1);
 
     if (size_pool_idx >= SIZE_POOL_COUNT) {
-        rb_bug("size_pool_idx_for_size: allocation size too large (size=%lu, size_pool_idx=%lu)", size, size_pool_idx);
+        rb_bug("size_pool_idx_for_size: allocation size too large "
+               "(size=%"PRIuSIZE"u, size_pool_idx=%"PRIuSIZE"u)", size, size_pool_idx);
     }
 
 #if RGENGC_CHECK_MODE
@@ -6684,7 +6685,6 @@ mark_method_entry(rb_objspace_t *objspace, const rb_method_entry_t *me)
             return;
           case VM_METHOD_TYPE_REFINED:
             gc_mark(objspace, (VALUE)def->body.refined.orig_me);
-            gc_mark(objspace, (VALUE)def->body.refined.owner);
             break;
           case VM_METHOD_TYPE_CFUNC:
           case VM_METHOD_TYPE_ZSUPER:
@@ -7347,7 +7347,16 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
 
       case T_STRING:
         if (STR_SHARED_P(obj)) {
-            gc_mark(objspace, any->as.string.as.heap.aux.shared);
+            if (STR_EMBED_P(any->as.string.as.heap.aux.shared)) {
+                /* Embedded shared strings cannot be moved because this string
+                 * points into the slot of the shared string. There may be code
+                 * using the RSTRING_PTR on the stack, which would pin this
+                 * string but not pin the shared string, causing it to move. */
+                gc_mark_and_pin(objspace, any->as.string.as.heap.aux.shared);
+            }
+            else {
+                gc_mark(objspace, any->as.string.as.heap.aux.shared);
+            }
         }
         break;
 
@@ -9404,18 +9413,9 @@ static int
 gc_start(rb_objspace_t *objspace, unsigned int reason)
 {
     unsigned int do_full_mark = !!(reason & GPR_FLAG_FULL_MARK);
-    unsigned int immediate_mark = reason & GPR_FLAG_IMMEDIATE_MARK;
 
     /* reason may be clobbered, later, so keep set immediate_sweep here */
     objspace->flags.immediate_sweep = !!(reason & GPR_FLAG_IMMEDIATE_SWEEP);
-
-    /* Explicitly enable compaction (GC.compact) */
-    if (do_full_mark && ruby_enable_autocompact) {
-        objspace->flags.during_compacting = TRUE;
-    }
-    else {
-        objspace->flags.during_compacting = !!(reason & GPR_FLAG_COMPACT);
-    }
 
     if (!heap_allocated_pages) return FALSE; /* heap is not ready */
     if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(objspace)) return TRUE; /* GC is not allowed */
@@ -9457,11 +9457,21 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
         reason |= GPR_FLAG_MAJOR_BY_FORCE; /* GC by CAPI, METHOD, and so on. */
     }
 
-    if (objspace->flags.dont_incremental || immediate_mark) {
+    if (objspace->flags.dont_incremental ||
+            reason & GPR_FLAG_IMMEDIATE_MARK ||
+            ruby_gc_stressful) {
         objspace->flags.during_incremental_marking = FALSE;
     }
     else {
         objspace->flags.during_incremental_marking = do_full_mark;
+    }
+
+    /* Explicitly enable compaction (GC.compact) */
+    if (do_full_mark && ruby_enable_autocompact) {
+        objspace->flags.during_compacting = TRUE;
+    }
+    else {
+        objspace->flags.during_compacting = !!(reason & GPR_FLAG_COMPACT);
     }
 
     if (!GC_ENABLE_LAZY_SWEEP || objspace->flags.dont_incremental) {
@@ -10307,7 +10317,6 @@ gc_ref_update_method_entry(rb_objspace_t *objspace, rb_method_entry_t *me)
             return;
           case VM_METHOD_TYPE_REFINED:
             TYPED_UPDATE_IF_MOVED(objspace, struct rb_method_entry_struct *, def->body.refined.orig_me);
-            UPDATE_IF_MOVED(objspace, def->body.refined.owner);
             break;
           case VM_METHOD_TYPE_CFUNC:
           case VM_METHOD_TYPE_ZSUPER:
@@ -10699,10 +10708,7 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
       case T_STRING:
         {
             if (STR_SHARED_P(obj)) {
-                VALUE old_root = any->as.string.as.heap.aux.shared;
                 UPDATE_IF_MOVED(objspace, any->as.string.as.heap.aux.shared);
-                VALUE new_root = any->as.string.as.heap.aux.shared;
-                rb_str_update_shared_ary(obj, old_root, new_root);
             }
 
             /* If, after move the string is not embedded, and can fit in the
