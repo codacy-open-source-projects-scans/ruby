@@ -94,10 +94,10 @@ static const char* const diagnostic_messages[PM_DIAGNOSTIC_ID_LEN] = {
     [PM_ERR_CLASS_NAME]                         = "expected a constant name after `class`",
     [PM_ERR_CLASS_SUPERCLASS]                   = "expected a superclass after `<`",
     [PM_ERR_CLASS_TERM]                         = "expected an `end` to close the `class` statement",
-    [PM_ERR_CLASS_UNEXPECTED_END]               = "unexpected `end`, expecting ';' or '\n'",
+    [PM_ERR_CLASS_UNEXPECTED_END]               = "unexpected `end`, expecting ';' or '\\n'",
     [PM_ERR_CONDITIONAL_ELSIF_PREDICATE]        = "expected a predicate expression for the `elsif` statement",
     [PM_ERR_CONDITIONAL_IF_PREDICATE]           = "expected a predicate expression for the `if` statement",
-    [PM_ERR_CONDITIONAL_PREDICATE_TERM]         = "expected `then` or `;` or '\n'",
+    [PM_ERR_CONDITIONAL_PREDICATE_TERM]         = "expected `then` or `;` or '\\n'",
     [PM_ERR_CONDITIONAL_TERM]                   = "expected an `end` to close the conditional clause",
     [PM_ERR_CONDITIONAL_TERM_ELSE]              = "expected an `end` to close the `else` clause",
     [PM_ERR_CONDITIONAL_UNLESS_PREDICATE]       = "expected a predicate expression for the `unless` statement",
@@ -185,13 +185,14 @@ static const char* const diagnostic_messages[PM_DIAGNOSTIC_ID_LEN] = {
     [PM_ERR_LIST_W_UPPER_ELEMENT]               = "expected a string in a `%W` list",
     [PM_ERR_LIST_W_UPPER_TERM]                  = "expected a closing delimiter for the `%W` list",
     [PM_ERR_MALLOC_FAILED]                      = "failed to allocate memory",
+    [PM_ERR_MIXED_ENCODING]                     = "UTF-8 mixed within %s source",
     [PM_ERR_MODULE_IN_METHOD]                   = "unexpected module definition in a method definition",
     [PM_ERR_MODULE_NAME]                        = "expected a constant name after `module`",
     [PM_ERR_MODULE_TERM]                        = "expected an `end` to close the `module` statement",
     [PM_ERR_MULTI_ASSIGN_MULTI_SPLATS]          = "multiple splats in multiple assignment",
     [PM_ERR_NOT_EXPRESSION]                     = "expected an expression after `not`",
     [PM_ERR_NUMBER_LITERAL_UNDERSCORE]          = "number literal ending with a `_`",
-    [PM_ERR_NUMBERED_PARAMETER_NOT_ALLOWED]     = "numbered parameters are not allowed alongside explicit parameters",
+    [PM_ERR_NUMBERED_PARAMETER_NOT_ALLOWED]     = "numbered parameters are not allowed when an ordinary parameter is defined",
     [PM_ERR_NUMBERED_PARAMETER_OUTER_SCOPE]     = "numbered parameter is already used in outer scope",
     [PM_ERR_OPERATOR_MULTI_ASSIGN]              = "unexpected operator for a multiple assignment",
     [PM_ERR_OPERATOR_WRITE_ARGUMENTS]           = "unexpected operator after a call with arguments",
@@ -203,7 +204,7 @@ static const char* const diagnostic_messages[PM_DIAGNOSTIC_ID_LEN] = {
     [PM_ERR_PARAMETER_NAME_REPEAT]              = "repeated parameter name",
     [PM_ERR_PARAMETER_NO_DEFAULT]               = "expected a default value for the parameter",
     [PM_ERR_PARAMETER_NO_DEFAULT_KW]            = "expected a default value for the keyword parameter",
-    [PM_ERR_PARAMETER_NUMBERED_RESERVED]        = "%.2s is reserved for a numbered parameter",
+    [PM_ERR_PARAMETER_NUMBERED_RESERVED]        = "%.2s is reserved for numbered parameters",
     [PM_ERR_PARAMETER_ORDER]                    = "unexpected parameter order",
     [PM_ERR_PARAMETER_SPLAT_MULTI]              = "unexpected multiple `*` splat parameters",
     [PM_ERR_PARAMETER_STAR]                     = "unexpected parameter `*`",
@@ -254,6 +255,7 @@ static const char* const diagnostic_messages[PM_DIAGNOSTIC_ID_LEN] = {
     [PM_ERR_UNTIL_TERM]                         = "expected an `end` to close the `until` statement",
     [PM_ERR_VOID_EXPRESSION]                    = "unexpected void value expression",
     [PM_ERR_WHILE_TERM]                         = "expected an `end` to close the `while` statement",
+    [PM_ERR_WRITE_TARGET_IN_METHOD]             = "dynamic constant assignment",
     [PM_ERR_WRITE_TARGET_READONLY]              = "immutable variable as a write target",
     [PM_ERR_WRITE_TARGET_UNEXPECTED]            = "unexpected write target",
     [PM_ERR_XSTRING_TERM]                       = "expected a closing delimiter for the `%x` or backtick string",
@@ -283,8 +285,7 @@ pm_diagnostic_list_append(pm_list_t *list, const uint8_t *start, const uint8_t *
     if (diagnostic == NULL) return false;
 
     *diagnostic = (pm_diagnostic_t) {
-        .start = start,
-        .end = end,
+        .location = { start, end },
         .message = pm_diagnostic_message(diag_id),
         .owned = false
     };
@@ -327,8 +328,7 @@ pm_diagnostic_list_append_format(pm_list_t *list, const uint8_t *start, const ui
     va_end(arguments);
 
     *diagnostic = (pm_diagnostic_t) {
-        .start = start,
-        .end = end,
+        .location = { start, end },
         .message = message,
         .owned = true
     };

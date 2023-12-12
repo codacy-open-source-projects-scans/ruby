@@ -196,7 +196,7 @@ is_constant_path(VALUE name)
  *    n::M.name #=> "fake_name::M"
  *    N = n
  *
- *    N.name #=> "nested_fake_name"
+ *    N.name #=> "N"
  *    N::M.name #=> "N::M"
  */
 
@@ -437,6 +437,33 @@ struct rb_global_entry {
     ID id;
     bool ractor_local;
 };
+
+static enum rb_id_table_iterator_result
+free_global_entry_i(ID key, VALUE val, void *arg)
+{
+    struct rb_global_entry *entry = (struct rb_global_entry *)val;
+    if (entry->var->counter == 1) {
+        ruby_xfree(entry->var);
+    }
+    else {
+        entry->var->counter--;
+    }
+    ruby_xfree(entry);
+    return ID_TABLE_DELETE;
+}
+
+void
+rb_free_rb_global_tbl(void)
+{
+    rb_id_table_foreach(rb_global_tbl, free_global_entry_i, 0);
+    rb_id_table_free(rb_global_tbl);
+}
+
+void
+rb_free_generic_iv_tbl_(void)
+{
+    st_free_table(generic_iv_tbl_);
+}
 
 static struct rb_global_entry*
 rb_find_global_entry(ID id)
@@ -1657,7 +1684,7 @@ rb_ensure_iv_list_size(VALUE obj, uint32_t current_capacity, uint32_t new_capaci
     }
 }
 
-int
+static int
 rb_obj_copy_ivs_to_hash_table_i(ID key, VALUE val, st_data_t arg)
 {
     RUBY_ASSERT(!st_lookup((st_table *)arg, (st_data_t)key, NULL));
@@ -2127,9 +2154,8 @@ rb_ivar_count(VALUE obj)
 }
 
 static int
-ivar_i(st_data_t k, st_data_t v, st_data_t a)
+ivar_i(ID key, VALUE v, st_data_t a)
 {
-    ID key = (ID)k;
     VALUE ary = (VALUE)a;
 
     if (rb_is_instance_id(key)) {
@@ -3999,9 +4025,8 @@ rb_define_class_variable(VALUE klass, const char *name, VALUE val)
 }
 
 static int
-cv_i(st_data_t k, st_data_t v, st_data_t a)
+cv_i(ID key, VALUE v, st_data_t a)
 {
-    ID key = (ID)k;
     st_table *tbl = (st_table *)a;
 
     if (rb_is_class_id(key)) {
@@ -4216,9 +4241,9 @@ rb_class_ivar_set(VALUE obj, ID id, VALUE val)
 }
 
 static int
-tbl_copy_i(st_data_t key, st_data_t val, st_data_t dest)
+tbl_copy_i(ID key, VALUE val, st_data_t dest)
 {
-    rb_class_ivar_set(dest, key, val);
+    rb_class_ivar_set((VALUE)dest, key, val);
 
     return ST_CONTINUE;
 }

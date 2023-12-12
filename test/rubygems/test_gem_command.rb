@@ -92,7 +92,7 @@ class TestGemCommand < Gem::TestCase
       options[:help] = value
     end
 
-    @cmd.defaults = { :help => true }
+    @cmd.defaults = { help: true }
 
     @cmd.when_invoked do |options|
       assert options[:help], "Help options should default true"
@@ -398,67 +398,5 @@ ERROR:  Possible alternatives: non_existent_with_hint
     EXPECTED
 
     assert_equal expected, @ui.error
-  end
-
-  def test_show_defaulting_to_user_install_when_appropriate
-    omit "this test doesn't work with ruby-core setup" if ruby_repo?
-
-    Gem.stub(:default_dir, "/this-directory-does-not-exist") do
-      # Replace `Gem.paths` with a new instance, so `Gem.paths.auto_user_install`
-      # is accurate.
-      Gem.stub(:paths, Gem::PathSupport.new(ENV)) do
-        output_regex = "Defaulting to user installation"
-
-        test_command = Class.new(Gem::Command) do
-          def initialize
-            # "gem install" should ALWAYS print the warning.
-            super("install", "Gem::Command instance for testing")
-          end
-
-          def execute
-            true
-          end
-        end
-
-        cmd = test_command.new
-
-        use_ui @ui do
-          cmd.invoke
-          assert_match output_regex, @ui.output,
-            "Gem.default_dir = #{Gem.default_dir.inspect}\n" \
-            "Gem.paths.auto_user_install = #{Gem.paths.auto_user_install.inspect}"
-        end
-      end
-    end
-  end
-
-  def test_dont_show_defaulting_to_user_install_when_appropriate
-    Gem.stub(:default_dir, "/this-directory-does-not-exist") do
-      # Replace `Gem.paths` with a new instance, so `Gem.paths.auto_user_install`
-      # is accurate.
-      Gem.stub(:paths, Gem::PathSupport.new(ENV)) do
-        output_regex = /^Defaulting to user installation/
-
-        test_command = Class.new(Gem::Command) do
-          def initialize
-            # "gem blargh" should NEVER print the warning.
-            super("blargh", "Gem::Command instance for testing")
-          end
-
-          def execute
-            true
-          end
-        end
-
-        cmd = test_command.new
-
-        use_ui @ui do
-          cmd.invoke
-          assert_no_match output_regex, @ui.output,
-            "Gem.default_dir = #{Gem.default_dir.inspect}\n" \
-            "Gem.paths.auto_user_install = #{Gem.paths.auto_user_install.inspect}"
-        end
-      end
-    end
   end
 end

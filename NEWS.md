@@ -34,6 +34,29 @@ Note: We're only listing outstanding class updates.
     * Dir#chdir added for changing the directory to the directory specified by
       the provided `Dir` object. [[Feature #19347]]
 
+* Encoding
+
+    * Encoding#replicate has been removed, it was already deprecated.  [[Feature #18949]]
+
+* Fiber
+
+    * Introduce Fiber#kill. [[Bug #595]]
+      ```ruby
+      fiber = Fiber.new do
+        while true
+          puts "Yielding..."
+          Fiber.yield
+        end
+      ensure
+        puts "Exiting..."
+      end
+
+      fiber.resume
+      # Yielding...
+      fiber.kill
+      # Exiting...
+      ```
+
 * MatchData
 
     * MatchData#named_captures now accepts optional `symbolize_names`
@@ -78,6 +101,7 @@ Note: We're only listing outstanding class updates.
 
     * Range#reverse_each can now process beginless ranges with an Integer endpoint. [[Feature #18515]]
     * Range#reverse_each now raises TypeError for endless ranges. [[Feature #18551]]
+    * Range#overlap? added for checking if two ranges overlap. [[Feature #19839]]
 
 * Refinement
 
@@ -103,10 +127,9 @@ Note: We're only listing outstanding class updates.
 
 ## Stdlib updates
 
-* RubyGems and Bundler warn if users require gem that is scheduled to become the bundled gems
-  in the future version of Ruby. [[Feature #19351]] [[Feature #19776]] [[Feature #19843]]
-
-  Targeted libraries are:
+* RubyGems and Bundler warn if users do `require` the following gems without adding them to Gemfile or gemspec.
+  This is because they will become the bundled gems in the future version of Ruby.
+  [[Feature #19351]] [[Feature #19776]] [[Feature #19843]]
     * abbrev
     * base64
     * bigdecimal
@@ -125,6 +148,9 @@ Note: We're only listing outstanding class updates.
   connections. Socket#recvmsg and Socket#recvmsg_nonblock returns `nil` instead of an empty packet on closed
   connections. [[Bug #19012]]
 
+* Name resolution such as `Socket.getaddrinfo`, `Socket.getnameinfo`, `Addrinfo.getaddrinfo`, etc.
+  can now be interrupted. [[Feature #19965]]
+
 * Random::Formatter#alphanumeric is extended to accept optional `chars`
   keyword argument. [[Feature #18183]]
 
@@ -139,13 +165,14 @@ The following default gems are updated.
 * benchmark 0.3.0
 * bigdecimal 3.1.5
 * bundler 2.5.0.dev
-* cgi 0.4.0
+* cgi 0.4.1
 * csv 3.2.8
 * date 3.3.4
 * delegate 0.3.1
 * drb 2.2.0
 * english 0.8.0
 * erb 4.0.3
+* error_highlight 0.6.0
 * etc 1.4.3.dev.1
 * fcntl 1.1.0
 * fiddle 1.1.2
@@ -153,15 +180,15 @@ The following default gems are updated.
 * find 0.2.0
 * getoptlong 0.2.1
 * io-console 0.6.1.dev.1
-* irb 1.10.0
-* json 2.7.0
+* irb 1.10.1
+* json 2.7.1
 * logger 1.6.0
 * mutex_m 0.2.0
 * net-http 0.4.0
 * net-protocol 0.2.2
 * nkf 0.1.3
 * observer 0.1.2
-* open-uri 0.4.0
+* open-uri 0.4.1
 * open3 0.2.0
 * openssl 3.2.0
 * optparse 0.4.0
@@ -171,16 +198,17 @@ The following default gems are updated.
 * prettyprint 0.2.0
 * pstore 0.1.3
 * psych 5.1.1.1
-* rdoc 6.6.0
+* rdoc 6.6.1
 * reline 0.4.0
 * rinda 0.2.0
 * securerandom 0.3.0
+* set 1.0.4
 * shellwords 0.2.0
 * singleton 0.2.0
 * stringio 3.1.1
 * strscan 3.0.8
-* syntax_suggest 1.1.0
-* tempfile 0.2.0
+* syntax_suggest 2.0.0
+* tempfile 0.2.1
 * time 0.3.0
 * timeout 0.4.1
 * tmpdir 0.2.0
@@ -203,11 +231,12 @@ The following bundled gems are updated.
 * test-unit 3.6.1
 * rexml 3.2.6
 * rss 0.3.0
+* net-ftp 0.3.0
 * net-imap 0.4.7
 * net-smtp 0.4.0
 * rbs 3.3.2
 * typeprof 0.21.8
-* debug 1.8.0
+* debug 1.9.0
 
 See GitHub releases like [Logger](https://github.com/ruby/logger/releases) or
 changelog for details of the default gems or bundled gems.
@@ -234,6 +263,10 @@ changelog for details of the default gems or bundled gems.
   removed. Environment variables `RUBY_GC_HEAP_%d_INIT_SLOTS` should be
   used instead.  [[Feature #19785]]
 
+* `it` calls without arguments in a block with no ordinary parameters are
+  deprecated. `it` will be a reference to the first block parameter in Ruby 3.4.
+  [[Feature #18980]]
+
 ## Stdlib compatibility issues
 
 * `racc` is promoted to bundled gems.
@@ -247,7 +280,6 @@ changelog for details of the default gems or bundled gems.
 ## Implementation improvements
 
 * `defined?(@ivar)` is optimized with Object Shapes.
-* Name resolution such as `Socket.getaddrinfo` can now be interrupted. [[Feature #19965]]
 
 ### GC
 
@@ -344,12 +376,15 @@ changelog for details of the default gems or bundled gems.
       Note that more than `N` native threads are used to support many kind of
       blocking operations.
 
+[Bug #595]:       https://bugs.ruby-lang.org/issues/595
 [Bug #17146]:     https://bugs.ruby-lang.org/issues/17146
 [Feature #18183]: https://bugs.ruby-lang.org/issues/18183
 [Feature #18498]: https://bugs.ruby-lang.org/issues/18498
 [Feature #18515]: https://bugs.ruby-lang.org/issues/18515
 [Feature #18551]: https://bugs.ruby-lang.org/issues/18551
 [Feature #18885]: https://bugs.ruby-lang.org/issues/18885
+[Feature #18949]: https://bugs.ruby-lang.org/issues/18949
+[Feature #18980]: https://bugs.ruby-lang.org/issues/18980
 [Bug #19012]:     https://bugs.ruby-lang.org/issues/19012
 [Bug #19150]:     https://bugs.ruby-lang.org/issues/19150
 [Feature #19314]: https://bugs.ruby-lang.org/issues/19314
@@ -369,6 +404,7 @@ changelog for details of the default gems or bundled gems.
 [Feature #19777]: https://bugs.ruby-lang.org/issues/19777
 [Feature #19785]: https://bugs.ruby-lang.org/issues/19785
 [Feature #19790]: https://bugs.ruby-lang.org/issues/19790
+[Feature #19839]: https://bugs.ruby-lang.org/issues/19839
 [Feature #19842]: https://bugs.ruby-lang.org/issues/19842
 [Feature #19843]: https://bugs.ruby-lang.org/issues/19843
 [Bug #19868]:     https://bugs.ruby-lang.org/issues/19868

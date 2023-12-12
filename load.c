@@ -360,6 +360,13 @@ loaded_features_index_clear_i(st_data_t key, st_data_t val, st_data_t arg)
     return ST_DELETE;
 }
 
+void
+rb_free_loaded_features_index(rb_vm_t *vm)
+{
+    st_foreach(vm->loaded_features_index, loaded_features_index_clear_i, 0);
+    st_free_table(vm->loaded_features_index);
+}
+
 static st_table *
 get_loaded_features_index(rb_vm_t *vm)
 {
@@ -950,15 +957,14 @@ static VALUE rb_require_string_internal(VALUE fname, bool resurrect);
  *  If the filename starts with './' or '../', resolution is based on Dir.pwd.
  *
  *  If the filename has the extension ".rb", it is loaded as a source file; if
- *  the extension is ".so", ".o", or ".dll", or the default shared library
- *  extension on the current platform, Ruby loads the shared library as a
- *  Ruby extension.  Otherwise, Ruby tries adding ".rb", ".so", and so on
- *  to the name until found.  If the file named cannot be found, a LoadError
- *  will be raised.
+ *  the extension is ".so", ".o", or the default shared library extension on
+ *  the current platform, Ruby loads the shared library as a Ruby extension.
+ *  Otherwise, Ruby tries adding ".rb", ".so", and so on to the name until
+ *  found.  If the file named cannot be found, a LoadError will be raised.
  *
- *  For Ruby extensions the filename given may use any shared library
- *  extension.  For example, on Linux the socket extension is "socket.so" and
- *  <code>require 'socket.dll'</code> will load the socket extension.
+ *  For Ruby extensions the filename given may use ".so" or ".o".  For example,
+ *  on macOS the socket extension is "socket.bundle" and
+ *  <code>require 'socket.so'</code> will load the socket extension.
  *
  *  The absolute path of the loaded file is added to
  *  <code>$LOADED_FEATURES</code> (<code>$"</code>).  A file will not be

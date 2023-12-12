@@ -81,15 +81,15 @@ module Prism
       expected = PreExecutionNode(
         StatementsNode([
           CallNode(
+            0,
             expression("1"),
             nil,
             :+,
             Location(),
             nil,
-            ArgumentsNode([MissingNode()], 0),
+            ArgumentsNode(0, [MissingNode()]),
             nil,
-            nil,
-            0
+            nil
           )
         ]),
         Location(),
@@ -146,10 +146,31 @@ module Prism
       ]
     end
 
-    def test_unterminated_string
-      assert_errors expression('"hello'), '"hello', [
-        ["expected a closing delimiter for the interpolated string", 0..1]
+    def test_unterminated_interpolated_string
+      expr = expression('"hello')
+      assert_errors expr, '"hello', [
+        ["expected a closing delimiter for the string literal", 6..6]
       ]
+      assert_equal expr.unescaped, "hello"
+      assert_equal expr.closing, ""
+    end
+
+    def test_unterminated_string
+      expr = expression("'hello")
+      assert_errors expr, "'hello", [
+        ["expected a closing delimiter for the string literal", 0..1]
+      ]
+      assert_equal expr.unescaped, "hello"
+      assert_equal expr.closing, ""
+    end
+
+    def test_unterminated_empty_string
+      expr = expression('"')
+      assert_errors expr, '"', [
+        ["expected a closing delimiter for the string literal", 1..1]
+      ]
+      assert_equal expr.unescaped, ""
+      assert_equal expr.closing, ""
     end
 
     def test_incomplete_instance_var_string
@@ -339,18 +360,18 @@ module Prism
 
     def test_double_splat_followed_by_splat_argument
       expected = CallNode(
+        0,
         nil,
         nil,
         :a,
         Location(),
         Location(),
-        ArgumentsNode([
+        ArgumentsNode(1, [
           KeywordHashNode([AssocSplatNode(expression("kwargs"), Location())]),
           SplatNode(Location(), expression("args"))
-        ], 1),
+        ]),
         Location(),
-        nil,
-        0
+        nil
       )
 
       assert_errors expected, "a(**kwargs, *args)", [
@@ -360,15 +381,15 @@ module Prism
 
     def test_arguments_after_block
       expected = CallNode(
+        0,
         nil,
         nil,
         :a,
         Location(),
         Location(),
-        ArgumentsNode([expression("foo")], 0),
+        ArgumentsNode(0, [expression("foo")]),
         Location(),
-        BlockArgumentNode(expression("block"), Location()),
-        0
+        BlockArgumentNode(expression("block"), Location())
       )
 
       assert_errors expected, "a(&block, foo)", [
@@ -386,24 +407,24 @@ module Prism
 
     def test_splat_argument_after_keyword_argument
       expected = CallNode(
+        0,
         nil,
         nil,
         :a,
         Location(),
         Location(),
-        ArgumentsNode([
+        ArgumentsNode(0, [
           KeywordHashNode(
             [AssocNode(
-              SymbolNode(nil, Location(), Location(), "foo"),
+              SymbolNode(0, nil, Location(), Location(), "foo"),
               expression("bar"),
               nil
             )]
           ),
           SplatNode(Location(), expression("args"))
-        ], 0),
+        ]),
         Location(),
-        nil,
-        0
+        nil
       )
 
       assert_errors expected, "a(foo: bar, *args)", [
@@ -419,6 +440,7 @@ module Prism
         nil,
         StatementsNode([ModuleNode([], Location(), ConstantReadNode(:A), nil, Location(), :A)]),
         [],
+        0,
         Location(),
         nil,
         nil,
@@ -440,6 +462,7 @@ module Prism
         nil,
         StatementsNode(
           [CallNode(
+            0,
             nil,
             nil,
             :bar,
@@ -449,15 +472,16 @@ module Prism
             nil,
             BlockNode(
               [],
+              0,
               nil,
               StatementsNode([ModuleNode([], Location(), ConstantReadNode(:Foo), nil, Location(), :Foo)]),
               Location(),
               Location()
-            ),
-            0
+            )
           )]
         ),
         [],
+        0,
         Location(),
         nil,
         nil,
@@ -508,6 +532,7 @@ module Prism
           )]
         ),
         [],
+        0,
         Location(),
         nil,
         nil,
@@ -548,6 +573,7 @@ module Prism
         ], [], nil, [], [], nil, nil),
         nil,
         [:A, :@a, :$A, :@@a],
+        4,
         Location(),
         nil,
         Location(),
@@ -568,16 +594,16 @@ module Prism
       expected = BeginNode(
         Location(),
         StatementsNode([
-          LocalVariableWriteNode(:_1, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_2, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_3, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_4, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_5, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_6, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_7, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_8, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_9, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_10, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location())
+          LocalVariableWriteNode(:_1, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_2, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_3, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_4, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_5, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_6, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_7, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_8, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_9, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_10, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location())
         ]),
         nil,
         nil,
@@ -591,15 +617,15 @@ module Prism
       end
       RUBY
       assert_errors expected, source, [
-        ["_1 is reserved for a numbered parameter", 8..10],
-        ["_2 is reserved for a numbered parameter", 14..16],
-        ["_3 is reserved for a numbered parameter", 20..22],
-        ["_4 is reserved for a numbered parameter", 26..28],
-        ["_5 is reserved for a numbered parameter", 32..34],
-        ["_6 is reserved for a numbered parameter", 40..42],
-        ["_7 is reserved for a numbered parameter", 46..48],
-        ["_8 is reserved for a numbered parameter", 52..54],
-        ["_9 is reserved for a numbered parameter", 58..60],
+        ["_1 is reserved for numbered parameters", 8..10],
+        ["_2 is reserved for numbered parameters", 14..16],
+        ["_3 is reserved for numbered parameters", 20..22],
+        ["_4 is reserved for numbered parameters", 26..28],
+        ["_5 is reserved for numbered parameters", 32..34],
+        ["_6 is reserved for numbered parameters", 40..42],
+        ["_7 is reserved for numbered parameters", 46..48],
+        ["_8 is reserved for numbered parameters", 52..54],
+        ["_9 is reserved for numbered parameters", 58..60],
       ]
     end
 
@@ -619,6 +645,7 @@ module Prism
         ),
         nil,
         [:a, :b, :c],
+        3,
         Location(),
         nil,
         Location(),
@@ -635,6 +662,7 @@ module Prism
     def test_do_not_allow_trailing_commas_in_lambda_parameters
       expected = LambdaNode(
         [:a, :b],
+        2,
         Location(),
         Location(),
         Location(),
@@ -652,7 +680,7 @@ module Prism
     end
 
     def test_do_not_allow_multiple_codepoints_in_a_single_character_literal
-      expected = StringNode(0, Location(), Location(), nil, "\u0001\u0002")
+      expected = StringNode(StringFlags::FORCED_UTF8_ENCODING, Location(), Location(), nil, "\u0001\u0002")
 
       assert_errors expected, '?\u{0001 0002}', [
         ["invalid Unicode escape sequence; multiple codepoints are not allowed in a character literal", 9..12]
@@ -703,6 +731,7 @@ module Prism
         ),
         nil,
         [:block, :a],
+        2,
         Location(),
         nil,
         Location(),
@@ -723,6 +752,7 @@ module Prism
         ParametersNode([], [], nil, [RequiredParameterNode(:a)], [], nil, BlockParameterNode(nil, nil, Location())),
         nil,
         [:&, :a],
+        2,
         Location(),
         nil,
         Location(),
@@ -752,6 +782,7 @@ module Prism
         ),
         nil,
         [:"...", :a],
+        2,
         Location(),
         nil,
         Location(),
@@ -780,6 +811,7 @@ module Prism
         ),
         nil,
         [:b, :a],
+        2,
         Location(),
         nil,
         Location(),
@@ -808,6 +840,7 @@ module Prism
         ),
         nil,
         [:rest, :b],
+        2,
         Location(),
         nil,
         Location(),
@@ -829,6 +862,7 @@ module Prism
         ParametersNode([], [], nil, [], [], ForwardingParameterNode(), nil),
         nil,
         [:"..."],
+        1,
         Location(),
         nil,
         Location(),
@@ -858,6 +892,7 @@ module Prism
         ),
         nil,
         [:args, :a, :b],
+        3,
         Location(),
         nil,
         Location(),
@@ -888,6 +923,7 @@ module Prism
         ),
         nil,
         [:args, :a, :b],
+        3,
         Location(),
         nil,
         Location(),
@@ -918,6 +954,7 @@ module Prism
         ),
         nil,
         [:args, :a, :b],
+        3,
         Location(),
         nil,
         Location(),
@@ -951,6 +988,7 @@ module Prism
         ),
         nil,
         [:a, :b, :c, :d, :e],
+        5,
         Location(),
         nil,
         Location(),
@@ -966,7 +1004,7 @@ module Prism
 
     def test_case_without_when_clauses_errors_on_else_clause
       expected = CaseMatchNode(
-        SymbolNode(Location(), Location(), nil, "a"),
+        SymbolNode(0, Location(), Location(), nil, "a"),
         [],
         ElseNode(Location(), nil, Location()),
         Location(),
@@ -980,7 +1018,7 @@ module Prism
 
     def test_case_without_clauses
       expected = CaseNode(
-        SymbolNode(Location(), Location(), nil, "a"),
+        SymbolNode(0, Location(), Location(), nil, "a"),
         [],
         nil,
         Location(),
@@ -1000,6 +1038,7 @@ module Prism
         nil,
         StatementsNode([IntegerNode(IntegerBaseFlags::DECIMAL)]),
         [],
+        0,
         Location(),
         nil,
         Location(),
@@ -1016,6 +1055,7 @@ module Prism
     def test_do_not_allow_forward_arguments_in_lambda_literals
       expected = LambdaNode(
         [],
+        0,
         Location(),
         Location(),
         Location(),
@@ -1030,6 +1070,7 @@ module Prism
 
     def test_do_not_allow_forward_arguments_in_blocks
       expected = CallNode(
+        0,
         nil,
         nil,
         :a,
@@ -1039,12 +1080,12 @@ module Prism
         nil,
         BlockNode(
           [],
+          0,
           BlockParametersNode(ParametersNode([], [], nil, [], [], ForwardingParameterNode(), nil), [], Location(), Location()),
           nil,
           Location(),
           Location()
-        ),
-        0
+        )
       )
 
       assert_errors expected, "a {|...|}", [
@@ -1114,6 +1155,7 @@ module Prism
           ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b), RequiredParameterNode(:a)], [], nil, [], [], nil, nil),
           nil,
           [:a, :b],
+          2,
           Location(),
           nil,
           Location(),
@@ -1134,6 +1176,7 @@ module Prism
         ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], RestParameterNode(:a, Location(), Location()), [], [], nil, nil),
         nil,
         [:a, :b],
+        2,
         Location(),
         nil,
         Location(),
@@ -1153,6 +1196,7 @@ module Prism
         ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], nil, [], [], KeywordRestParameterNode(:a, Location(), Location()), nil),
         nil,
         [:a, :b],
+        2,
         Location(),
         nil,
         Location(),
@@ -1172,6 +1216,7 @@ module Prism
         ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], nil, [], [], nil, BlockParameterNode(:a, Location(), Location())),
         nil,
         [:a, :b],
+        2,
         Location(),
         nil,
         Location(),
@@ -1191,6 +1236,7 @@ module Prism
         ParametersNode([], [OptionalParameterNode(:a, Location(), Location(), IntegerNode(IntegerBaseFlags::DECIMAL))], RestParameterNode(:c, Location(), Location()), [RequiredParameterNode(:b)], [], nil, nil),
         nil,
         [:a, :b, :c],
+        3,
         Location(),
         nil,
         Location(),
@@ -1313,18 +1359,18 @@ module Prism
 
     def test_writing_numbered_parameter
       assert_errors expression("-> { _1 = 0 }"), "-> { _1 = 0 }", [
-        ["_1 is reserved for a numbered parameter", 5..7]
+        ["_1 is reserved for numbered parameters", 5..7]
       ]
     end
 
     def test_targeting_numbered_parameter
       assert_errors expression("-> { _1, = 0 }"), "-> { _1, = 0 }", [
-        ["_1 is reserved for a numbered parameter", 5..7]
+        ["_1 is reserved for numbered parameters", 5..7]
       ]
     end
 
     def test_defining_numbered_parameter
-      error_messages = ["_1 is reserved for a numbered parameter"]
+      error_messages = ["_1 is reserved for numbered parameters"]
 
       assert_error_messages "def _1; end", error_messages
       assert_error_messages "def self._1; end", error_messages
@@ -1379,16 +1425,16 @@ module Prism
     def test_numbered_parameters_in_block_arguments
       source = "foo { |_1| }"
       assert_errors expression(source), source, [
-        ["_1 is reserved for a numbered parameter", 7..9],
+        ["_1 is reserved for numbered parameters", 7..9],
       ]
     end
 
     def test_conditional_predicate_closed
       source = "if 0 0; elsif 0 0; end\nunless 0 0; end"
       assert_errors expression(source), source, [
-        ["expected `then` or `;` or '\n" + "'", 5..6],
-        ["expected `then` or `;` or '\n" + "'", 16..17],
-        ["expected `then` or `;` or '\n" + "'", 32..33],
+        ["expected `then` or `;` or '\\n" + "'", 5..6],
+        ["expected `then` or `;` or '\\n" + "'", 16..17],
+        ["expected `then` or `;` or '\\n" + "'", 32..33],
       ]
     end
 
@@ -1426,7 +1472,7 @@ module Prism
     def test_semicolon_after_inheritance_operator
       source = "class Foo < Bar end"
       assert_errors expression(source), source, [
-        ["unexpected `end`, expecting ';' or '\n'", 15..15],
+        ["unexpected `end`, expecting ';' or '\\n'", 15..15],
       ]
     end
 
@@ -1465,7 +1511,7 @@ module Prism
         /(?<_1>)/ =~ a
       RUBY
 
-      message = "_1 is reserved for a numbered parameter"
+      message = "_1 is reserved for numbered parameters"
       assert_errors expression(source), source, [
         [message, 5..7],
         [message, 13..15],
@@ -1657,6 +1703,28 @@ module Prism
         [message, 85..91],
         [message, 96..102],
         [message, 109..115]
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
+    def test_void_value_expression_in_array
+      source = <<~RUBY
+        [return]
+        [1, return]
+        [ return => 1 ]
+        [ 1 => return ]
+        [ a: return ]
+        [ *return ]
+        [ **return ]
+      RUBY
+      message = 'unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 1..7],
+        [message, 13..19],
+        [message, 23..29],
+        [message, 44..50],
+        [message, 58..64],
+        [message, 70..76],
+        [message, 83..89],
       ], compare_ripper: false # Ripper does not check 'void value expression'.
     end
 
@@ -1871,6 +1939,69 @@ module Prism
         [message, 61..64],
         [message, 81..84],
       ], compare_ripper: false # Ripper does not check 'circular reference'.
+    end
+
+    def test_command_calls
+      sources = <<~RUBY.lines
+        [a b]
+        {a: b c}
+        ...a b
+        if ...a b; end
+        a b, c d
+        a(b, c d)
+        a(*b c)
+        a(**b c)
+        a(&b c)
+        +a b
+        a + b c
+        a && b c
+        a =~ b c
+        a = b, c d
+        a = *b c
+        a, b = c = d f
+        a ? b c : d e
+        defined? a b
+        ! ! a b
+        def f a = b c; end
+        def f(a = b c); end
+        a = b rescue c d
+        def a = b rescue c d
+        ->a=b c{}
+        ->(a=b c){}
+        case; when a b; end
+        case; in a if a b; end
+        case; in a unless a b; end
+        begin; rescue a b; end
+        begin; rescue a b => c; end
+      RUBY
+      sources.each do |source|
+        assert_nil Ripper.sexp_raw(source)
+        assert_false(Prism.parse(source).success?)
+      end
+    end
+
+    def test_range_and_bin_op
+      sources = <<~RUBY.lines
+        1..2..3
+        1..2..
+        1.. || 2
+        1.. & 2
+        1.. * 2
+        1.. / 2
+        1.. % 2
+        1.. ** 2
+      RUBY
+      sources.each do |source|
+        assert_nil Ripper.sexp_raw(source)
+        assert_false(Prism.parse(source).success?)
+      end
+    end
+
+    def test_constant_assignment_in_method
+      source = 'def foo();A=1;end'
+      assert_errors expression(source), source, [
+        ['dynamic constant assignment', 10..13]
+      ]
     end
 
     private

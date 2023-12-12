@@ -313,7 +313,7 @@ class TestGCCompact < Test::Unit::TestCase
 
     assert_separately(%w[-robjspace], "#{<<~"begin;"}\n#{<<~"end;"}", timeout: 10, signal: :SEGV)
     begin;
-      ARY_COUNT = 500
+      ARY_COUNT = 50000
 
       GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
@@ -325,7 +325,7 @@ class TestGCCompact < Test::Unit::TestCase
       }.resume
 
       stats = GC.verify_compaction_references(expand_heap: true, toward: :empty)
-      assert_operator(stats.dig(:moved_down, :T_ARRAY) || 0, :>=, ARY_COUNT)
+      assert_operator(stats.dig(:moved_down, :T_ARRAY) || 0, :>=, ARY_COUNT - 10)
       refute_empty($arys.keep_if { |o| ObjectSpace.dump(o).include?('"embedded":true') })
     end;
   end
@@ -335,7 +335,7 @@ class TestGCCompact < Test::Unit::TestCase
 
     assert_separately(%w[-robjspace], "#{<<~"begin;"}\n#{<<~"end;"}", timeout: 10, signal: :SEGV)
     begin;
-      ARY_COUNT = 500
+      ARY_COUNT = 50000
 
       GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
@@ -349,7 +349,7 @@ class TestGCCompact < Test::Unit::TestCase
       }.resume
 
       stats = GC.verify_compaction_references(expand_heap: true, toward: :empty)
-      assert_operator(stats.dig(:moved_up, :T_ARRAY) || 0, :>=, ARY_COUNT)
+      assert_operator(stats.dig(:moved_up, :T_ARRAY) || 0, :>=, ARY_COUNT - 10)
       refute_empty($arys.keep_if { |o| ObjectSpace.dump(o).include?('"embedded":true') })
     end;
   end
@@ -367,7 +367,7 @@ class TestGCCompact < Test::Unit::TestCase
         end
       end
 
-      OBJ_COUNT = 500
+      OBJ_COUNT = 50000
 
       GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
@@ -381,7 +381,7 @@ class TestGCCompact < Test::Unit::TestCase
 
       stats = GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
-      assert_operator(stats.dig(:moved_up, :T_OBJECT) || 0, :>=, OBJ_COUNT)
+      assert_operator(stats.dig(:moved_up, :T_OBJECT) || 0, :>=, OBJ_COUNT - 10)
       refute_empty($ary.keep_if { |o| ObjectSpace.dump(o).include?('"embedded":true') })
     end;
   end
@@ -389,20 +389,20 @@ class TestGCCompact < Test::Unit::TestCase
   def test_moving_strings_up_size_pools
     omit if GC::INTERNAL_CONSTANTS[:SIZE_POOL_COUNT] == 1
 
-    assert_separately(%w[-robjspace], "#{<<~"begin;"}\n#{<<~"end;"}", timeout: 10, signal: :SEGV)
+    assert_separately(%w[-robjspace], "#{<<~"begin;"}\n#{<<~"end;"}", timeout: 30, signal: :SEGV)
     begin;
-      STR_COUNT = 500
+      STR_COUNT = 50000
 
       GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
       Fiber.new {
-        str = "a" * GC::INTERNAL_CONSTANTS[:BASE_SLOT_SIZE]
+        str = "a" * GC::INTERNAL_CONSTANTS[:BASE_SLOT_SIZE] * 4
         $ary = STR_COUNT.times.map { "" << str }
       }.resume
 
       stats = GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
-      assert_operator(stats[:moved_up][:T_STRING], :>=, STR_COUNT)
+      assert_operator(stats[:moved_up][:T_STRING], :>=, STR_COUNT - 10)
       refute_empty($ary.keep_if { |o| ObjectSpace.dump(o).include?('"embedded":true') })
     end;
   end
@@ -410,19 +410,19 @@ class TestGCCompact < Test::Unit::TestCase
   def test_moving_strings_down_size_pools
     omit if GC::INTERNAL_CONSTANTS[:SIZE_POOL_COUNT] == 1
 
-    assert_separately(%w[-robjspace], "#{<<~"begin;"}\n#{<<~"end;"}", timeout: 10, signal: :SEGV)
+    assert_separately(%w[-robjspace], "#{<<~"begin;"}\n#{<<~"end;"}", timeout: 30, signal: :SEGV)
     begin;
-      STR_COUNT = 500
+      STR_COUNT = 50000
 
       GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
       Fiber.new {
-        $ary = STR_COUNT.times.map { ("a" * GC::INTERNAL_CONSTANTS[:BASE_SLOT_SIZE]).squeeze! }
+        $ary = STR_COUNT.times.map { ("a" * GC::INTERNAL_CONSTANTS[:BASE_SLOT_SIZE] * 4).squeeze! }
       }.resume
 
       stats = GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
-      assert_operator(stats[:moved_down][:T_STRING], :>=, STR_COUNT)
+      assert_operator(stats[:moved_down][:T_STRING], :>=, STR_COUNT - 10)
       refute_empty($ary.keep_if { |o| ObjectSpace.dump(o).include?('"embedded":true') })
     end;
   end
@@ -432,9 +432,9 @@ class TestGCCompact < Test::Unit::TestCase
     # AR and ST hashes are in the same size pool on 32 bit
     omit unless RbConfig::SIZEOF["uint64_t"] <= RbConfig::SIZEOF["void*"]
 
-    assert_separately(%w[-robjspace], "#{<<~"begin;"}\n#{<<~"end;"}", timeout: 10, signal: :SEGV)
+    assert_separately(%w[-robjspace], "#{<<~"begin;"}\n#{<<~"end;"}", timeout: 30, signal: :SEGV)
     begin;
-      HASH_COUNT = 500
+      HASH_COUNT = 50000
 
       GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
@@ -446,7 +446,7 @@ class TestGCCompact < Test::Unit::TestCase
 
       stats = GC.verify_compaction_references(expand_heap: true, toward: :empty)
 
-      assert_operator(stats[:moved_down][:T_HASH], :>=, 500)
+      assert_operator(stats[:moved_down][:T_HASH], :>=, HASH_COUNT - 10)
     end;
   end
 
