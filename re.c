@@ -2151,6 +2151,17 @@ match_ary_aref(VALUE match, VALUE idx, VALUE result)
  *    m['foo'] # => "h"
  *    m[:bar]  # => "ge"
  *
+ *  If multiple captures have the same name, returns the last matched
+ *  substring.
+ *
+ *    m = /(?<foo>.)(?<foo>.+)/.match("hoge")
+ *    # => #<MatchData "hoge" foo:"h" foo:"oge">
+ *    m[:foo] #=> "oge"
+ *
+ *    m = /\W(?<foo>.+)|\w(?<foo>.+)|(?<foo>.+)/.match("hoge")
+ *    #<MatchData "hoge" foo:nil foo:"oge" foo:nil>
+ *    m[:foo] #=> "oge"
+ *
  */
 
 static VALUE
@@ -2334,8 +2345,8 @@ match_named_captures_iter(const OnigUChar *name, const OnigUChar *name_end,
  *    # => #<MatchData "01" a:"0" a:"1">
  *    m.named_captures #=> {"a" => "1"}
  *
- * If keyword argument +symbolize_names+ is given
- * a true value, the keys in the resulting hash are Symbols:
+ *  If keyword argument +symbolize_names+ is given
+ *  a true value, the keys in the resulting hash are Symbols:
  *
  *    m = /(?<a>.)(?<a>.)/.match("01")
  *    # => #<MatchData "01" a:"0" a:"1">

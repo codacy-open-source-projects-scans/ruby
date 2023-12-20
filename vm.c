@@ -3006,9 +3006,6 @@ ruby_vm_destruct(rb_vm_t *vm)
             rb_free_warning();
             rb_free_rb_global_tbl();
             rb_free_loaded_features_index(vm);
-            rb_ractor_t *r = vm->ractor.main_ractor;
-            xfree(r->sync.recv_queue.baskets);
-            xfree(r->sync.takers_queue.baskets);
 
             rb_id_table_free(vm->negative_cme_table);
             st_free_table(vm->overloaded_cme_table);
@@ -3060,7 +3057,6 @@ ruby_vm_destruct(rb_vm_t *vm)
                 rb_objspace_free_objects(objspace);
                 rb_free_generic_iv_tbl_();
                 if (th) {
-                    xfree(th->ractor);
                     xfree(stack);
                     ruby_mimfree(th);
                 }
@@ -3765,6 +3761,7 @@ f_sprintf(int c, const VALUE *v, VALUE _)
     return rb_f_sprintf(c, v);
 }
 
+/* :nodoc: */
 static VALUE
 vm_mtbl(VALUE self, VALUE obj, VALUE sym)
 {
@@ -3772,6 +3769,7 @@ vm_mtbl(VALUE self, VALUE obj, VALUE sym)
     return Qnil;
 }
 
+/* :nodoc: */
 static VALUE
 vm_mtbl2(VALUE self, VALUE obj, VALUE sym)
 {
@@ -4258,6 +4256,14 @@ rb_ruby_verbose_ptr(void)
 {
     rb_ractor_t *cr = GET_RACTOR();
     return &cr->verbose;
+}
+
+static bool prism;
+
+bool *
+rb_ruby_prism_ptr(void)
+{
+    return &prism;
 }
 
 VALUE *
