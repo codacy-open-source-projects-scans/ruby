@@ -5816,6 +5816,8 @@ rb_str_sub_bang(int argc, VALUE *argv, VALUE str)
         TERM_FILL(&RSTRING_PTR(str)[len], TERM_LEN(str));
         ENC_CODERANGE_SET(str, cr);
 
+        RB_GC_GUARD(match);
+
         return str;
     }
     return Qnil;
@@ -11628,10 +11630,15 @@ sym_inspect(VALUE sym)
     }
     else {
         rb_encoding *enc = STR_ENC_GET(str);
-        RSTRING_GETMEM(str, ptr, len);
+
+        VALUE orig_str = str;
+        RSTRING_GETMEM(orig_str, ptr, len);
+
         str = rb_enc_str_new(0, len + 1, enc);
         dest = RSTRING_PTR(str);
         memcpy(dest + 1, ptr, len);
+
+        RB_GC_GUARD(orig_str);
     }
     dest[0] = ':';
     return str;
