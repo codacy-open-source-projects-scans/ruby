@@ -711,6 +711,18 @@ class TestRegexp < Test::Unit::TestCase
     }
   end
 
+  def test_match_no_match_no_matchdata
+    EnvUtil.without_gc do
+      h = {}
+      ObjectSpace.count_objects(h)
+      prev_matches = h[:T_MATCH] || 0
+      md = /[A-Z]/.match('1') # no match
+      ObjectSpace.count_objects(h)
+      new_matches = h[:T_MATCH] || 0
+      assert_equal prev_matches, new_matches, "Bug [#20104]"
+    end
+  end
+
   def test_initialize
     assert_raise(ArgumentError) { Regexp.new }
     assert_equal(/foo/, assert_warning(/ignored/) {Regexp.new(/foo/, Regexp::IGNORECASE)})
@@ -1977,6 +1989,22 @@ class TestRegexp < Test::Unit::TestCase
     100.times do
       assert !Regexp.new(re).match?(str)
     end
+  end
+
+  def test_bug_20083 # [Bug #20083]
+    re = /([\s]*ABC)$/i
+    (1..100).each do |n|
+      text = "#{"0" * n}ABC"
+      assert text.match?(re)
+    end
+  end
+
+  def test_bug_20098 # [Bug #20098]
+    assert /a((.|.)|bc){,4}z/.match? 'abcbcbcbcz'
+    assert /a(b+?c*){4,5}z/.match? 'abbbccbbbccbcbcz'
+    assert /a(b+?(.|.)){2,3}z/.match? 'abbbcbbbcbbbcz'
+    assert /a(b*?(.|.)[bc]){2,5}z/.match? 'abcbbbcbcccbcz'
+    assert /^(?:.+){2,4}?b|b/.match? "aaaabaa"
   end
 
   def test_linear_time_p

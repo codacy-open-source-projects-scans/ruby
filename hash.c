@@ -2282,7 +2282,7 @@ rb_hash_default_proc(VALUE hash)
  *  call-seq:
  *    hash.default_proc = proc -> proc
  *
- *  Sets the default proc for +self+ to +proc+:
+ *  Sets the default proc for +self+ to +proc+
  *  (see {Default Values}[rdoc-ref:Hash@Default+Values]):
  *    h = {}
  *    h.default_proc # => nil
@@ -3786,16 +3786,15 @@ rb_hash_equal(VALUE hash1, VALUE hash2)
 
 /*
  *  call-seq:
- *    hash.eql? object -> true or false
+ *    hash.eql?(object) -> true or false
  *
  *  Returns +true+ if all of the following are true:
  *  * +object+ is a \Hash object.
  *  * +hash+ and +object+ have the same keys (regardless of order).
- *  * For each key +key+, <tt>h[key] eql? object[key]</tt>.
+ *  * For each key +key+, <tt>h[key].eql?(object[key])</tt>.
  *
  *  Otherwise, returns +false+.
  *
- *  Equal:
  *    h1 = {foo: 0, bar: 1, baz: 2}
  *    h2 = {foo: 0, bar: 1, baz: 2}
  *    h1.eql? h2 # => true
