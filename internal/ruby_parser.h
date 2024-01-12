@@ -2,7 +2,11 @@
 #define INTERNAL_RUBY_PARSE_H
 
 #include "internal.h"
+#include "internal/bignum.h"
+#include "internal/compilers.h"
+#include "internal/complex.h"
 #include "internal/imemo.h"
+#include "internal/rational.h"
 #include "rubyparser.h"
 #include "vm.h"
 
@@ -67,6 +71,13 @@ enum lex_state_e {
     EXPR_NONE = 0
 };
 
+VALUE rb_node_sym_string_val(const NODE *);
 VALUE rb_node_line_lineno_val(const NODE *);
 VALUE rb_node_file_path_val(const NODE *);
+
+VALUE rb_node_integer_literal_val(const NODE *);
+VALUE rb_node_float_literal_val(const NODE *);
+VALUE rb_node_rational_literal_val(const NODE *);
+VALUE rb_node_imaginary_literal_val(const NODE *);
+
 #endif /* INTERNAL_RUBY_PARSE_H */

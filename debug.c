@@ -147,10 +147,18 @@ NODE *
 ruby_debug_print_node(int level, int debug_level, const char *header, const NODE *node)
 {
     if (level < debug_level) {
-        fprintf(stderr, "DBG> %s: %s (%u)\n", header,
-                ruby_node_name(nd_type(node)), nd_line(node));
+        fprintf(stderr, "DBG> %s: %s (id: %d, line: %d, location: (%d,%d)-(%d,%d))\n",
+                header, ruby_node_name(nd_type(node)), nd_node_id(node), nd_line(node),
+                nd_first_lineno(node), nd_first_column(node),
+                nd_last_lineno(node), nd_last_column(node));
     }
     return (NODE *)node;
+}
+
+void
+ruby_debug_print_n(const NODE *node)
+{
+    ruby_debug_print_node(0, 1, "", node);
 }
 
 void
@@ -675,7 +683,7 @@ debug_log_dump(FILE *out, unsigned int n)
             int index = current_index - size + i;
             if (index < 0) index += MAX_DEBUG_LOG;
             VM_ASSERT(index <= MAX_DEBUG_LOG);
-            const char *mesg = RUBY_DEBUG_LOG_MEM_ENTRY(index);;
+            const char *mesg = RUBY_DEBUG_LOG_MEM_ENTRY(index);
             fprintf(out, "%4u: %s\n", debug_log.cnt - size + i, mesg);
         }
     }

@@ -1427,6 +1427,7 @@ static inline void gc_prof_set_heap_info(rb_objspace_t *);
 #endif
 PRINTF_ARGS(static void gc_report_body(int level, rb_objspace_t *objspace, const char *fmt, ...), 3, 4);
 static const char *obj_info(VALUE obj);
+static const char *obj_info_basic(VALUE obj);
 static const char *obj_type_name(VALUE obj);
 
 static void gc_finalize_deferred(void *dmy);
@@ -2638,7 +2639,7 @@ newobj_init(VALUE klass, VALUE flags, int wb_protected, rb_objspace_t *objspace,
     GC_ASSERT(!SPECIAL_CONST_P(obj)); /* check alignment */
 #endif
 
-    gc_report(5, objspace, "newobj: %s\n", obj_info(obj));
+    gc_report(5, objspace, "newobj: %s\n", obj_info_basic(obj));
 
     // RUBY_DEBUG_LOG("obj:%p (%s)", (void *)obj, obj_type_name(obj));
     return obj;
@@ -5669,46 +5670,46 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
         asan_unpoison_object(vp, false);
         if (bitset & 1) {
             switch (BUILTIN_TYPE(vp)) {
-                default: /* majority case */
-                    gc_report(2, objspace, "page_sweep: free %p\n", (void *)p);
+              default: /* majority case */
+                gc_report(2, objspace, "page_sweep: free %p\n", (void *)p);
 #if RGENGC_CHECK_MODE
-                    if (!is_full_marking(objspace)) {
-                        if (RVALUE_OLD_P(vp)) rb_bug("page_sweep: %p - old while minor GC.", (void *)p);
-                        if (RVALUE_REMEMBERED(vp)) rb_bug("page_sweep: %p - remembered.", (void *)p);
-                    }
+                if (!is_full_marking(objspace)) {
+                    if (RVALUE_OLD_P(vp)) rb_bug("page_sweep: %p - old while minor GC.", (void *)p);
+                    if (RVALUE_REMEMBERED(vp)) rb_bug("page_sweep: %p - remembered.", (void *)p);
+                }
 #endif
-                    if (obj_free(objspace, vp)) {
-                        // always add free slots back to the swept pages freelist,
-                        // so that if we're comapacting, we can re-use the slots
-                        (void)VALGRIND_MAKE_MEM_UNDEFINED((void*)p, BASE_SLOT_SIZE);
-                        heap_page_add_freeobj(objspace, sweep_page, vp);
-                        gc_report(3, objspace, "page_sweep: %s is added to freelist\n", obj_info(vp));
-                        ctx->freed_slots++;
-                    }
-                    else {
-                        ctx->final_slots++;
-                    }
-                    break;
-
-                case T_MOVED:
-                    if (objspace->flags.during_compacting) {
-                        /* The sweep cursor shouldn't have made it to any
-                         * T_MOVED slots while the compact flag is enabled.
-                         * The sweep cursor and compact cursor move in
-                         * opposite directions, and when they meet references will
-                         * get updated and "during_compacting" should get disabled */
-                        rb_bug("T_MOVED shouldn't be seen until compaction is finished");
-                    }
-                    gc_report(3, objspace, "page_sweep: %s is added to freelist\n", obj_info(vp));
-                    ctx->empty_slots++;
+                if (obj_free(objspace, vp)) {
+                    // always add free slots back to the swept pages freelist,
+                    // so that if we're comapacting, we can re-use the slots
+                    (void)VALGRIND_MAKE_MEM_UNDEFINED((void*)p, BASE_SLOT_SIZE);
                     heap_page_add_freeobj(objspace, sweep_page, vp);
-                    break;
-                case T_ZOMBIE:
-                    /* already counted */
-                    break;
-                case T_NONE:
-                    ctx->empty_slots++; /* already freed */
-                    break;
+                    gc_report(3, objspace, "page_sweep: %s is added to freelist\n", obj_info(vp));
+                    ctx->freed_slots++;
+                }
+                else {
+                    ctx->final_slots++;
+                }
+                break;
+
+              case T_MOVED:
+                if (objspace->flags.during_compacting) {
+                    /* The sweep cursor shouldn't have made it to any
+                     * T_MOVED slots while the compact flag is enabled.
+                     * The sweep cursor and compact cursor move in
+                     * opposite directions, and when they meet references will
+                     * get updated and "during_compacting" should get disabled */
+                    rb_bug("T_MOVED shouldn't be seen until compaction is finished");
+                }
+                gc_report(3, objspace, "page_sweep: %s is added to freelist\n", obj_info(vp));
+                ctx->empty_slots++;
+                heap_page_add_freeobj(objspace, sweep_page, vp);
+                break;
+              case T_ZOMBIE:
+                /* already counted */
+                break;
+              case T_NONE:
+                ctx->empty_slots++; /* already freed */
+                break;
             }
         }
         p += slot_size;
@@ -9749,10 +9750,6 @@ gc_enter_count(enum gc_enter_event event)
     }
 }
 
-#ifndef MEASURE_GC
-#define MEASURE_GC (objspace->flags.measure_gc)
-#endif
-
 static bool current_process_time(struct timespec *ts);
 
 static void
@@ -9822,12 +9819,18 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_l
     RB_VM_LOCK_LEAVE_LEV(lock_lev);
 }
 
+#ifndef MEASURE_GC
+#define MEASURE_GC (objspace->flags.measure_gc)
+#endif
+
 static void
 gc_marking_enter(rb_objspace_t *objspace)
 {
     GC_ASSERT(during_gc != 0);
 
-    gc_clock_start(&objspace->profile.marking_start_time);
+    if (MEASURE_GC) {
+        gc_clock_start(&objspace->profile.marking_start_time);
+    }
 }
 
 static void
@@ -9835,7 +9838,9 @@ gc_marking_exit(rb_objspace_t *objspace)
 {
     GC_ASSERT(during_gc != 0);
 
-    objspace->profile.marking_time_ns += gc_clock_end(&objspace->profile.marking_start_time);
+    if (MEASURE_GC) {
+        objspace->profile.marking_time_ns += gc_clock_end(&objspace->profile.marking_start_time);
+    }
 }
 
 static void
@@ -9843,7 +9848,9 @@ gc_sweeping_enter(rb_objspace_t *objspace)
 {
     GC_ASSERT(during_gc != 0);
 
-    gc_clock_start(&objspace->profile.sweeping_start_time);
+    if (MEASURE_GC) {
+        gc_clock_start(&objspace->profile.sweeping_start_time);
+    }
 }
 
 static void
@@ -9851,7 +9858,9 @@ gc_sweeping_exit(rb_objspace_t *objspace)
 {
     GC_ASSERT(during_gc != 0);
 
-    objspace->profile.sweeping_time_ns += gc_clock_end(&objspace->profile.sweeping_start_time);
+    if (MEASURE_GC) {
+        objspace->profile.sweeping_time_ns += gc_clock_end(&objspace->profile.sweeping_start_time);
+    }
 }
 
 static void *
@@ -10994,11 +11003,19 @@ gc_update_references(rb_objspace_t *objspace)
  *
  * Returns information about object moved in the most recent \GC compaction.
  *
- * The returned hash has two keys :considered and :moved.  The hash for
- * :considered lists the number of objects that were considered for movement
- * by the compactor, and the :moved hash lists the number of objects that
- * were actually moved.  Some objects can't be moved (maybe they were pinned)
- * so these numbers can be used to calculate compaction efficiency.
+ * The returned +hash+ has the following keys:
+ *
+ * - +:considered+: a hash containing the type of the object as the key and
+ *   the number of objects of that type that were considered for movement.
+ * - +:moved+: a hash containing the type of the object as the key and the
+ *   number of objects of that type that were actually moved.
+ * - +:moved_up+: a hash containing the type of the object as the key and the
+ *   number of objects of that type that were increased in size.
+ * - +:moved_down+: a hash containing the type of the object as the key and
+ *   the number of objects of that type that were decreased in size.
+ *
+ * Some objects can't be moved (due to pinning) so these numbers can be used to
+ * calculate compaction efficiency.
  */
 static VALUE
 gc_compact_stats(VALUE self)
@@ -11096,8 +11113,8 @@ heap_check_moved_i(void *vstart, void *vend, size_t stride, void *data)
  * This function compacts objects together in Ruby's heap.  It eliminates
  * unused space (or fragmentation) in the heap by moving objects in to that
  * unused space.  This function returns a hash which contains statistics about
- * which objects were moved.  See <tt>GC.latest_gc_info</tt> for details about
- * compaction statistics.
+ * which objects were moved. See <tt>GC.latest_compact_info</tt> for details
+ * about compaction statistics.
  *
  * This method is implementation specific and not expected to be implemented
  * in any implementation besides MRI.
@@ -14083,6 +14100,17 @@ rb_raw_obj_info(char *const buff, const size_t buff_size, VALUE obj)
     return buff;
 }
 
+const char *
+rb_raw_obj_info_basic(char *const buff, const size_t buff_size, VALUE obj)
+{
+    asan_unpoisoning_object(obj) {
+        size_t pos = rb_raw_obj_info_common(buff, buff_size, obj);
+        if (pos >= buff_size) {} // truncated
+    }
+
+    return buff;
+}
+
 #undef APPEND_S
 #undef APPEND_F
 #undef BUFF_ARGS
@@ -14114,12 +14142,27 @@ obj_info(VALUE obj)
     char *const buff = obj_info_buffers[index];
     return rb_raw_obj_info(buff, OBJ_INFO_BUFFERS_SIZE, obj);
 }
+
+static const char *
+obj_info_basic(VALUE obj)
+{
+    rb_atomic_t index = atomic_inc_wraparound(&obj_info_buffers_index, OBJ_INFO_BUFFERS_NUM);
+    char *const buff = obj_info_buffers[index];
+    return rb_raw_obj_info_basic(buff, OBJ_INFO_BUFFERS_SIZE, obj);
+}
 #else
 static const char *
 obj_info(VALUE obj)
 {
     return obj_type_name(obj);
 }
+
+static const char *
+obj_info_basic(VALUE obj)
+{
+    return obj_type_name(obj);
+}
+
 #endif
 
 const char *
