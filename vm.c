@@ -54,6 +54,8 @@
 int ruby_assert_critical_section_entered = 0;
 #endif
 
+static void *native_main_thread_stack_top;
+
 VALUE rb_str_concat_literals(size_t, const VALUE*);
 
 VALUE vm_exec(rb_execution_context_t *);
@@ -3441,9 +3443,7 @@ thread_free(void *ptr)
         rb_bug("thread_free: keeping_mutexes must be NULL (%p:%p)", (void *)th, (void *)th->keeping_mutexes);
     }
 
-    if (th->specific_storage) {
-        ruby_xfree(th->specific_storage);
-    }
+    ruby_xfree(th->specific_storage);
 
     rb_threadptr_root_fiber_release(th);
 
@@ -3666,7 +3666,9 @@ kwmerge_i(VALUE key, VALUE value, VALUE hash)
 static VALUE
 m_core_hash_merge_kwd(VALUE recv, VALUE hash, VALUE kw)
 {
-    REWIND_CFP(hash = core_hash_merge_kwd(hash, kw));
+    if (!NIL_P(kw)) {
+        REWIND_CFP(hash = core_hash_merge_kwd(hash, kw));
+    }
     return hash;
 }
 
@@ -4204,7 +4206,8 @@ Init_BareVM(void)
     th_init(th, 0, vm);
 
     rb_ractor_set_current_ec(th->ractor, th->ec);
-    ruby_thread_init_stack(th);
+    /* n.b. native_main_thread_stack_top is set by the INIT_STACK macro */
+    ruby_thread_init_stack(th, native_main_thread_stack_top);
 
     // setup ractor system
     rb_native_mutex_initialize(&vm->ractor.sync.lock);
@@ -4213,6 +4216,12 @@ Init_BareVM(void)
 #ifdef RUBY_THREAD_WIN32_H
     rb_native_cond_initialize(&vm->ractor.sync.barrier_cond);
 #endif
+}
+
+void
+ruby_init_stack(void *addr)
+{
+    native_main_thread_stack_top = addr;
 }
 
 #ifndef _WIN32

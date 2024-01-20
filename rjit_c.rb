@@ -364,7 +364,6 @@ module RubyVM::RJIT # :nodoc: all
   C::BOP_OR = Primitive.cexpr! %q{ SIZET2NUM(BOP_OR) }
   C::BOP_PLUS = Primitive.cexpr! %q{ SIZET2NUM(BOP_PLUS) }
   C::BUILTIN_ATTR_LEAF = Primitive.cexpr! %q{ SIZET2NUM(BUILTIN_ATTR_LEAF) }
-  C::BUILTIN_ATTR_NO_GC = Primitive.cexpr! %q{ SIZET2NUM(BUILTIN_ATTR_NO_GC) }
   C::HASH_REDEFINED_OP_FLAG = Primitive.cexpr! %q{ SIZET2NUM(HASH_REDEFINED_OP_FLAG) }
   C::INTEGER_REDEFINED_OP_FLAG = Primitive.cexpr! %q{ SIZET2NUM(INTEGER_REDEFINED_OP_FLAG) }
   C::INVALID_SHAPE_ID = Primitive.cexpr! %q{ SIZET2NUM(INVALID_SHAPE_ID) }
@@ -1389,6 +1388,7 @@ module RubyVM::RJIT # :nodoc: all
       send_iseq_has_rest: [CType::Immediate.parse("size_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_runtime_counters *)NULL)), send_iseq_has_rest)")],
       send_iseq_block_arg0_splat: [CType::Immediate.parse("size_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_runtime_counters *)NULL)), send_iseq_block_arg0_splat)")],
       send_iseq_kw_call: [CType::Immediate.parse("size_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_runtime_counters *)NULL)), send_iseq_kw_call)")],
+      send_iseq_kw_splat: [CType::Immediate.parse("size_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_runtime_counters *)NULL)), send_iseq_kw_splat)")],
       send_iseq_splat: [CType::Immediate.parse("size_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_runtime_counters *)NULL)), send_iseq_splat)")],
       send_iseq_has_rest_and_optional: [CType::Immediate.parse("size_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_runtime_counters *)NULL)), send_iseq_has_rest_and_optional)")],
       send_iseq_arity_error: [CType::Immediate.parse("size_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_runtime_counters *)NULL)), send_iseq_arity_error)")],

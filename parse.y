@@ -527,6 +527,11 @@ typedef struct token_info {
     struct token_info *next;
 } token_info;
 
+typedef struct end_expect_token_locations {
+    const rb_code_position_t *pos;
+    struct end_expect_token_locations *prev;
+} end_expect_token_locations_t;
+
 /*
     Structure of Lexer Buffer:
 
@@ -606,7 +611,7 @@ struct parser_params {
     struct lex_context ctxt;
 
 #ifdef UNIVERSAL_PARSER
-    rb_parser_config_t *config;
+    const rb_parser_config_t *config;
 #endif
     /* compile_option */
     signed int frozen_string_literal:2; /* -1: not specified, 0: false, 1: true */
@@ -639,8 +644,11 @@ struct parser_params {
     VALUE error_buffer;
     VALUE debug_lines;
     const struct rb_iseq_struct *parent_iseq;
-    /* store specific keyword locations to generate dummy end token */
-    VALUE end_expect_token_locations;
+    /*
+     * Store specific keyword locations to generate dummy end token.
+     * Refer to the tail of list element.
+     */
+    end_expect_token_locations_t *end_expect_token_locations;
     /* id for terms */
     int token_id;
     /* Array for term tokens */
@@ -703,8 +711,15 @@ static void
 debug_end_expect_token_locations(struct parser_params *p, const char *name)
 {
     if(p->debug) {
-        VALUE mesg = rb_sprintf("%s: ", name);
-        rb_str_catf(mesg, " %"PRIsVALUE"\n", p->end_expect_token_locations);
+        VALUE mesg = rb_sprintf("%s: [", name);
+        int i = 0;
+        for (end_expect_token_locations_t *loc = p->end_expect_token_locations; loc; loc = loc->prev) {
+            if (i > 0)
+                rb_str_cat_cstr(mesg, ", ");
+            rb_str_catf(mesg, "[%d, %d]", loc->pos->lineno, loc->pos->column);
+            i++;
+        }
+        rb_str_cat_cstr(mesg, "]\n");
         flush_debug_buffer(p, p->debug_output, mesg);
     }
 }
@@ -712,24 +727,33 @@ debug_end_expect_token_locations(struct parser_params *p, const char *name)
 static void
 push_end_expect_token_locations(struct parser_params *p, const rb_code_position_t *pos)
 {
-    if(NIL_P(p->end_expect_token_locations)) return;
-    rb_ary_push(p->end_expect_token_locations, rb_ary_new_from_args(2, INT2NUM(pos->lineno), INT2NUM(pos->column)));
+    if(!p->error_tolerant) return;
+
+    end_expect_token_locations_t *locations;
+    locations = ALLOC(end_expect_token_locations_t);
+    locations->pos = pos;
+    locations->prev = p->end_expect_token_locations;
+    p->end_expect_token_locations = locations;
+
     debug_end_expect_token_locations(p, "push_end_expect_token_locations");
 }
 
 static void
 pop_end_expect_token_locations(struct parser_params *p)
 {
-    if(NIL_P(p->end_expect_token_locations)) return;
-    rb_ary_pop(p->end_expect_token_locations);
+    if(!p->end_expect_token_locations) return;
+
+    end_expect_token_locations_t *locations = p->end_expect_token_locations->prev;
+    ruby_sized_xfree(p->end_expect_token_locations, sizeof(end_expect_token_locations_t));
+    p->end_expect_token_locations = locations;
+
     debug_end_expect_token_locations(p, "pop_end_expect_token_locations");
 }
 
-static VALUE
+static end_expect_token_locations_t *
 peek_end_expect_token_locations(struct parser_params *p)
 {
-    if(NIL_P(p->end_expect_token_locations)) return Qnil;
-    return rb_ary_last(0, 0, p->end_expect_token_locations);
+    return p->end_expect_token_locations;
 }
 
 static ID
@@ -7017,11 +7041,6 @@ do { \
   set_yylval_node(NEW_STR(x, &_cur_loc)); \
   RB_OBJ_WRITTEN(p->ast, Qnil, x); \
 } while(0)
-# define set_yylval_literal(x) \
-do { \
-  set_yylval_node(NEW_LIT(x, &_cur_loc)); \
-  RB_OBJ_WRITTEN(p->ast, Qnil, x); \
-} while(0)
 # define set_yylval_num(x) (yylval.num = (x))
 # define set_yylval_id(x)  (yylval.id = (x))
 # define set_yylval_name(x)  (yylval.id = (x))
@@ -7036,7 +7055,6 @@ ripper_yylval_id(struct parser_params *p, ID x)
 # define set_yylval_num(x) (yylval.val = ripper_new_yylval(p, (x), 0, 0))
 # define set_yylval_id(x)  (void)(x)
 # define set_yylval_name(x) (void)(yylval.val = ripper_yylval_id(p, x))
-# define set_yylval_literal(x) add_mark_object(p, (x))
 # define set_yylval_node(x) (yylval.val = ripper_new_yylval(p, 0, 0, STR_NEW(p->lex.ptok, p->lex.pcur-p->lex.ptok)))
 # define yylval_id() yylval.id
 # define _cur_loc NULL_LOC /* dummy */
@@ -9479,6 +9497,7 @@ parser_set_encode(struct parser_params *p, const char *name)
 {
     rb_encoding *enc;
     VALUE excargs[3];
+    int idx = 0;
 
     const char *wrong = 0;
     switch (*name) {
@@ -9488,7 +9507,7 @@ parser_set_encode(struct parser_params *p, const char *name)
       case 'l': case 'L': wrong = "locale"; break;
     }
     if (wrong && STRCASECMP(name, wrong) == 0) goto unknown;
-    int idx = rb_enc_find_index(name);
+    idx = rb_enc_find_index(name);
     if (idx < 0) {
       unknown:
         excargs[1] = rb_sprintf("unknown encoding name: %s", name);
@@ -10565,14 +10584,14 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
     }
 
 #ifndef RIPPER
-    if (!NIL_P(peek_end_expect_token_locations(p))) {
-        VALUE end_loc;
+    if (peek_end_expect_token_locations(p)) {
+        const rb_code_position_t *end_pos;
         int lineno, column;
         int beg_pos = (int)(p->lex.ptok - p->lex.pbeg);
 
-        end_loc = peek_end_expect_token_locations(p);
-        lineno = NUM2INT(rb_ary_entry(end_loc, 0));
-        column = NUM2INT(rb_ary_entry(end_loc, 1));
+        end_pos = peek_end_expect_token_locations(p)->pos;
+        lineno = end_pos->lineno;
+        column = end_pos->column;
 
         if (p->debug) {
             rb_parser_printf(p, "enforce_keyword_end check. current: (%d, %d), peek: (%d, %d)\n",
@@ -10697,7 +10716,7 @@ parser_yylex(struct parser_params *p)
       case -1:			/* end of script. */
         p->eofp  = 1;
 #ifndef RIPPER
-        if (!NIL_P(p->end_expect_token_locations) && RARRAY_LEN(p->end_expect_token_locations) > 0) {
+        if (p->end_expect_token_locations) {
             pop_end_expect_token_locations(p);
             RUBY_SET_YYLLOC_OF_DUMMY_END(*p->yylloc);
             return tDUMNY_END;
@@ -15861,7 +15880,7 @@ parser_initialize(struct parser_params *p)
     p->parsing_thread = Qnil;
 #else
     p->error_buffer = Qfalse;
-    p->end_expect_token_locations = Qnil;
+    p->end_expect_token_locations = NULL;
     p->token_id = 0;
     p->tokens = Qnil;
 #endif
@@ -15892,7 +15911,6 @@ rb_ruby_parser_mark(void *ptr)
 #ifndef RIPPER
     rb_gc_mark(p->debug_lines);
     rb_gc_mark(p->error_buffer);
-    rb_gc_mark(p->end_expect_token_locations);
     rb_gc_mark(p->tokens);
 #else
     rb_gc_mark(p->value);
@@ -15911,9 +15929,6 @@ rb_ruby_parser_free(void *ptr)
 {
     struct parser_params *p = (struct parser_params*)ptr;
     struct local_vars *local, *prev;
-#ifdef UNIVERSAL_PARSER
-    rb_parser_config_t *config = p->config;
-#endif
 
     if (p->tokenbuf) {
         ruby_sized_xfree(p->tokenbuf, p->toksiz);
@@ -15932,13 +15947,6 @@ rb_ruby_parser_free(void *ptr)
         }
     }
     xfree(ptr);
-
-#ifdef UNIVERSAL_PARSER
-    config->counter--;
-    if (config->counter <= 0) {
-        rb_ruby_parser_config_free(config);
-    }
-#endif
 }
 
 size_t
@@ -15955,20 +15963,6 @@ rb_ruby_parser_memsize(const void *ptr)
     }
     return size;
 }
-
-#ifdef UNIVERSAL_PARSER
-rb_parser_config_t *
-rb_ruby_parser_config_new(void *(*malloc)(size_t size))
-{
-    return (rb_parser_config_t *)malloc(sizeof(rb_parser_config_t));
-}
-
-void
-rb_ruby_parser_config_free(rb_parser_config_t *config)
-{
-    config->free(config);
-}
-#endif
 
 #ifndef UNIVERSAL_PARSER
 #ifndef RIPPER
@@ -15995,17 +15989,16 @@ rb_reserved_word(const char *str, unsigned int len)
 
 #ifdef UNIVERSAL_PARSER
 rb_parser_t *
-rb_ruby_parser_allocate(rb_parser_config_t *config)
+rb_ruby_parser_allocate(const rb_parser_config_t *config)
 {
     /* parser_initialize expects fields to be set to 0 */
     rb_parser_t *p = (rb_parser_t *)config->calloc(1, sizeof(rb_parser_t));
     p->config = config;
-    p->config->counter++;
     return p;
 }
 
 rb_parser_t *
-rb_ruby_parser_new(rb_parser_config_t *config)
+rb_ruby_parser_new(const rb_parser_config_t *config)
 {
     /* parser_initialize expects fields to be set to 0 */
     rb_parser_t *p = rb_ruby_parser_allocate(config);
@@ -16042,8 +16035,6 @@ void
 rb_ruby_parser_error_tolerant(rb_parser_t *p)
 {
     p->error_tolerant = 1;
-    // TODO
-    p->end_expect_token_locations = rb_ary_new();
 }
 
 void

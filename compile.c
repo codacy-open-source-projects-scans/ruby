@@ -2855,6 +2855,7 @@ iseq_set_exception_table(rb_iseq_t *iseq)
                 if (entry->type == CATCH_TYPE_RESCUE ||
                     entry->type == CATCH_TYPE_BREAK ||
                     entry->type == CATCH_TYPE_NEXT) {
+                    RUBY_ASSERT(entry->sp > 0);
                     entry->sp--;
                 }
             }
@@ -3847,7 +3848,7 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
                 iobj->insn_id = BIN(opt_invokebuiltin_delegate_leave);
                 const struct rb_builtin_function *bf = (const struct rb_builtin_function *)iobj->operands[0];
                 if (iobj == (INSN *)list && bf->argc == 0 && (iseq->body->builtin_attrs & BUILTIN_ATTR_LEAF)) {
-                    iseq->body->builtin_attrs |= BUILTIN_ATTR_SINGLE_NOARG_INLINE;
+                    iseq->body->builtin_attrs |= BUILTIN_ATTR_SINGLE_NOARG_LEAF;
                 }
             }
         }
@@ -5079,6 +5080,7 @@ compile_hash(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int meth
                 int last_kw = !RNODE_LIST(RNODE_LIST(node)->nd_next)->nd_next; /* foo(  ..., **kw) */
                 int only_kw = last_kw && first_kw;            /* foo(1,2,3, **kw) */
 
+                empty_kw = empty_kw || nd_type_p(kw, NODE_NIL); /* foo(  ..., **nil, ...) */
                 if (empty_kw) {
                     if (only_kw && method_call_keywords) {
                         /* **{} appears at the only keyword argument in method call,
@@ -8634,9 +8636,6 @@ compile_builtin_attr(rb_iseq_t *iseq, const NODE *node)
         string = rb_sym_to_s(symbol);
         if (strcmp(RSTRING_PTR(string), "leaf") == 0) {
             ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_LEAF;
-        }
-        else if (strcmp(RSTRING_PTR(string), "no_gc") == 0) {
-            ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_NO_GC;
         }
         else {
             goto unknown_arg;

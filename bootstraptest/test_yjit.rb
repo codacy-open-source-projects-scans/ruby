@@ -11,6 +11,13 @@ assert_normal_exit %q{
   call_foo
 }
 
+# regression test for keyword splat with yield
+assert_equal 'nil', %q{
+  def splat_kw(kwargs) = yield(**kwargs)
+
+  splat_kw({}) { _1 }.inspect
+}
+
 # regression test for arity check with splat
 assert_equal '[:ae, :ae]', %q{
   def req_one(a_, b_ = 1) = raise
@@ -2494,6 +2501,23 @@ assert_equal '[:not_array, nil, nil]', %q{
   expandarray_not_array(obj)
 }
 
+assert_equal '[1, 2]', %q{
+  class NilClass
+    private
+    def to_ary
+      [1, 2]
+    end
+  end
+
+  def expandarray_redefined_nilclass
+    a, b = nil
+    [a, b]
+  end
+
+  expandarray_redefined_nilclass
+  expandarray_redefined_nilclass
+} unless rjit_enabled?
+
 assert_equal '[1, 2, nil]', %q{
   def expandarray_rhs_too_small
     a, b, c = [1, 2]
@@ -4329,4 +4353,19 @@ assert_equal '0', %q{
   end
 
   entry
+}
+
+# Integer succ and overflow
+assert_equal '[2, 4611686018427387904]', %q{
+  [1.succ, 4611686018427387903.succ]
+}
+
+# Integer right shift
+assert_equal '[0, 1, -4]', %q{
+  [0 >> 1, 2 >> 1, -7 >> 1]
+}
+
+assert_equal '[nil, "yield"]', %q{
+  def defined_yield = defined?(yield)
+  [defined_yield, defined_yield {}]
 }
