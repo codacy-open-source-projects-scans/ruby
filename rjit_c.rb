@@ -1131,6 +1131,8 @@ module RubyVM::RJIT # :nodoc: all
           ambiguous_param0: [CType::BitField.new(1, 7), 7],
           accepts_no_kwarg: [CType::BitField.new(1, 0), 8],
           ruby2_keywords: [CType::BitField.new(1, 1), 9],
+          anon_rest: [CType::BitField.new(1, 2), 10],
+          anon_kwrest: [CType::BitField.new(1, 3), 11],
         ), Primitive.cexpr!("OFFSETOF(((struct rb_iseq_constant_body *)NULL)->param, flags)")],
         size: [CType::Immediate.parse("unsigned int"), Primitive.cexpr!("OFFSETOF(((struct rb_iseq_constant_body *)NULL)->param, size)")],
         lead_num: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF(((struct rb_iseq_constant_body *)NULL)->param, lead_num)")],
@@ -1541,11 +1543,17 @@ module RubyVM::RJIT # :nodoc: all
   end
 
   def C.VALUE
-    @VALUE ||= CType::Immediate.find(Primitive.cexpr!("SIZEOF(VALUE)"), Primitive.cexpr!("SIGNED_TYPE_P(VALUE)"))
+    @VALUE ||= CType::Immediate.find(
+      Primitive.cexpr!("SIZEOF(VALUE)"),
+      Primitive.cexpr!("SIGNED_TYPE_P(VALUE)"),
+    )
   end
 
   def C.shape_id_t
-    @shape_id_t ||= CType::Immediate.find(Primitive.cexpr!("SIZEOF(shape_id_t)"), Primitive.cexpr!("SIGNED_TYPE_P(shape_id_t)"))
+    @shape_id_t ||= CType::Immediate.find(
+      Primitive.cexpr!("SIZEOF(shape_id_t)"),
+      Primitive.cexpr!("SIGNED_TYPE_P(shape_id_t)"),
+    )
   end
 
   def C.rb_id_table

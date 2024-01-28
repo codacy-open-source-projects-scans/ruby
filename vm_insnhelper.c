@@ -5204,15 +5204,29 @@ vm_concat_array(VALUE ary1, VALUE ary2st)
     if (NIL_P(tmp1)) {
         tmp1 = rb_ary_new3(1, ary1);
     }
-
-    if (NIL_P(tmp2)) {
-        tmp2 = rb_ary_new3(1, ary2);
-    }
-
     if (tmp1 == ary1) {
         tmp1 = rb_ary_dup(ary1);
     }
-    return rb_ary_concat(tmp1, tmp2);
+
+    if (NIL_P(tmp2)) {
+        return rb_ary_push(tmp1, ary2);
+    } else {
+        return rb_ary_concat(tmp1, tmp2);
+    }
+}
+
+static VALUE
+vm_concat_to_array(VALUE ary1, VALUE ary2st)
+{
+    /* ary1 must be a newly created array */
+    const VALUE ary2 = ary2st;
+    VALUE tmp2 = rb_check_to_array(ary2);
+
+    if (NIL_P(tmp2)) {
+        return rb_ary_push(ary1, ary2);
+    } else {
+        return rb_ary_concat(ary1, tmp2);
+    }
 }
 
 // YJIT implementation is using the C function
@@ -5221,6 +5235,12 @@ VALUE
 rb_vm_concat_array(VALUE ary1, VALUE ary2st)
 {
     return vm_concat_array(ary1, ary2st);
+}
+
+VALUE
+rb_vm_concat_to_array(VALUE ary1, VALUE ary2st)
+{
+    return vm_concat_to_array(ary1, ary2st);
 }
 
 static VALUE

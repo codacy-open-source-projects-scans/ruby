@@ -2170,7 +2170,7 @@ EOS
       "c\u{1EE7}a",
     ].each do |arg|
       begin
-        arg = arg.encode(Encoding.find("locale"))
+        arg = arg.encode(Encoding.local_charmap)
       rescue
       else
         assert_in_out_err([], "#{<<-"begin;"}\n#{<<-"end;"}", [arg], [], bug12841)
@@ -2841,6 +2841,7 @@ EOS
 
   def test_low_memory_startup
     omit "JIT enabled" if %w[YJIT RJIT].any? {|n| RubyVM.const_defined?(n) and RubyVM.const_get(n).enabled?}
+    omit "flaky on Travis arm32" if /armv8l-linux-eabihf/ =~ RUBY_PLATFORM
     as = 1<<25
     _, _, status = EnvUtil.invoke_ruby(%W'-W0', "", true, :merge_to_stdout, rlimit_as: as)
     omit sprintf("Crashed with AS: %#x: %s", as, status) if status.signaled?
