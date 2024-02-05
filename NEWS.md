@@ -29,6 +29,7 @@ The following default gems are updated.
 * io-console 0.7.2
 * irb 1.11.1
 * net-http 0.4.1
+* prism 0.20.0
 * reline 0.4.2
 * stringio 3.1.1
 * strscan 3.0.9
@@ -70,7 +71,10 @@ See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/log
 
 ## Implementation improvements
 
+* `Array#each` is rewritten in Ruby for better performance [[Feature #20182]].
+
 ## JIT
 
 [Feature #18980]: https://bugs.ruby-lang.org/issues/18980
-[Bug #20064]: https://bugs.ruby-lang.org/issues/20064
+[Bug #20064]:     https://bugs.ruby-lang.org/issues/20064
+[Feature #20182]: https://bugs.ruby-lang.org/issues/20182
