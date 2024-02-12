@@ -712,6 +712,16 @@ module Prism
 
         ("a""#{1}""b").frozen?
       CODE
+
+      # Test encoding of interpolated strings
+      assert_prism_eval(<<~'RUBY')
+        "#{"foo"}s".encoding
+      RUBY
+      assert_prism_eval(<<~'RUBY')
+        a = "foo"
+        b = "#{a}" << "Bar"
+        [a, b, b.encoding]
+      RUBY
     end
 
     def test_InterpolatedSymbolNode
@@ -2076,6 +2086,18 @@ end
 
         before == after
       RUBY
+
+      # Test opt_aset_with instruction when calling []= with a string key
+      assert_prism_eval(<<~RUBY)
+        ObjectSpace.count_objects
+
+        h = {"abc" => 1}
+        before = ObjectSpace.count_objects[:T_STRING]
+        5.times{ h["abc"] = 2}
+        after = ObjectSpace.count_objects[:T_STRING]
+
+        before == after
+      RUBY
     end
 
     def test_CallAndWriteNode
@@ -2654,6 +2676,22 @@ end
     def test_encoding
       assert_prism_eval('"però"')
       assert_prism_eval(":però")
+    end
+
+    def test_parse_file
+      assert_nothing_raised do
+        RubyVM::InstructionSequence.compile_file_prism(__FILE__)
+      end
+
+      error = assert_raise Errno::ENOENT do
+        RubyVM::InstructionSequence.compile_file_prism("idontexist.rb")
+      end
+
+      assert_equal "No such file or directory - idontexist.rb", error.message
+
+      assert_raise TypeError do
+        RubyVM::InstructionSequence.compile_file_prism(nil)
+      end
     end
 
     private

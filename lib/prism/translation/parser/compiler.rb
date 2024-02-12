@@ -614,9 +614,7 @@ module Prism
         # foo => [*, bar, *]
         #        ^^^^^^^^^^^
         def visit_find_pattern_node(node)
-          elements = [*node.requireds]
-          elements << node.rest if !node.rest.nil? && !node.rest.is_a?(ImplicitRestNode)
-          elements.concat(node.posts)
+          elements = [node.left, *node.requireds, node.right]
 
           if node.constant
             builder.const_pattern(visit(node.constant), token(node.opening_loc), builder.find_pattern(nil, visit_all(elements), nil), token(node.closing_loc))
@@ -1064,12 +1062,22 @@ module Prism
 
         # foo in bar
         # ^^^^^^^^^^
-        def visit_match_predicate_node(node)
-          builder.match_pattern_p(
-            visit(node.value),
-            token(node.operator_loc),
-            within_pattern { |compiler| node.pattern.accept(compiler) }
-          )
+        if RUBY_VERSION >= "3.0"
+          def visit_match_predicate_node(node)
+            builder.match_pattern_p(
+              visit(node.value),
+              token(node.operator_loc),
+              within_pattern { |compiler| node.pattern.accept(compiler) }
+            )
+          end
+        else
+          def visit_match_predicate_node(node)
+            builder.match_pattern(
+              visit(node.value),
+              token(node.operator_loc),
+              within_pattern { |compiler| node.pattern.accept(compiler) }
+            )
+          end
         end
 
         # foo => bar
