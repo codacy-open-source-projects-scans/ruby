@@ -81,6 +81,36 @@ where
     }
 }
 #[repr(C)]
+#[derive(Default)]
+pub struct __IncompleteArrayField<T>(::std::marker::PhantomData<T>, [T; 0]);
+impl<T> __IncompleteArrayField<T> {
+    #[inline]
+    pub const fn new() -> Self {
+        __IncompleteArrayField(::std::marker::PhantomData, [])
+    }
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self as *const _ as *const T
+    }
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self as *mut _ as *mut T
+    }
+    #[inline]
+    pub unsafe fn as_slice(&self, len: usize) -> &[T] {
+        ::std::slice::from_raw_parts(self.as_ptr(), len)
+    }
+    #[inline]
+    pub unsafe fn as_mut_slice(&mut self, len: usize) -> &mut [T] {
+        ::std::slice::from_raw_parts_mut(self.as_mut_ptr(), len)
+    }
+}
+impl<T> ::std::fmt::Debug for __IncompleteArrayField<T> {
+    fn fmt(&self, fmt: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        fmt.write_str("__IncompleteArrayField")
+    }
+}
+#[repr(C)]
 pub struct __BindgenUnionField<T>(::std::marker::PhantomData<T>);
 impl<T> __BindgenUnionField<T> {
     #[inline]
@@ -636,6 +666,12 @@ pub const VM_CALL_ARGS_SPLAT_MUT_bit: vm_call_flag_bits = 12;
 pub const VM_CALL__END: vm_call_flag_bits = 13;
 pub type vm_call_flag_bits = u32;
 #[repr(C)]
+pub struct rb_callinfo_kwarg {
+    pub keyword_len: ::std::os::raw::c_int,
+    pub references: ::std::os::raw::c_int,
+    pub keywords: __IncompleteArrayField<VALUE>,
+}
+#[repr(C)]
 pub struct rb_callinfo {
     pub flags: VALUE,
     pub kwarg: *const rb_callinfo_kwarg,
@@ -971,6 +1007,7 @@ extern "C" {
     pub fn rb_ivar_defined(obj: VALUE, name: ID) -> VALUE;
     pub fn rb_attr_get(obj: VALUE, name: ID) -> VALUE;
     pub fn rb_obj_info_dump(obj: VALUE);
+    pub fn rb_class_allocate_instance(klass: VALUE) -> VALUE;
     pub fn rb_reg_new_ary(ary: VALUE, options: ::std::os::raw::c_int) -> VALUE;
     pub fn rb_ary_tmp_new_from_values(
         arg1: VALUE,
@@ -1000,7 +1037,6 @@ extern "C" {
         cfp: *const rb_control_frame_t,
     ) -> *const rb_callable_method_entry_t;
     pub fn rb_obj_info(obj: VALUE) -> *const ::std::os::raw::c_char;
-    pub fn rb_class_allocate_instance(klass: VALUE) -> VALUE;
     pub fn rb_ec_stack_check(ec: *mut rb_execution_context_struct) -> ::std::os::raw::c_int;
     pub fn rb_shape_id_offset() -> i32;
     pub fn rb_shape_get_shape_by_id(shape_id: shape_id_t) -> *mut rb_shape_t;
@@ -1013,6 +1049,7 @@ extern "C" {
     pub fn rb_gvar_set(arg1: ID, arg2: VALUE) -> VALUE;
     pub fn rb_ensure_iv_list_size(obj: VALUE, len: u32, newsize: u32);
     pub fn rb_vm_barrier();
+    pub fn rb_str_byte_substr(str_: VALUE, beg: VALUE, len: VALUE) -> VALUE;
     pub fn rb_obj_as_string_result(str_: VALUE, obj: VALUE) -> VALUE;
     pub fn rb_str_concat_literals(num: usize, strary: *const VALUE) -> VALUE;
     pub fn rb_ec_str_resurrect(ec: *mut rb_execution_context_struct, str_: VALUE) -> VALUE;
@@ -1112,6 +1149,7 @@ extern "C" {
     pub fn rb_get_iseq_flags_has_kw(iseq: *const rb_iseq_t) -> bool;
     pub fn rb_get_iseq_flags_has_post(iseq: *const rb_iseq_t) -> bool;
     pub fn rb_get_iseq_flags_has_kwrest(iseq: *const rb_iseq_t) -> bool;
+    pub fn rb_get_iseq_flags_anon_kwrest(iseq: *const rb_iseq_t) -> bool;
     pub fn rb_get_iseq_flags_has_rest(iseq: *const rb_iseq_t) -> bool;
     pub fn rb_get_iseq_flags_ruby2_keywords(iseq: *const rb_iseq_t) -> bool;
     pub fn rb_get_iseq_flags_has_block(iseq: *const rb_iseq_t) -> bool;

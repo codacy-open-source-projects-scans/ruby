@@ -1351,7 +1351,7 @@ int ruby_enable_autocompact = 0;
 gc_compact_compare_func ruby_autocompact_compare_func;
 #endif
 
-void rb_iseq_mark_and_move(rb_iseq_t *iseq, bool referece_updating);
+void rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating);
 void rb_iseq_free(const rb_iseq_t *iseq);
 size_t rb_iseq_memsize(const rb_iseq_t *iseq);
 void rb_vm_update_references(void *ptr);
@@ -2799,11 +2799,10 @@ size_pool_idx_for_size(size_t size)
 }
 
 static VALUE
-newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool vm_locked)
+newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool vm_locked)
 {
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
-    rb_ractor_newobj_cache_t *cache = &cr->newobj_cache;
 
     VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
 
@@ -2812,7 +2811,7 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
         bool unlock_vm = false;
 
         if (!vm_locked) {
-            RB_VM_LOCK_ENTER_CR_LEV(cr, &lev);
+            RB_VM_LOCK_ENTER_CR_LEV(GET_RACTOR(), &lev);
             vm_locked = true;
             unlock_vm = true;
         }
@@ -2841,7 +2840,7 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
         }
 
         if (unlock_vm) {
-            RB_VM_LOCK_LEAVE_CR_LEV(cr, &lev);
+            RB_VM_LOCK_LEAVE_CR_LEV(GET_RACTOR(), &lev);
         }
     }
 
@@ -2856,15 +2855,15 @@ newobj_zero_slot(VALUE obj)
     memset((char *)obj + sizeof(struct RBasic), 0, rb_gc_obj_slot_size(obj) - sizeof(struct RBasic));
 }
 
-ALWAYS_INLINE(static VALUE newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, int wb_protected, size_t size_pool_idx));
+ALWAYS_INLINE(static VALUE newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, int wb_protected, size_t size_pool_idx));
 
 static inline VALUE
-newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, int wb_protected, size_t size_pool_idx)
+newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, int wb_protected, size_t size_pool_idx)
 {
     VALUE obj;
     unsigned int lev;
 
-    RB_VM_LOCK_ENTER_CR_LEV(cr, &lev);
+    RB_VM_LOCK_ENTER_CR_LEV(GET_RACTOR(), &lev);
     {
         if (UNLIKELY(during_gc || ruby_gc_stressful)) {
             if (during_gc) {
@@ -2880,35 +2879,35 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *
             }
         }
 
-        obj = newobj_alloc(objspace, cr, size_pool_idx, true);
+        obj = newobj_alloc(objspace, cache, size_pool_idx, true);
         newobj_init(klass, flags, wb_protected, objspace, obj);
 
         gc_event_hook_prep(objspace, RUBY_INTERNAL_EVENT_NEWOBJ, obj, newobj_zero_slot(obj));
     }
-    RB_VM_LOCK_LEAVE_CR_LEV(cr, &lev);
+    RB_VM_LOCK_LEAVE_CR_LEV(GET_RACTOR(), &lev);
 
     return obj;
 }
 
 NOINLINE(static VALUE newobj_slowpath_wb_protected(VALUE klass, VALUE flags,
-                                                   rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx));
+                                                   rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx));
 NOINLINE(static VALUE newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags,
-                                                     rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx));
+                                                     rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx));
 
 static VALUE
-newobj_slowpath_wb_protected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx)
+newobj_slowpath_wb_protected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx)
 {
-    return newobj_slowpath(klass, flags, objspace, cr, TRUE, size_pool_idx);
+    return newobj_slowpath(klass, flags, objspace, cache, TRUE, size_pool_idx);
 }
 
 static VALUE
-newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx)
+newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx)
 {
-    return newobj_slowpath(klass, flags, objspace, cr, FALSE, size_pool_idx);
+    return newobj_slowpath(klass, flags, objspace, cache, FALSE, size_pool_idx);
 }
 
 static inline VALUE
-newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t alloc_size)
+newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, int wb_protected, size_t alloc_size)
 {
     VALUE obj;
     rb_objspace_t *objspace = &rb_objspace;
@@ -2929,28 +2928,23 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
         flags |= (VALUE)size_pool_idx << SHAPE_FLAG_SHIFT;
     }
 
+    rb_ractor_newobj_cache_t *cache = &cr->newobj_cache;
+
     if (!UNLIKELY(during_gc ||
                   ruby_gc_stressful ||
                   gc_event_newobj_hook_needed_p(objspace)) &&
             wb_protected) {
-        obj = newobj_alloc(objspace, cr, size_pool_idx, false);
+        obj = newobj_alloc(objspace, cache, size_pool_idx, false);
         newobj_init(klass, flags, wb_protected, objspace, obj);
     }
     else {
         RB_DEBUG_COUNTER_INC(obj_newobj_slowpath);
 
         obj = wb_protected ?
-          newobj_slowpath_wb_protected(klass, flags, objspace, cr, size_pool_idx) :
-          newobj_slowpath_wb_unprotected(klass, flags, objspace, cr, size_pool_idx);
+          newobj_slowpath_wb_protected(klass, flags, objspace, cache, size_pool_idx) :
+          newobj_slowpath_wb_unprotected(klass, flags, objspace, cache, size_pool_idx);
     }
 
-    return obj;
-}
-
-static inline VALUE
-newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, int wb_protected, size_t alloc_size)
-{
-    VALUE obj = newobj_of0(klass, flags, wb_protected, cr, alloc_size);
     return newobj_fill(obj, v1, v2, v3);
 }
 
@@ -2976,43 +2970,11 @@ rb_newobj(void)
     return newobj_of(GET_RACTOR(), 0, T_NONE, 0, 0, 0, FALSE, RVALUE_SIZE);
 }
 
-static VALUE
-rb_class_instance_allocate_internal(VALUE klass, VALUE flags, bool wb_protected)
-{
-    GC_ASSERT((flags & RUBY_T_MASK) == T_OBJECT);
-    GC_ASSERT(flags & ROBJECT_EMBED);
-
-    size_t size;
-    uint32_t index_tbl_num_entries = RCLASS_EXT(klass)->max_iv_count;
-
-    size = rb_obj_embedded_size(index_tbl_num_entries);
-    if (!rb_gc_size_allocatable_p(size)) {
-        size = sizeof(struct RObject);
-    }
-
-    VALUE obj = newobj_of(GET_RACTOR(), klass, flags, 0, 0, 0, wb_protected, size);
-    RUBY_ASSERT(rb_shape_get_shape(obj)->type == SHAPE_ROOT);
-
-    // Set the shape to the specific T_OBJECT shape which is always
-    // SIZE_POOL_COUNT away from the root shape.
-    ROBJECT_SET_SHAPE_ID(obj, ROBJECT_SHAPE_ID(obj) + SIZE_POOL_COUNT);
-
-#if RUBY_DEBUG
-    RUBY_ASSERT(!rb_shape_obj_too_complex(obj));
-    VALUE *ptr = ROBJECT_IVPTR(obj);
-    for (size_t i = 0; i < ROBJECT_IV_CAPACITY(obj); i++) {
-        ptr[i] = Qundef;
-    }
-#endif
-
-    return obj;
-}
-
 VALUE
 rb_newobj_of(VALUE klass, VALUE flags)
 {
     if ((flags & RUBY_T_MASK) == T_OBJECT) {
-        return rb_class_instance_allocate_internal(klass, (flags | ROBJECT_EMBED) & ~FL_WB_PROTECTED, flags & FL_WB_PROTECTED);
+        return rb_class_allocate_instance(klass);
     }
     else {
         return newobj_of(GET_RACTOR(), klass, flags & ~FL_WB_PROTECTED, 0, 0, 0, flags & FL_WB_PROTECTED, RVALUE_SIZE);
@@ -3121,12 +3083,6 @@ rb_imemo_new_debug(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0,
     return memo;
 }
 #endif
-
-VALUE
-rb_class_allocate_instance(VALUE klass)
-{
-    return rb_class_instance_allocate_internal(klass, T_OBJECT | ROBJECT_EMBED, RGENGC_WB_PROTECTED_OBJECT);
-}
 
 static inline void
 rb_data_object_check(VALUE klass)
@@ -3403,12 +3359,12 @@ cc_table_free_i(VALUE ccs_ptr, void *data_ptr)
     struct cc_tbl_i_data *data = data_ptr;
     struct rb_class_cc_entries *ccs = (struct rb_class_cc_entries *)ccs_ptr;
     VM_ASSERT(vm_ccs_p(ccs));
-    vm_ccs_free(ccs, data->alive, data->objspace, data->klass);
+    vm_ccs_free(ccs, false, data->objspace, data->klass);
     return ID_TABLE_CONTINUE;
 }
 
 static void
-cc_table_free(rb_objspace_t *objspace, VALUE klass, bool alive)
+cc_table_free(rb_objspace_t *objspace, VALUE klass)
 {
     struct rb_id_table *cc_tbl = RCLASS_CC_TBL(klass);
 
@@ -3416,7 +3372,6 @@ cc_table_free(rb_objspace_t *objspace, VALUE klass, bool alive)
         struct cc_tbl_i_data data = {
             .objspace = objspace,
             .klass = klass,
-            .alive = alive,
         };
         rb_id_table_foreach_values(cc_tbl, cc_table_free_i, &data);
         rb_id_table_free(cc_tbl);
@@ -3428,12 +3383,6 @@ cvar_table_free_i(VALUE value, void * ctx)
 {
     xfree((void *) value);
     return ID_TABLE_CONTINUE;
-}
-
-void
-rb_cc_table_free(VALUE klass)
-{
-    cc_table_free(&rb_objspace, klass, TRUE);
 }
 
 static inline void
@@ -3580,7 +3529,7 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
       case T_MODULE:
       case T_CLASS:
         rb_id_table_free(RCLASS_M_TBL(obj));
-        cc_table_free(objspace, obj, FALSE);
+        cc_table_free(objspace, obj);
         if (rb_shape_obj_too_complex(obj)) {
             st_free_table((st_table *)RCLASS_IVPTR(obj));
         }
@@ -3709,7 +3658,7 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
             rb_id_table_free(RCLASS_CALLABLE_M_TBL(obj));
         }
         rb_class_remove_subclass_head(obj);
-        cc_table_free(objspace, obj, FALSE);
+        cc_table_free(objspace, obj);
         rb_class_remove_from_module_subclasses(obj);
         rb_class_remove_from_super_subclasses(obj);
 
@@ -6391,9 +6340,8 @@ mark_stack_free_cache(mark_stack_t *stack)
 }
 
 static void
-push_mark_stack(mark_stack_t *stack, VALUE data)
+push_mark_stack(mark_stack_t *stack, VALUE obj)
 {
-    VALUE obj = data;
     switch (BUILTIN_TYPE(obj)) {
       case T_OBJECT:
       case T_CLASS:
@@ -6418,7 +6366,7 @@ push_mark_stack(mark_stack_t *stack, VALUE data)
         if (stack->index == stack->limit) {
             push_mark_stack_chunk(stack);
         }
-        stack->chunk->data[stack->index++] = data;
+        stack->chunk->data[stack->index++] = obj;
         return;
 
       case T_NONE:
@@ -6437,8 +6385,8 @@ push_mark_stack(mark_stack_t *stack, VALUE data)
     }
 
     rb_bug("rb_gc_mark(): unknown data type 0x%x(%p) %s",
-            BUILTIN_TYPE(obj), (void *)data,
-            is_pointer_to_heap(&rb_objspace, (void *)data) ? "corrupted object" : "non object");
+            BUILTIN_TYPE(obj), (void *)obj,
+            is_pointer_to_heap(&rb_objspace, (void *)obj) ? "corrupted object" : "non object");
 }
 
 static int
@@ -7364,8 +7312,10 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
       case T_FLOAT:
       case T_BIGNUM:
       case T_SYMBOL:
-        /* Not immediates, but does not have references and singleton
-         * class */
+        /* Not immediates, but does not have references and singleton class.
+         *
+         * RSYMBOL(obj)->fstr intentionally not marked. See log for 96815f1e
+         * ("symbol.c: remove rb_gc_mark_symbols()") */
         return;
 
       case T_NIL:

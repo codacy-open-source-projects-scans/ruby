@@ -309,9 +309,6 @@ rb_clear_method_cache(VALUE klass_or_module, ID mid)
     }
 }
 
-// gc.c
-void rb_cc_table_free(VALUE klass);
-
 static int
 invalidate_all_refinement_cc(void *vstart, void *vend, size_t stride, void *data)
 {
@@ -521,6 +518,8 @@ rb_method_definition_set(const rb_method_entry_t *me, rb_method_definition_t *de
 {
     rb_method_definition_release(me->def);
     *(rb_method_definition_t **)&me->def = method_definition_addref(def, METHOD_ENTRY_COMPLEMENTED(me));
+
+    if (!ruby_running) add_opt_method_entry(me);
 
     if (opts != NULL) {
         switch (def->type) {
@@ -942,7 +941,7 @@ rb_method_entry_make(VALUE klass, ID mid, VALUE defined_class, rb_method_visibil
     /* check mid */
     if (mid == object_id || mid == id__send__) {
         if (type == VM_METHOD_TYPE_ISEQ && search_method(klass, mid, 0)) {
-            rb_warn("redefining `%s' may cause serious problems", rb_id2name(mid));
+            rb_warn("redefining '%s' may cause serious problems", rb_id2name(mid));
         }
     }
 
@@ -1063,8 +1062,8 @@ get_overloaded_cme(const rb_callable_method_entry_t *cme)
     }
 }
 
-static const rb_callable_method_entry_t *
-check_overloaded_cme(const rb_callable_method_entry_t *cme, const struct rb_callinfo * const ci)
+const rb_callable_method_entry_t *
+rb_check_overloaded_cme(const rb_callable_method_entry_t *cme, const struct rb_callinfo * const ci)
 {
     if (UNLIKELY(cme->def->iseq_overload) &&
         (vm_ci_flag(ci) & (VM_CALL_ARGS_SIMPLE)) &&
@@ -1550,14 +1549,14 @@ remove_method(VALUE klass, ID mid)
     rb_class_modify_check(klass);
     klass = RCLASS_ORIGIN(klass);
     if (mid == object_id || mid == id__send__ || mid == idInitialize) {
-        rb_warn("removing `%s' may cause serious problems", rb_id2name(mid));
+        rb_warn("removing '%s' may cause serious problems", rb_id2name(mid));
     }
 
     if (!rb_id_table_lookup(RCLASS_M_TBL(klass), mid, &data) ||
         !(me = (rb_method_entry_t *)data) ||
         (!me->def || me->def->type == VM_METHOD_TYPE_UNDEF) ||
         UNDEFINED_REFINED_METHOD_P(me->def)) {
-        rb_name_err_raise("method `%1$s' not defined in %2$s",
+        rb_name_err_raise("method '%1$s' not defined in %2$s",
                           klass, ID2SYM(mid));
     }
 
@@ -1607,7 +1606,7 @@ rb_mod_remove_method(int argc, VALUE *argv, VALUE mod)
         VALUE v = argv[i];
         ID id = rb_check_id(&v);
         if (!id) {
-            rb_name_err_raise("method `%1$s' not defined in %2$s",
+            rb_name_err_raise("method '%1$s' not defined in %2$s",
                               mod, v);
         }
         remove_method(mod, id);
@@ -1780,7 +1779,7 @@ rb_undef(VALUE klass, ID id)
     }
     rb_class_modify_check(klass);
     if (id == object_id || id == id__send__ || id == idInitialize) {
-        rb_warn("undefining `%s' may cause serious problems", rb_id2name(id));
+        rb_warn("undefining '%s' may cause serious problems", rb_id2name(id));
     }
 
     me = search_method(klass, id, 0);
@@ -1840,7 +1839,7 @@ rb_undef(VALUE klass, ID id)
  *
  *     In child
  *     In parent
- *     prog.rb:23: undefined method `hello' for #<Child:0x401b3bb4> (NoMethodError)
+ *     prog.rb:23: undefined method 'hello' for #<Child:0x401b3bb4> (NoMethodError)
  */
 
 static VALUE

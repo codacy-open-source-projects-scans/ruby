@@ -29,7 +29,7 @@ The following default gems are updated.
 * io-console 0.7.2
 * irb 1.11.2
 * net-http 0.4.1
-* prism 0.22.0
+* prism 0.24.0
 * reline 0.4.2
 * stringio 3.1.1
 * strscan 3.1.1
@@ -37,11 +37,12 @@ The following default gems are updated.
 The following bundled gems are updated.
 
 * minitest 5.22.2
+* test-unit 3.6.2
 * net-ftp 0.3.4
 * net-imap 0.4.10
 * net-smtp 0.4.0.1
 * rbs 3.4.4
-* typeprof 0.21.10
+* typeprof 0.21.11
 * debug 1.9.1
 
 The following bundled gems are promoted from default gems.
