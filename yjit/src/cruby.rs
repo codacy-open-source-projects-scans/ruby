@@ -117,6 +117,7 @@ extern "C" {
         ci: *const rb_callinfo,
     ) -> *const rb_callable_method_entry_t;
     pub fn rb_hash_empty_p(hash: VALUE) -> VALUE;
+    pub fn rb_str_setbyte(str: VALUE, index: VALUE, value: VALUE) -> VALUE;
     pub fn rb_vm_splat_array(flag: VALUE, ary: VALUE) -> VALUE;
     pub fn rb_vm_concat_array(ary1: VALUE, ary2st: VALUE) -> VALUE;
     pub fn rb_vm_concat_to_array(ary1: VALUE, ary2st: VALUE) -> VALUE;
@@ -141,6 +142,8 @@ extern "C" {
         ic: ICVARC,
     ) -> VALUE;
     pub fn rb_vm_ic_hit_p(ic: IC, reg_ep: *const VALUE) -> bool;
+    pub fn rb_vm_stack_canary() -> VALUE;
+    pub fn rb_vm_push_cfunc_frame(cme: *const rb_callable_method_entry_t, recv_idx: c_int);
 }
 
 // Renames
@@ -258,6 +261,18 @@ pub fn iseq_pc_to_insn_idx(iseq: IseqPtr, pc: *mut VALUE) -> Option<u16> {
 pub fn iseq_opcode_at_idx(iseq: IseqPtr, insn_idx: u32) -> u32 {
     let pc = unsafe { rb_iseq_pc_at_idx(iseq, insn_idx) };
     unsafe { rb_iseq_opcode_at_pc(iseq, pc) as u32 }
+}
+
+/// Return a poison value to be set above the stack top to verify leafness.
+#[cfg(not(test))]
+pub fn vm_stack_canary() -> u64 {
+    unsafe { rb_vm_stack_canary() }.as_u64()
+}
+
+/// Avoid linking the C function in `cargo test`
+#[cfg(test)]
+pub fn vm_stack_canary() -> u64 {
+    0
 }
 
 /// Opaque execution-context type from vm_core.h

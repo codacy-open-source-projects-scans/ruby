@@ -228,7 +228,6 @@ vm_cref_new0(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_
 {
     VALUE refinements = Qnil;
     int omod_shared = FALSE;
-    rb_cref_t *cref;
 
     /* scope */
     union {
@@ -251,7 +250,10 @@ vm_cref_new0(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_
 
     VM_ASSERT(singleton || klass);
 
-    cref = (rb_cref_t *)rb_imemo_new(imemo_cref, klass, (VALUE)(use_prev_prev ? CREF_NEXT(prev_cref) : prev_cref), scope_visi.value, refinements);
+    rb_cref_t *cref = IMEMO_NEW(rb_cref_t, imemo_cref, refinements);
+    cref->klass_or_self = klass;
+    cref->next = use_prev_prev ? CREF_NEXT(prev_cref) : prev_cref;
+    *((rb_scope_visibility_t *)&cref->scope_visi) = scope_visi.visi;
 
     if (pushed_by_eval) CREF_PUSHED_BY_EVAL_SET(cref);
     if (omod_shared) CREF_OMOD_SHARED_SET(cref);
@@ -979,7 +981,7 @@ vm_make_env_each(const rb_execution_context_t * const ec, rb_control_frame_t *co
 
     // Careful with order in the following sequence. Each allocation can move objects.
     env_body = ALLOC_N(VALUE, env_size);
-    rb_env_t *env = (rb_env_t *)rb_imemo_new(imemo_env, 0, 0, 0, 0);
+    rb_env_t *env = IMEMO_NEW(rb_env_t, imemo_env, 0);
 
     // Set up env without WB since it's brand new (similar to newobj_init(), newobj_fill())
     MEMCPY(env_body, ep - (local_size - 1 /* specval */), VALUE, local_size);
@@ -2873,6 +2875,7 @@ rb_vm_update_references(void *ptr)
     if (ptr) {
         rb_vm_t *vm = ptr;
 
+        rb_gc_update_tbl_refs(vm->ci_table);
         rb_gc_update_tbl_refs(vm->frozen_strings);
         vm->mark_object_ary = rb_gc_location(vm->mark_object_ary);
         vm->load_path = rb_gc_location(vm->load_path);
@@ -3119,6 +3122,10 @@ ruby_vm_destruct(rb_vm_t *vm)
             st_free_table(vm->loading_table);
             vm->loading_table = 0;
         }
+        if (vm->ci_table) {
+            st_free_table(vm->ci_table);
+            vm->ci_table = NULL;
+        }
         if (vm->frozen_strings) {
             st_free_table(vm->frozen_strings);
             vm->frozen_strings = 0;
@@ -3209,6 +3216,7 @@ vm_memsize(const void *ptr)
         rb_vm_memsize_workqueue(&vm->workqueue) +
         rb_st_memsize(vm->defined_module_hash) +
         vm_memsize_at_exit_list(vm->at_exit) +
+        rb_st_memsize(vm->ci_table) +
         rb_st_memsize(vm->frozen_strings) +
         vm_memsize_builtin_function_table(vm->builtin_function_table) +
         rb_id_table_memsize(vm->negative_cme_table) +
@@ -4303,6 +4311,7 @@ Init_vm_objects(void)
     /* initialize mark object array, hash */
     vm->mark_object_ary = rb_ary_hidden_new(128);
     vm->loading_table = st_init_strtable();
+    vm->ci_table = st_init_table(&vm_ci_hashtype);
     vm->frozen_strings = st_init_table_with_size(&rb_fstring_hash_type, 10000);
 }
 
