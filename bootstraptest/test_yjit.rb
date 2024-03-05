@@ -4513,6 +4513,10 @@ assert_equal 'true', %q{
   def entry = yield
   entry { true }
 }
+assert_equal 'sym', %q{
+  def entry = :sym.to_sym
+  entry
+}
 
 assert_normal_exit %q{
   ivars = 1024.times.map { |i| "@iv_#{i} = #{i}\n" }.join
@@ -4633,4 +4637,44 @@ assert_equal 'ok', %q{
 assert_equal '[1, 1, 1]', %q{
   empty = []
   [1.abs(*empty), 1.abs(**nil), 1.bit_length(*empty, **nil)]
+}
+
+# splat into C methods with -1 arity
+assert_equal '[[1, 2, 3], [0, 2, 3], [1, 2, 3], [2, 2, 3], [], [], [{}]]', %q{
+  class Foo < Array
+    def push(args) = super(1, *args)
+  end
+
+  def test_cfunc_vargs_splat(sub_instance, array_class, empty_kw_hash)
+    splat = [2, 3]
+    kw_splat = [empty_kw_hash]
+    [
+      sub_instance.push(splat),
+      array_class[0, *splat, **nil],
+      array_class[1, *splat, &nil],
+      array_class[2, *splat, **nil, &nil],
+      array_class.send(:[], *kw_splat),
+      # kw_splat disables keywords hash handling
+      array_class[*kw_splat],
+      array_class[*kw_splat, **nil],
+    ]
+  end
+
+  test_cfunc_vargs_splat(Foo.new, Array, Hash.ruby2_keywords_hash({}))
+}
+
+# Class#new (arity=-1), splat, and ruby2_keywords
+assert_equal '[0, {1=>1}]', %q{
+  class KwInit
+    attr_reader :init_args
+    def initialize(x = 0, **kw)
+      @init_args = [x, kw]
+    end
+  end
+
+  def test(klass, args)
+    klass.new(*args).init_args
+  end
+
+  test(KwInit, [Hash.ruby2_keywords_hash({1 => 1})])
 }
