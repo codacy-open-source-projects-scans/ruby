@@ -234,6 +234,9 @@ typedef struct pm_lex_mode {
              * a tilde heredoc.
              */
             size_t common_whitespace;
+
+            /** True if the previous token ended with a line continuation. */
+            bool line_continuation;
         } heredoc;
     } as;
 
@@ -739,6 +742,12 @@ struct pm_parser {
      * a true value.
      */
     bool frozen_string_literal;
+
+    /**
+     * True if the current regular expression being lexed contains only ASCII
+     * characters.
+     */
+    bool current_regular_expression_ascii_only;
 };
 
 #endif

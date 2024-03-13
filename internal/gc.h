@@ -79,14 +79,6 @@ rb_gc_debug_body(const char *mode, const char *msg, int st, void *ptr)
 #define RUBY_GC_INFO if(0)printf
 #endif
 
-#define RUBY_MARK_MOVABLE_UNLESS_NULL(ptr) do { \
-    VALUE markobj = (ptr); \
-    if (RTEST(markobj)) {rb_gc_mark_movable(markobj);} \
-} while (0)
-#define RUBY_MARK_UNLESS_NULL(ptr) do { \
-    VALUE markobj = (ptr); \
-    if (RTEST(markobj)) {rb_gc_mark(markobj);} \
-} while (0)
 #define RUBY_FREE_UNLESS_NULL(ptr) if(ptr){ruby_xfree(ptr);(ptr)=NULL;}
 
 #if STACK_GROW_DIRECTION > 0
@@ -134,10 +126,7 @@ struct rb_objspace; /* in vm_core.h */
 # undef RB_NEWOBJ_OF
 #endif
 
-#define NEWOBJ_OF_0(var, T, c, f, s, ec) \
-    T *(var) = (T *)(((f) & FL_WB_PROTECTED) ? \
-            rb_wb_protected_newobj_of(GET_EC(), (c), (f) & ~FL_WB_PROTECTED, s) : \
-            rb_wb_unprotected_newobj_of((c), (f), s))
+#define NEWOBJ_OF_0(var, T, c, f, s, ec) NEWOBJ_OF_ec(var, T, c, f, s, GET_EC())
 #define NEWOBJ_OF_ec(var, T, c, f, s, ec) \
     T *(var) = (T *)(((f) & FL_WB_PROTECTED) ? \
             rb_wb_protected_newobj_of((ec), (c), (f) & ~FL_WB_PROTECTED, s) : \

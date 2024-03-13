@@ -167,7 +167,7 @@ module Prism
           TILDE: :tTILDE,
           UAMPERSAND: :tAMPER,
           UCOLON_COLON: :tCOLON3,
-          UDOT_DOT: :tDOT2,
+          UDOT_DOT: :tBDOT2,
           UDOT_DOT_DOT: :tBDOT3,
           UMINUS: :tUMINUS,
           UMINUS_NUM: :tUNARY_NUM,
@@ -213,9 +213,11 @@ module Prism
         # Convert the prism tokens into the expected format for the parser gem.
         def to_a
           tokens = []
-          index = 0
 
-          while index < lexed.length
+          index = 0
+          length = lexed.length
+
+          while index < length
             token, state = lexed[index]
             index += 1
             next if %i[IGNORED_NEWLINE __END__ EOF].include?(token.type)
@@ -229,14 +231,18 @@ module Prism
               value.delete_prefix!("?")
             when :tCOMMENT
               if token.type == :EMBDOC_BEGIN
-                until (next_token = lexed[index][0]) && next_token.type == :EMBDOC_END
+                start_index = index
+
+                while !((next_token = lexed[index][0]) && next_token.type == :EMBDOC_END) && (index < length - 1)
                   value += next_token.value
                   index += 1
                 end
 
-                value += next_token.value
-                location = Range.new(source_buffer, offset_cache[token.location.start_offset], offset_cache[lexed[index][0].location.end_offset])
-                index += 1
+                if start_index != index
+                  value += next_token.value
+                  location = Range.new(source_buffer, offset_cache[token.location.start_offset], offset_cache[lexed[index][0].location.end_offset])
+                  index += 1
+                end
               else
                 value.chomp!
                 location = Range.new(source_buffer, offset_cache[token.location.start_offset], offset_cache[token.location.end_offset - 1])
@@ -244,7 +250,7 @@ module Prism
             when :tNL
               value = nil
             when :tFLOAT
-              value = Float(value)
+              value = parse_float(value)
             when :tIMAGINARY
               value = parse_complex(value)
             when :tINTEGER
@@ -253,7 +259,7 @@ module Prism
                 location = Range.new(source_buffer, offset_cache[token.location.start_offset + 1], offset_cache[token.location.end_offset])
               end
 
-              value = Integer(value)
+              value = parse_integer(value)
             when :tLABEL
               value.chomp!(":")
             when :tLABEL_END
@@ -261,7 +267,7 @@ module Prism
             when :tLCURLY
               type = :tLBRACE if state == EXPR_BEG | EXPR_LABEL
             when :tNTH_REF
-              value = Integer(value.delete_prefix("$"))
+              value = parse_integer(value.delete_prefix("$"))
             when :tOP_ASGN
               value.chomp!("=")
             when :tRATIONAL
@@ -275,7 +281,7 @@ module Prism
                 value = ""
                 location = Range.new(source_buffer, offset_cache[next_location.start_offset], offset_cache[next_location.end_offset])
                 index += 1
-              elsif ["\"", "'"].include?(value) && (next_token = lexed[index][0]) && next_token.type == :STRING_CONTENT && (next_next_token = lexed[index + 1][0]) && next_next_token.type == :STRING_END
+              elsif ["\"", "'"].include?(value) && (next_token = lexed[index][0]) && next_token.type == :STRING_CONTENT && next_token.value.lines.count <= 1 && (next_next_token = lexed[index + 1][0]) && next_next_token.type == :STRING_END
                 next_location = token.location.join(next_next_token.location)
                 type = :tSTRING
                 value = next_token.value
@@ -285,10 +291,24 @@ module Prism
                 quote = value[2] == "-" || value[2] == "~" ? value[3] : value[2]
                 value = "<<#{quote == "'" || quote == "\"" ? quote : "\""}"
               end
+            when :tSTRING_CONTENT
+              unless (lines = token.value.lines).one?
+                start_offset = offset_cache[token.location.start_offset]
+                lines.map do |line|
+                  end_offset = start_offset + line.length
+                  tokens << [:tSTRING_CONTENT, [line, Range.new(source_buffer, offset_cache[start_offset], offset_cache[end_offset])]]
+                  start_offset = end_offset
+                end
+                next
+              end
             when :tSTRING_DVAR
               value = nil
             when :tSTRING_END
-              if token.type == :REGEXP_END
+              if token.type == :HEREDOC_END && value.end_with?("\n")
+                newline_length = value.end_with?("\r\n") ? 2 : 1
+                value = value.sub(/\r?\n\z/, '')
+                location = Range.new(source_buffer, offset_cache[token.location.start_offset], offset_cache[token.location.end_offset - newline_length])
+              elsif token.type == :REGEXP_END
                 value = value[0]
                 location = Range.new(source_buffer, offset_cache[token.location.start_offset], offset_cache[token.location.start_offset + 1])
               end
@@ -302,8 +322,12 @@ module Prism
                 index += 1
               end
             when :tFID
-              if !tokens.empty? && tokens[-1][0] == :kDEF
+              if !tokens.empty? && tokens.dig(-1, 0) == :kDEF
                 type = :tIDENTIFIER
+              end
+            when :tXSTRING_BEG
+              if (next_token = lexed[index][0]) && next_token.type != :STRING_CONTENT
+                type = :tBACK_REF2
               end
             end
 
@@ -319,6 +343,20 @@ module Prism
 
         private
 
+        # Parse an integer from the string representation.
+        def parse_integer(value)
+          Integer(value)
+        rescue ArgumentError
+          0
+        end
+
+        # Parse a float from the string representation.
+        def parse_float(value)
+          Float(value)
+        rescue ArgumentError
+          0.0
+        end
+
         # Parse a complex from the string representation.
         def parse_complex(value)
           value.chomp!("i")
@@ -326,10 +364,12 @@ module Prism
           if value.end_with?("r")
             Complex(0, parse_rational(value))
           elsif value.start_with?(/0[BbOoDdXx]/)
-            Complex(0, Integer(value))
+            Complex(0, parse_integer(value))
           else
             Complex(0, value)
           end
+        rescue ArgumentError
+          0i
         end
 
         # Parse a rational from the string representation.
@@ -337,10 +377,12 @@ module Prism
           value.chomp!("r")
 
           if value.start_with?(/0[BbOoDdXx]/)
-            Rational(Integer(value))
+            Rational(parse_integer(value))
           else
             Rational(value)
           end
+        rescue ArgumentError
+          0r
         end
       end
     end

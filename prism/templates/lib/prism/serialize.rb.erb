@@ -1,15 +1,5 @@
 require "stringio"
-
-# Polyfill for String#unpack1 with the offset parameter.
-if String.instance_method(:unpack1).parameters.none? { |_, name| name == :offset }
-  String.prepend(
-    Module.new {
-      def unpack1(format, offset: 0) # :nodoc:
-        offset == 0 ? super(format) : self[offset..].unpack1(format)
-      end
-    }
-  )
-end
+require "prism/polyfill/string"
 
 module Prism
   # A module responsible for deserializing parse results.
@@ -126,12 +116,23 @@ module Prism
         end
       end
 
+      DIAGNOSTIC_TYPES = [
+        <%- errors.each do |error| -%>
+        <%= error.name.downcase.to_sym.inspect %>,
+        <%- end -%>
+        <%- warnings.each do |warning| -%>
+        <%= warning.name.downcase.to_sym.inspect %>,
+        <%- end -%>
+      ].freeze
+
+      private_constant :DIAGNOSTIC_TYPES
+
       def load_metadata
         comments = load_comments
         magic_comments = Array.new(load_varuint) { MagicComment.new(load_location_object, load_location_object) }
         data_loc = load_optional_location_object
-        errors = Array.new(load_varuint) { ParseError.new(load_embedded_string, load_location_object, load_error_level) }
-        warnings = Array.new(load_varuint) { ParseWarning.new(load_embedded_string, load_location_object, load_warning_level) }
+        errors = Array.new(load_varuint) { ParseError.new(DIAGNOSTIC_TYPES[io.getbyte], load_embedded_string, load_location_object, load_error_level) }
+        warnings = Array.new(load_varuint) { ParseWarning.new(DIAGNOSTIC_TYPES[io.getbyte], load_embedded_string, load_location_object, load_warning_level) }
         [comments, magic_comments, data_loc, errors, warnings]
       end
 
@@ -330,19 +331,19 @@ module Prism
             <%= node.name %>.new(
               source, <%= (node.fields.map { |field|
               case field
-              when Prism::NodeField then "load_node"
-              when Prism::OptionalNodeField then "load_optional_node"
-              when Prism::StringField then "load_string"
-              when Prism::NodeListField then "Array.new(load_varuint) { load_node }"
-              when Prism::ConstantField then "load_required_constant"
-              when Prism::OptionalConstantField then "load_optional_constant"
-              when Prism::ConstantListField then "Array.new(load_varuint) { load_required_constant }"
-              when Prism::LocationField then "load_location"
-              when Prism::OptionalLocationField then "load_optional_location"
-              when Prism::UInt8Field then "io.getbyte"
-              when Prism::UInt32Field, Prism::FlagsField then "load_varuint"
-              when Prism::IntegerField then "load_integer"
-              when Prism::DoubleField then "load_double"
+              when Prism::Template::NodeField then "load_node"
+              when Prism::Template::OptionalNodeField then "load_optional_node"
+              when Prism::Template::StringField then "load_string"
+              when Prism::Template::NodeListField then "Array.new(load_varuint) { load_node }"
+              when Prism::Template::ConstantField then "load_required_constant"
+              when Prism::Template::OptionalConstantField then "load_optional_constant"
+              when Prism::Template::ConstantListField then "Array.new(load_varuint) { load_required_constant }"
+              when Prism::Template::LocationField then "load_location"
+              when Prism::Template::OptionalLocationField then "load_optional_location"
+              when Prism::Template::UInt8Field then "io.getbyte"
+              when Prism::Template::UInt32Field, Prism::Template::FlagsField then "load_varuint"
+              when Prism::Template::IntegerField then "load_integer"
+              when Prism::Template::DoubleField then "load_double"
               else raise
               end
             } + ["location"]).join(", ") -%>)
@@ -367,19 +368,19 @@ module Prism
               <%= node.name %>.new(
                 source, <%= (node.fields.map { |field|
                 case field
-                when Prism::NodeField then "load_node"
-                when Prism::OptionalNodeField then "load_optional_node"
-                when Prism::StringField then "load_string"
-                when Prism::NodeListField then "Array.new(load_varuint) { load_node }"
-                when Prism::ConstantField then "load_required_constant"
-                when Prism::OptionalConstantField then "load_optional_constant"
-                when Prism::ConstantListField then "Array.new(load_varuint) { load_required_constant }"
-                when Prism::LocationField then "load_location"
-                when Prism::OptionalLocationField then "load_optional_location"
-                when Prism::UInt8Field then "io.getbyte"
-                when Prism::UInt32Field, Prism::FlagsField then "load_varuint"
-                when Prism::IntegerField then "load_integer"
-                when Prism::DoubleField then "load_double"
+                when Prism::Template::NodeField then "load_node"
+                when Prism::Template::OptionalNodeField then "load_optional_node"
+                when Prism::Template::StringField then "load_string"
+                when Prism::Template::NodeListField then "Array.new(load_varuint) { load_node }"
+                when Prism::Template::ConstantField then "load_required_constant"
+                when Prism::Template::OptionalConstantField then "load_optional_constant"
+                when Prism::Template::ConstantListField then "Array.new(load_varuint) { load_required_constant }"
+                when Prism::Template::LocationField then "load_location"
+                when Prism::Template::OptionalLocationField then "load_optional_location"
+                when Prism::Template::UInt8Field then "io.getbyte"
+                when Prism::Template::UInt32Field, Prism::Template::FlagsField then "load_varuint"
+                when Prism::Template::IntegerField then "load_integer"
+                when Prism::Template::DoubleField then "load_double"
                 else raise
                 end
               } + ["location"]).join(", ") -%>)
