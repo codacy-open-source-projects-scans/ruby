@@ -46,7 +46,7 @@ class TestRubyOptions < Test::Unit::TestCase
   def test_usage
     assert_in_out_err(%w(-h)) do |r, e|
       assert_operator(r.size, :<=, 25)
-      longer = r[1..-1].select {|x| x.size > 80}
+      longer = r[1..-1].select {|x| x.size >= 80}
       assert_equal([], longer)
       assert_equal([], e)
     end
@@ -112,7 +112,8 @@ class TestRubyOptions < Test::Unit::TestCase
     assert_in_out_err(%w(-We) + ['p $-W'], "", %w(2), [])
     assert_in_out_err(%w(-w -W0 -e) + ['p $-W'], "", %w(0), [])
 
-    categories = {"deprecated"=>1, "experimental"=>0, "performance"=>2}
+    categories = {deprecated: 1, experimental: 0, performance: 2}
+    assert_equal categories.keys.sort, Warning.categories.sort
 
     categories.each do |category, level|
       assert_in_out_err(["-W:#{category}", "-e", "p Warning[:#{category}]"], "", %w(true), [])
@@ -1195,13 +1196,16 @@ class TestRubyOptions < Test::Unit::TestCase
   end
 
   def test_frozen_string_literal_debug
+    default_frozen = eval("'test'").frozen?
+
     with_debug_pat = /created at/
     wo_debug_pat = /can\'t modify frozen String: "\w+" \(FrozenError\)\n\z/
     frozen = [
       ["--enable-frozen-string-literal", true],
       ["--disable-frozen-string-literal", false],
-      [nil, false],
     ]
+    frozen << [nil, false] unless default_frozen
+
     debugs = [
       ["--debug-frozen-string-literal", true],
       ["--debug=frozen-string-literal", true],

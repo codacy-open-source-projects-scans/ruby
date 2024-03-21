@@ -1981,7 +1981,7 @@ rb_vm_localjump_error(const char *mesg, VALUE value, int reason)
 }
 
 VALUE
-rb_vm_make_jump_tag_but_local_jump(int state, VALUE val)
+rb_vm_make_jump_tag_but_local_jump(enum ruby_tag_type state, VALUE val)
 {
     const char *mesg;
 
@@ -2013,7 +2013,7 @@ rb_vm_make_jump_tag_but_local_jump(int state, VALUE val)
 }
 
 void
-rb_vm_jump_tag_but_local_jump(int state)
+rb_vm_jump_tag_but_local_jump(enum ruby_tag_type state)
 {
     VALUE exc = rb_vm_make_jump_tag_but_local_jump(state, Qundef);
     if (!NIL_P(exc)) rb_exc_raise(exc);
@@ -2960,6 +2960,10 @@ rb_vm_mark(void *ptr)
             rb_gc_mark(rb_ractor_self(r));
         }
 
+        for (struct global_object_list *list = vm->global_object_list; list; list = list->next) {
+            rb_gc_mark_maybe(*list->varptr);
+        }
+
         rb_gc_mark_movable(vm->mark_object_ary);
         rb_gc_mark_movable(vm->load_path);
         rb_gc_mark_movable(vm->load_path_snapshot);
@@ -3101,6 +3105,13 @@ ruby_vm_destruct(rb_vm_t *vm)
             vm->frozen_strings = 0;
         }
         RB_ALTSTACK_FREE(vm->main_altstack);
+
+        struct global_object_list *next;
+        for (struct global_object_list *list = vm->global_object_list; list; list = next) {
+            next = list->next;
+            xfree(list);
+        }
+
         if (objspace) {
             if (rb_free_at_exit) {
                 rb_objspace_free_objects(objspace);
@@ -3548,6 +3559,10 @@ void
 rb_ec_initialize_vm_stack(rb_execution_context_t *ec, VALUE *stack, size_t size)
 {
     rb_ec_set_vm_stack(ec, stack, size);
+
+#if VM_CHECK_MODE > 0
+    MEMZERO(stack, VALUE, size); // malloc memory could have the VM canary in it
+#endif
 
     ec->cfp = (void *)(ec->vm_stack + ec->vm_stack_size);
 
@@ -4442,6 +4457,12 @@ rb_ruby_debug_ptr(void)
 }
 
 bool rb_free_at_exit = false;
+
+bool
+ruby_free_at_exit_p(void)
+{
+    return rb_free_at_exit;
+}
 
 /* iseq.c */
 VALUE rb_insn_operand_intern(const rb_iseq_t *iseq,

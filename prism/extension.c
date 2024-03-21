@@ -142,7 +142,7 @@ build_options_i(VALUE key, VALUE value, VALUE argument) {
     } else if (key_id == rb_option_id_offset) {
         if (!NIL_P(value)) pm_options_offset_set(options, NUM2UINT(value));
     } else if (key_id == rb_option_id_frozen_string_literal) {
-        if (!NIL_P(value)) pm_options_frozen_string_literal_set(options, value == Qtrue);
+        if (!NIL_P(value)) pm_options_frozen_string_literal_set(options, RTEST(value));
     } else if (key_id == rb_option_id_version) {
         if (!NIL_P(value)) {
             const char *version = check_string(value);
@@ -311,7 +311,7 @@ dump(int argc, VALUE *argv, VALUE self) {
     pm_options_t options = { 0 };
     string_options(argc, argv, &input, &options);
 
-#ifdef PRISM_DEBUG_MODE_BUILD
+#ifdef PRISM_BUILD_DEBUG
     size_t length = pm_string_length(&input);
     char* dup = xmalloc(length);
     memcpy(dup, pm_string_source(&input), length);
@@ -320,7 +320,7 @@ dump(int argc, VALUE *argv, VALUE self) {
 
     VALUE value = dump_input(&input, &options);
 
-#ifdef PRISM_DEBUG_MODE_BUILD
+#ifdef PRISM_BUILD_DEBUG
     xfree(dup);
 #endif
 
@@ -737,7 +737,7 @@ parse(int argc, VALUE *argv, VALUE self) {
     pm_options_t options = { 0 };
     string_options(argc, argv, &input, &options);
 
-#ifdef PRISM_DEBUG_MODE_BUILD
+#ifdef PRISM_BUILD_DEBUG
     size_t length = pm_string_length(&input);
     char* dup = xmalloc(length);
     memcpy(dup, pm_string_source(&input), length);
@@ -746,7 +746,7 @@ parse(int argc, VALUE *argv, VALUE self) {
 
     VALUE value = parse_input(&input, &options);
 
-#ifdef PRISM_DEBUG_MODE_BUILD
+#ifdef PRISM_BUILD_DEBUG
     xfree(dup);
 #endif
 

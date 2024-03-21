@@ -54,11 +54,11 @@ module Prism
 
     def test_source_encoding
       assert_equal "#<Encoding:UTF-8>", static_inspect("__ENCODING__")
-      assert_equal "#<Encoding:Shift_JIS>", static_inspect("__ENCODING__", encoding: "Shift_JIS")
+      assert_equal "#<Encoding:Windows-31J>", static_inspect("__ENCODING__", encoding: "Windows-31J")
     end
 
     def test_source_file
-      assert_equal __FILE__.inspect, static_inspect("__FILE__", filepath: __FILE__)
+      assert_equal __FILE__.inspect, static_inspect("__FILE__", filepath: __FILE__, frozen_string_literal: true)
     end
 
     def test_source_line

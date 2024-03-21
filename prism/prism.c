@@ -1204,40 +1204,6 @@ pm_node_flag_set_repeated_parameter(pm_node_t *node) {
 /******************************************************************************/
 
 /**
- * Parse the decimal number represented by the range of bytes. returns
- * UINT32_MAX if the number fails to parse. This function assumes that the range
- * of bytes has already been validated to contain only decimal digits.
- */
-static uint32_t
-parse_decimal_number(pm_parser_t *parser, const uint8_t *start, const uint8_t *end) {
-    ptrdiff_t diff = end - start;
-    assert(diff > 0 && ((unsigned long) diff < SIZE_MAX));
-    size_t length = (size_t) diff;
-
-    char *digits = xcalloc(length + 1, sizeof(char));
-    memcpy(digits, start, length);
-    digits[length] = '\0';
-
-    char *endptr;
-    errno = 0;
-    unsigned long value = strtoul(digits, &endptr, 10);
-
-    if ((digits == endptr) || (*endptr != '\0') || (errno == ERANGE)) {
-        pm_parser_err(parser, start, end, PM_ERR_INVALID_NUMBER_DECIMAL);
-        value = UINT32_MAX;
-    }
-
-    xfree(digits);
-
-    if (value > UINT32_MAX) {
-        pm_parser_err(parser, start, end, PM_ERR_INVALID_NUMBER_DECIMAL);
-        value = UINT32_MAX;
-    }
-
-    return (uint32_t) value;
-}
-
-/**
  * When you have an encoding flag on a regular expression, it takes precedence
  * over all of the previously set encoding flags. So we need to mask off any
  * previously set encoding flags before setting the new one.
@@ -5137,6 +5103,52 @@ pm_numbered_parameters_node_create(pm_parser_t *parser, const pm_location_t *loc
 }
 
 /**
+ * The maximum numbered reference value is defined as the maximum value that an
+ * integer can hold minus 1 bit for CRuby instruction sequence operand tagging.
+ */
+#define NTH_REF_MAX ((uint32_t) (INT_MAX >> 1))
+
+/**
+ * Parse the decimal number represented by the range of bytes. Returns
+ * 0 if the number fails to parse or if the number is greater than the maximum
+ * value representable by a numbered reference. This function assumes that the
+ * range of bytes has already been validated to contain only decimal digits.
+ */
+static uint32_t
+pm_numbered_reference_read_node_number(pm_parser_t *parser, const pm_token_t *token) {
+    const uint8_t *start = token->start + 1;
+    const uint8_t *end = token->end;
+
+    ptrdiff_t diff = end - start;
+    assert(diff > 0 && ((unsigned long) diff < SIZE_MAX));
+    size_t length = (size_t) diff;
+
+    char *digits = xcalloc(length + 1, sizeof(char));
+    memcpy(digits, start, length);
+    digits[length] = '\0';
+
+    char *endptr;
+    errno = 0;
+    unsigned long value = strtoul(digits, &endptr, 10);
+
+    if ((digits == endptr) || (*endptr != '\0') || (errno == ERANGE)) {
+        pm_parser_err(parser, start, end, PM_ERR_INVALID_NUMBER_DECIMAL);
+        value = 0;
+    }
+
+    xfree(digits);
+
+    if (value > NTH_REF_MAX) {
+        PM_PARSER_WARN_FORMAT(parser, start, end, PM_WARN_INVALID_NUMBERED_REFERENCE, (int) (length + 1), (const char *) token->start);
+        value = 0;
+    }
+
+    return (uint32_t) value;
+}
+
+#undef NTH_REF_MAX
+
+/**
  * Allocate and initialize a new NthReferenceReadNode node.
  */
 static pm_numbered_reference_read_node_t *
@@ -5149,7 +5161,7 @@ pm_numbered_reference_read_node_create(pm_parser_t *parser, const pm_token_t *na
             .type = PM_NUMBERED_REFERENCE_READ_NODE,
             .location = PM_LOCATION_TOKEN_VALUE(name),
         },
-        .number = parse_decimal_number(parser, name->start + 1, name->end)
+        .number = pm_numbered_reference_read_node_number(parser, name)
     };
 
     return node;
@@ -5720,6 +5732,25 @@ pm_self_node_create(pm_parser_t *parser, const pm_token_t *token) {
 }
 
 /**
+ * Allocate and initialize a new ShareableConstantNode node.
+ */
+static pm_shareable_constant_node_t *
+pm_shareable_constant_node_create(pm_parser_t *parser, pm_node_t *write, pm_shareable_constant_value_t value) {
+    pm_shareable_constant_node_t *node = PM_ALLOC_NODE(parser, pm_shareable_constant_node_t);
+
+    *node = (pm_shareable_constant_node_t) {
+        {
+            .type = PM_SHAREABLE_CONSTANT_NODE,
+            .flags = (pm_node_flags_t) value,
+            .location = PM_LOCATION_NODE_VALUE(write)
+        },
+        .write = write
+    };
+
+    return node;
+}
+
+/**
  * Allocate a new SingletonClassNode node.
  */
 static pm_singleton_class_node_t *
@@ -5770,10 +5801,21 @@ pm_source_file_node_create(pm_parser_t *parser, const pm_token_t *file_keyword) 
     pm_source_file_node_t *node = PM_ALLOC_NODE(parser, pm_source_file_node_t);
     assert(file_keyword->type == PM_TOKEN_KEYWORD___FILE__);
 
+    pm_node_flags_t flags = 0;
+
+    switch (parser->frozen_string_literal) {
+        case PM_OPTIONS_FROZEN_STRING_LITERAL_DISABLED:
+            flags |= PM_STRING_FLAGS_MUTABLE;
+            break;
+        case PM_OPTIONS_FROZEN_STRING_LITERAL_ENABLED:
+            flags |= PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN;
+            break;
+    }
+
     *node = (pm_source_file_node_t) {
         {
             .type = PM_SOURCE_FILE_NODE,
-            .flags = PM_NODE_FLAG_STATIC_LITERAL,
+            .flags = flags,
             .location = PM_LOCATION_TOKEN_VALUE(file_keyword),
         },
         .filepath = parser->filepath
@@ -5898,8 +5940,13 @@ pm_string_node_create_unescaped(pm_parser_t *parser, const pm_token_t *opening, 
     pm_string_node_t *node = PM_ALLOC_NODE(parser, pm_string_node_t);
     pm_node_flags_t flags = 0;
 
-    if (parser->frozen_string_literal) {
-        flags = PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN;
+    switch (parser->frozen_string_literal) {
+        case PM_OPTIONS_FROZEN_STRING_LITERAL_DISABLED:
+            flags = PM_STRING_FLAGS_MUTABLE;
+            break;
+        case PM_OPTIONS_FROZEN_STRING_LITERAL_ENABLED:
+            flags = PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN;
+            break;
     }
 
     *node = (pm_string_node_t) {
@@ -6298,8 +6345,13 @@ pm_symbol_node_to_string_node(pm_parser_t *parser, pm_symbol_node_t *node) {
     pm_string_node_t *new_node = PM_ALLOC_NODE(parser, pm_string_node_t);
     pm_node_flags_t flags = 0;
 
-    if (parser->frozen_string_literal) {
-        flags = PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN;
+    switch (parser->frozen_string_literal) {
+        case PM_OPTIONS_FROZEN_STRING_LITERAL_DISABLED:
+            flags = PM_STRING_FLAGS_MUTABLE;
+            break;
+        case PM_OPTIONS_FROZEN_STRING_LITERAL_ENABLED:
+            flags = PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN;
+            break;
     }
 
     *new_node = (pm_string_node_t) {
@@ -6723,6 +6775,7 @@ pm_parser_scope_push(pm_parser_t *parser, bool closed) {
         .locals = { 0 },
         .parameters = PM_SCOPE_PARAMETERS_NONE,
         .numbered_parameters = PM_SCOPE_NUMBERED_PARAMETERS_NONE,
+        .shareable_constant = (closed || parser->current_scope == NULL) ? PM_SCOPE_SHAREABLE_CONSTANT_NONE : parser->current_scope->shareable_constant,
         .closed = closed
     };
 
@@ -6765,7 +6818,28 @@ pm_parser_scope_forwarding_all_check(pm_parser_t *parser, const pm_token_t * tok
 
 static inline void
 pm_parser_scope_forwarding_keywords_check(pm_parser_t *parser, const pm_token_t * token) {
-    pm_parser_scope_forwarding_param_check(parser, token, PM_SCOPE_PARAMETERS_FORWARDING_KEYWORDS, PM_ERR_EXPECT_EXPRESSION_AFTER_SPLAT_HASH);
+    pm_parser_scope_forwarding_param_check(parser, token, PM_SCOPE_PARAMETERS_FORWARDING_KEYWORDS, PM_ERR_ARGUMENT_NO_FORWARDING_STAR_STAR);
+}
+
+/**
+ * Get the current state of constant shareability.
+ */
+static inline pm_shareable_constant_value_t
+pm_parser_scope_shareable_constant_get(pm_parser_t *parser) {
+    return parser->current_scope->shareable_constant;
+}
+
+/**
+ * Set the current state of constant shareability. We'll set it on all of the
+ * open scopes so that reads are quick.
+ */
+static void
+pm_parser_scope_shareable_constant_set(pm_parser_t *parser, pm_shareable_constant_value_t shareable_constant) {
+    pm_scope_t *scope = parser->current_scope;
+
+    do {
+        scope->shareable_constant = shareable_constant;
+    } while (!scope->closed && (scope = scope->previous) != NULL);
 }
 
 /**
@@ -7173,9 +7247,9 @@ parser_lex_magic_comment_encoding(pm_parser_t *parser) {
 static void
 parser_lex_magic_comment_frozen_string_literal_value(pm_parser_t *parser, const uint8_t *start, const uint8_t *end) {
     if ((start + 4 <= end) && pm_strncasecmp(start, (const uint8_t *) "true", 4) == 0) {
-        parser->frozen_string_literal = true;
+        parser->frozen_string_literal = PM_OPTIONS_FROZEN_STRING_LITERAL_ENABLED;
     } else if ((start + 5 <= end) && pm_strncasecmp(start, (const uint8_t *) "false", 5) == 0) {
-        parser->frozen_string_literal = false;
+        parser->frozen_string_literal = PM_OPTIONS_FROZEN_STRING_LITERAL_DISABLED;
     }
 }
 
@@ -7317,9 +7391,33 @@ parser_lex_magic_comment(pm_parser_t *parser, bool semantic_token_seen) {
 
         // We only want to handle frozen string literal comments if it's before
         // any semantic tokens have been seen.
-        if (!semantic_token_seen) {
-            if (key_length == 21 && pm_strncasecmp(key_source, (const uint8_t *) "frozen_string_literal", 21) == 0) {
+        if (key_length == 21 && pm_strncasecmp(key_source, (const uint8_t *) "frozen_string_literal", 21) == 0) {
+            if (semantic_token_seen) {
+                pm_parser_warn_token(parser, &parser->current, PM_WARN_IGNORED_FROZEN_STRING_LITERAL);
+            } else {
                 parser_lex_magic_comment_frozen_string_literal_value(parser, value_start, value_end);
+            }
+        }
+
+        // If we have hit a ractor pragma, attempt to lex that.
+        uint32_t value_length = (uint32_t) (value_end - value_start);
+        if (key_length == 24 && pm_strncasecmp(key_source, (const uint8_t *) "shareable_constant_value", 24) == 0) {
+            if (value_length == 4 && pm_strncasecmp(value_start, (const uint8_t *) "none", 4) == 0) {
+                pm_parser_scope_shareable_constant_set(parser, PM_SCOPE_SHAREABLE_CONSTANT_NONE);
+            } else if (value_length == 7 && pm_strncasecmp(value_start, (const uint8_t *) "literal", 7) == 0) {
+                pm_parser_scope_shareable_constant_set(parser, PM_SCOPE_SHAREABLE_CONSTANT_LITERAL);
+            } else if (value_length == 23 && pm_strncasecmp(value_start, (const uint8_t *) "experimental_everything", 23) == 0) {
+                pm_parser_scope_shareable_constant_set(parser, PM_SCOPE_SHAREABLE_CONSTANT_EXPERIMENTAL_EVERYTHING);
+            } else if (value_length == 17 && pm_strncasecmp(value_start, (const uint8_t *) "experimental_copy", 17) == 0) {
+                pm_parser_scope_shareable_constant_set(parser, PM_SCOPE_SHAREABLE_CONSTANT_EXPERIMENTAL_COPY);
+            } else {
+                PM_PARSER_WARN_TOKEN_FORMAT(
+                    parser,
+                    parser->current,
+                    PM_WARN_INVALID_SHAREABLE_CONSTANT_VALUE,
+                    (int) value_length,
+                    (const char *) value_start
+                );
             }
         }
 
@@ -7585,26 +7683,33 @@ lex_optional_float_suffix(pm_parser_t *parser, bool* seen_e) {
             parser->current.end += pm_strspn_decimal_number_validate(parser, parser->current.end);
             type = PM_TOKEN_FLOAT;
         } else {
-            // If we had a . and then something else, then it's not a float suffix on
-            // a number it's a method call or something else.
+            // If we had a . and then something else, then it's not a float
+            // suffix on a number it's a method call or something else.
             return type;
         }
     }
 
     // Here we're going to attempt to parse the optional exponent portion of a
     // float. If it's not there, it's okay and we'll just continue on.
-    if (match(parser, 'e') || match(parser, 'E')) {
-        (void) (match(parser, '+') || match(parser, '-'));
-        *seen_e = true;
+    if ((peek(parser) == 'e') || (peek(parser) == 'E')) {
+        if ((peek_offset(parser, 1) == '+') || (peek_offset(parser, 1) == '-')) {
+            parser->current.end += 2;
 
-        if (pm_char_is_decimal_digit(peek(parser))) {
+            if (pm_char_is_decimal_digit(peek(parser))) {
+                parser->current.end++;
+                parser->current.end += pm_strspn_decimal_number_validate(parser, parser->current.end);
+            } else {
+                pm_parser_err_current(parser, PM_ERR_INVALID_FLOAT_EXPONENT);
+            }
+        } else if (pm_char_is_decimal_digit(peek_offset(parser, 1))) {
             parser->current.end++;
             parser->current.end += pm_strspn_decimal_number_validate(parser, parser->current.end);
-            type = PM_TOKEN_FLOAT;
         } else {
-            pm_parser_err_current(parser, PM_ERR_INVALID_FLOAT_EXPONENT);
-            type = PM_TOKEN_FLOAT;
+            return type;
         }
+
+        *seen_e = true;
+        type = PM_TOKEN_FLOAT;
     }
 
     return type;
@@ -9610,7 +9715,10 @@ parser_lex(pm_parser_t *parser) {
 
                         pm_token_type_t type = PM_TOKEN_STAR_STAR;
 
-                        if (lex_state_spcarg_p(parser, space_seen) || lex_state_beg_p(parser)) {
+                        if (lex_state_spcarg_p(parser, space_seen)) {
+                            pm_parser_warn_token(parser, &parser->current, PM_WARN_AMBIGUOUS_PREFIX_STAR_STAR);
+                            type = PM_TOKEN_USTAR_STAR;
+                        } else if (lex_state_beg_p(parser)) {
                             type = PM_TOKEN_USTAR_STAR;
                         }
 
@@ -9909,7 +10017,10 @@ parser_lex(pm_parser_t *parser) {
                     }
 
                     pm_token_type_t type = PM_TOKEN_AMPERSAND;
-                    if (lex_state_spcarg_p(parser, space_seen) || lex_state_beg_p(parser)) {
+                    if (lex_state_spcarg_p(parser, space_seen)) {
+                        pm_parser_warn_token(parser, &parser->current, PM_WARN_AMBIGUOUS_PREFIX_AMPERSAND);
+                        type = PM_TOKEN_UAMPERSAND;
+                    } else if (lex_state_beg_p(parser)) {
                         type = PM_TOKEN_UAMPERSAND;
                     }
 
@@ -11957,6 +12068,21 @@ parse_target_validate(pm_parser_t *parser, pm_node_t *target) {
 }
 
 /**
+ * Potentially wrap a constant write node in a shareable constant node depending
+ * on the current state.
+ */
+static pm_node_t *
+parse_shareable_constant_write(pm_parser_t *parser, pm_node_t *write) {
+    pm_shareable_constant_value_t shareable_constant = pm_parser_scope_shareable_constant_get(parser);
+
+    if (shareable_constant != PM_SCOPE_SHAREABLE_CONSTANT_NONE) {
+        return (pm_node_t *) pm_shareable_constant_node_create(parser, write, shareable_constant);
+    }
+
+    return write;
+}
+
+/**
  * Convert the given node into a valid write node.
  */
 static pm_node_t *
@@ -11970,15 +12096,17 @@ parse_write(pm_parser_t *parser, pm_node_t *target, pm_token_t *operator, pm_nod
             pm_node_destroy(parser, target);
             return (pm_node_t *) node;
         }
-        case PM_CONSTANT_PATH_NODE:
-            return (pm_node_t *) pm_constant_path_write_node_create(parser, (pm_constant_path_node_t *) target, operator, value);
+        case PM_CONSTANT_PATH_NODE: {
+            pm_node_t *node = (pm_node_t *) pm_constant_path_write_node_create(parser, (pm_constant_path_node_t *) target, operator, value);
+            return parse_shareable_constant_write(parser, node);
+        }
         case PM_CONSTANT_READ_NODE: {
-            pm_constant_write_node_t *node = pm_constant_write_node_create(parser, (pm_constant_read_node_t *) target, operator, value);
+            pm_node_t *node = (pm_node_t *) pm_constant_write_node_create(parser, (pm_constant_read_node_t *) target, operator, value);
             if (context_def_p(parser)) {
-                pm_parser_err_node(parser, (pm_node_t *) node, PM_ERR_WRITE_TARGET_IN_METHOD);
+                pm_parser_err_node(parser, node, PM_ERR_WRITE_TARGET_IN_METHOD);
             }
             pm_node_destroy(parser, target);
-            return (pm_node_t *) node;
+            return parse_shareable_constant_write(parser, node);
         }
         case PM_BACK_REFERENCE_READ_NODE:
         case PM_NUMBERED_REFERENCE_READ_NODE:
@@ -14877,14 +15005,20 @@ parse_pattern_primitives(pm_parser_t *parser, pm_diagnostic_id_t diag_id) {
                 break;
             }
             case PM_TOKEN_PARENTHESIS_LEFT: {
+                pm_token_t opening = parser->current;
                 parser_lex(parser);
-                if (node != NULL) {
-                    pm_node_destroy(parser, node);
-                }
-                node = parse_pattern(parser, false, PM_ERR_PATTERN_EXPRESSION_AFTER_PAREN);
 
+                pm_node_t *body = parse_pattern(parser, false, PM_ERR_PATTERN_EXPRESSION_AFTER_PAREN);
                 accept1(parser, PM_TOKEN_NEWLINE);
                 expect1(parser, PM_TOKEN_PARENTHESIS_RIGHT, PM_ERR_PATTERN_TERM_PAREN);
+                pm_node_t *right = (pm_node_t *) pm_parentheses_node_create(parser, &opening, body, &parser->previous);
+
+                if (node == NULL) {
+                    node = right;
+                } else {
+                    node = (pm_node_t *) pm_alternation_pattern_node_create(parser, node, right, &operator);
+                }
+
                 break;
             }
             default: {
@@ -17913,16 +18047,18 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     parser_lex(parser);
 
                     pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
-                    return (pm_node_t *) pm_constant_path_and_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
+                    pm_node_t *write = (pm_node_t *) pm_constant_path_and_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
+
+                    return parse_shareable_constant_write(parser, write);
                 }
                 case PM_CONSTANT_READ_NODE: {
                     parser_lex(parser);
 
                     pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
-                    pm_node_t *result = (pm_node_t *) pm_constant_and_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
+                    pm_node_t *write = (pm_node_t *) pm_constant_and_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
-                    return result;
+                    return parse_shareable_constant_write(parser, write);
                 }
                 case PM_INSTANCE_VARIABLE_READ_NODE: {
                     parser_lex(parser);
@@ -18024,16 +18160,18 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     parser_lex(parser);
 
                     pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
-                    return (pm_node_t *) pm_constant_path_or_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
+                    pm_node_t *write = (pm_node_t *) pm_constant_path_or_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
+
+                    return parse_shareable_constant_write(parser, write);
                 }
                 case PM_CONSTANT_READ_NODE: {
                     parser_lex(parser);
 
                     pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
-                    pm_node_t *result = (pm_node_t *) pm_constant_or_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
+                    pm_node_t *write = (pm_node_t *) pm_constant_or_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
-                    return result;
+                    return parse_shareable_constant_write(parser, write);
                 }
                 case PM_INSTANCE_VARIABLE_READ_NODE: {
                     parser_lex(parser);
@@ -18145,16 +18283,18 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     parser_lex(parser);
 
                     pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
-                    return (pm_node_t *) pm_constant_path_operator_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
+                    pm_node_t *write = (pm_node_t *) pm_constant_path_operator_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
+
+                    return parse_shareable_constant_write(parser, write);
                 }
                 case PM_CONSTANT_READ_NODE: {
                     parser_lex(parser);
 
                     pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
-                    pm_node_t *result = (pm_node_t *) pm_constant_operator_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
+                    pm_node_t *write = (pm_node_t *) pm_constant_operator_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
-                    return result;
+                    return parse_shareable_constant_write(parser, write);
                 }
                 case PM_INSTANCE_VARIABLE_READ_NODE: {
                     parser_lex(parser);
@@ -18900,7 +19040,7 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
         .in_keyword_arg = false,
         .current_param_name = 0,
         .semantic_token_seen = false,
-        .frozen_string_literal = false,
+        .frozen_string_literal = PM_OPTIONS_FROZEN_STRING_LITERAL_UNSET,
         .current_regular_expression_ascii_only = false
     };
 
@@ -18959,9 +19099,7 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
         }
 
         // frozen_string_literal option
-        if (options->frozen_string_literal) {
-            parser->frozen_string_literal = true;
-        }
+        parser->frozen_string_literal = options->frozen_string_literal;
 
         // command_line option
         parser->command_line = options->command_line;
@@ -19178,6 +19316,41 @@ pm_parse_stream(pm_parser_t *parser, pm_buffer_t *buffer, void *stream, pm_parse
     return node;
 }
 
+/**
+ * Parse the source and return true if it parses without errors or warnings.
+ */
+PRISM_EXPORTED_FUNCTION bool
+pm_parse_success_p(const uint8_t *source, size_t size, const char *data) {
+    pm_options_t options = { 0 };
+    pm_options_read(&options, data);
+
+    pm_parser_t parser;
+    pm_parser_init(&parser, source, size, &options);
+
+    pm_node_t *node = pm_parse(&parser);
+    pm_node_destroy(&parser, node);
+
+    bool result = parser.error_list.size == 0 && parser.warning_list.size == 0;
+    pm_parser_free(&parser);
+    pm_options_free(&options);
+
+    return result;
+}
+
+#undef PM_CASE_KEYWORD
+#undef PM_CASE_OPERATOR
+#undef PM_CASE_WRITABLE
+#undef PM_STRING_EMPTY
+#undef PM_LOCATION_NODE_BASE_VALUE
+#undef PM_LOCATION_NODE_VALUE
+#undef PM_LOCATION_NULL_VALUE
+#undef PM_LOCATION_TOKEN_VALUE
+
+// We optionally support serializing to a binary string. For systems that don't
+// want or need this functionality, it can be turned off with the
+// PRISM_EXCLUDE_SERIALIZATION define.
+#ifndef PRISM_EXCLUDE_SERIALIZATION
+
 static inline void
 pm_serialize_header(pm_buffer_t *buffer) {
     pm_buffer_append_string(buffer, "PRISM", 5);
@@ -19264,14 +19437,7 @@ pm_serialize_parse_comments(pm_buffer_t *buffer, const uint8_t *source, size_t s
     pm_options_free(&options);
 }
 
-#undef PM_CASE_KEYWORD
-#undef PM_CASE_OPERATOR
-#undef PM_CASE_WRITABLE
-#undef PM_STRING_EMPTY
-#undef PM_LOCATION_NODE_BASE_VALUE
-#undef PM_LOCATION_NODE_VALUE
-#undef PM_LOCATION_NULL_VALUE
-#undef PM_LOCATION_TOKEN_VALUE
+#endif
 
 /** An error that is going to be formatted into the output. */
 typedef struct {

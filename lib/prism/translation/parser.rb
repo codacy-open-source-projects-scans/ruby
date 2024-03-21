@@ -124,7 +124,7 @@ module Prism
         when :argument_block_multi
           Diagnostic.new(:error, :block_and_blockarg, {}, diagnostic_location, [])
         when :argument_formal_constant
-          Diagnostic.new(:error, :formal_argument, {}, diagnostic_location, [])
+          Diagnostic.new(:error, :argument_const, {}, diagnostic_location, [])
         when :argument_formal_class
           Diagnostic.new(:error, :argument_cvar, {}, diagnostic_location, [])
         when :argument_formal_global
@@ -135,6 +135,8 @@ module Prism
           Diagnostic.new(:error, :no_anonymous_blockarg, {}, diagnostic_location, [])
         when :argument_no_forwarding_star
           Diagnostic.new(:error, :no_anonymous_restarg, {}, diagnostic_location, [])
+        when :argument_no_forwarding_star_star
+          Diagnostic.new(:error, :no_anonymous_kwrestarg, {}, diagnostic_location, [])
         when :begin_lonely_else
           location = location.copy(length: 4)
           diagnostic_location = build_range(location, offset_cache)
@@ -193,8 +195,12 @@ module Prism
           Diagnostic.new(:warning, :ambiguous_prefix, { prefix: "+" }, diagnostic_location, [])
         when :ambiguous_first_argument_minus
           Diagnostic.new(:warning, :ambiguous_prefix, { prefix: "-" }, diagnostic_location, [])
+        when :ambiguous_prefix_ampersand
+          Diagnostic.new(:warning, :ambiguous_prefix, { prefix: "&" }, diagnostic_location, [])
         when :ambiguous_prefix_star
           Diagnostic.new(:warning, :ambiguous_prefix, { prefix: "*" }, diagnostic_location, [])
+        when :ambiguous_prefix_star_star
+          Diagnostic.new(:warning, :ambiguous_prefix, { prefix: "**" }, diagnostic_location, [])
         when :ambiguous_slash
           Diagnostic.new(:warning, :ambiguous_regexp, {}, diagnostic_location, [])
         when :dot_dot_dot_eol
