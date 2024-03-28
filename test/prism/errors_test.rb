@@ -1091,7 +1091,7 @@ module Prism
       )
 
       assert_errors expected, "class A; return; end", [
-        ["invalid `return` in a class or module body", 15..16]
+        ["invalid `return` in a class or module body", 9..15]
       ]
     end
 
@@ -1106,7 +1106,7 @@ module Prism
       )
 
       assert_errors expected, "module A; return; end", [
-        ["invalid `return` in a class or module body", 16..17]
+        ["invalid `return` in a class or module body", 10..16]
       ]
     end
 
@@ -2065,6 +2065,20 @@ module Prism
       errors = [["`it` is not allowed when an ordinary parameter is defined", 10..12]]
 
       assert_errors expression(source), source, errors, compare_ripper: false
+    end
+
+    def test_regular_expression_with_unknown_regexp_options
+      source = "/foo/AZaz"
+      errors = [["unknown regexp options: AZaz", 4..9]]
+
+      assert_errors expression(source), source, errors
+    end
+
+    def test_interpolated_regular_expression_with_unknown_regexp_options
+      source = "/\#{foo}/AZaz"
+      errors = [["unknown regexp options: AZaz", 7..12]]
+
+      assert_errors expression(source), source, errors
     end
 
     def test_singleton_method_for_literals

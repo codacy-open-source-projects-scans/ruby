@@ -3623,7 +3623,7 @@ CODE
     assert_not_predicate +chilled_string, :frozen?
     assert_not_same chilled_string, +chilled_string
 
-    # @- the the original string as mutable
+    # @- the original string as mutable
     assert_predicate -chilled_string, :frozen?
     assert_not_same chilled_string, -chilled_string
   end
@@ -3644,6 +3644,18 @@ CODE
     ensure
       String.undef_method(:setivar!)
     end
+  ensure
+    Warning[:deprecated] = deprecated
+  end
+
+  def test_chilled_string_substring
+    deprecated = Warning[:deprecated]
+    Warning[:deprecated] = false
+    chilled_string = eval('"a chilled string."')
+    substring = chilled_string[0..-1]
+    assert_equal("a chilled string.", substring)
+    chilled_string[0..-1] = "This string is defrosted."
+    assert_equal("a chilled string.", substring)
   ensure
     Warning[:deprecated] = deprecated
   end

@@ -2063,8 +2063,9 @@ get_nd_args(struct parser_params *p, NODE *node)
         return RNODE_FCALL(node)->nd_args;
       case NODE_QCALL:
         return RNODE_QCALL(node)->nd_args;
-      case NODE_VCALL:
       case NODE_SUPER:
+        return RNODE_SUPER(node)->nd_args;
+      case NODE_VCALL:
       case NODE_ZSUPER:
       case NODE_YIELD:
       case NODE_RETURN:
@@ -16612,6 +16613,16 @@ rb_ruby_ripper_lex_state_name(struct parser_params *p, int state)
 {
     return rb_parser_lex_state_name(p, (enum lex_state_e)state);
 }
+
+#ifdef UNIVERSAL_PARSER
+rb_parser_t *
+rb_ripper_parser_params_allocate(const rb_parser_config_t *config)
+{
+    rb_parser_t *p = (rb_parser_t *)config->calloc(1, sizeof(rb_parser_t));
+    p->config = config;
+    return p;
+}
+#endif
 
 struct parser_params*
 rb_ruby_ripper_parser_allocate(void)

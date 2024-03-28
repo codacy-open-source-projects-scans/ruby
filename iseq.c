@@ -1253,8 +1253,6 @@ pm_iseq_compile_with_option(VALUE src, VALUE file, VALUE realpath, VALUE line, V
     pm_parse_result_t result = { 0 };
     pm_options_line_set(&result.options, NUM2INT(line));
 
-    pm_options_frozen_string_literal_init(&result, option.frozen_string_literal);
-
     VALUE error;
     if (RB_TYPE_P(src, T_FILE)) {
         VALUE filepath = rb_io_path(src);
@@ -1405,6 +1403,10 @@ static VALUE
 iseqw_new(const rb_iseq_t *iseq)
 {
     if (iseq->wrapper) {
+        if (rb_check_typeddata(iseq->wrapper, &iseqw_data_type) != iseq) {
+            rb_raise(rb_eTypeError, "wrong iseq wrapper: %" PRIsVALUE " for %p",
+                     iseq->wrapper, (void *)iseq);
+        }
         return iseq->wrapper;
     }
     else {

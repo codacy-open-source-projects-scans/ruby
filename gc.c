@@ -439,8 +439,6 @@ typedef struct {
     size_t oldmalloc_limit_min;
     size_t oldmalloc_limit_max;
     double oldmalloc_limit_growth_factor;
-
-    VALUE gc_stress;
 } ruby_gc_params_t;
 
 static ruby_gc_params_t gc_params = {
@@ -462,8 +460,6 @@ static ruby_gc_params_t gc_params = {
     GC_OLDMALLOC_LIMIT_MIN,
     GC_OLDMALLOC_LIMIT_MAX,
     GC_OLDMALLOC_LIMIT_GROWTH_FACTOR,
-
-    FALSE,
 };
 
 /* GC_DEBUG:
@@ -949,7 +945,7 @@ typedef struct rb_objspace {
     rb_postponed_job_handle_t finalize_deferred_pjob;
 
 #ifdef RUBY_ASAN_ENABLED
-    rb_execution_context_t *marking_machine_context_ec;
+    const rb_execution_context_t *marking_machine_context_ec;
 #endif
 
 } rb_objspace_t;
@@ -1134,10 +1130,6 @@ RVALUE_AGE_SET(VALUE obj, int age)
     rb_vm_t *unless_objspace_vm = GET_VM(); \
     if (unless_objspace_vm) objspace = unless_objspace_vm->objspace; \
     else /* return; or objspace will be warned uninitialized */
-
-#define ruby_initial_gc_stress	gc_params.gc_stress
-
-VALUE *ruby_initial_gc_stress_ptr = &ruby_initial_gc_stress;
 
 #define malloc_limit		objspace->malloc_params.limit
 #define malloc_increase 	objspace->malloc_params.increase
@@ -1389,7 +1381,6 @@ NO_SANITIZE("memory", static inline int is_pointer_to_heap(rb_objspace_t *objspa
 static size_t obj_memsize_of(VALUE obj, int use_all_types);
 static void gc_verify_internal_consistency(rb_objspace_t *objspace);
 
-static void gc_stress_set(rb_objspace_t *objspace, VALUE flag);
 static VALUE gc_disable_no_rest(rb_objspace_t *);
 
 static double getrusage_time(void);
@@ -1885,10 +1876,22 @@ calloc1(size_t n)
     return calloc(1, n);
 }
 
+static VALUE initial_stress = Qfalse;
+
+void
+rb_gc_initial_stress_set(VALUE flag)
+{
+    initial_stress = flag;
+}
+
 rb_objspace_t *
 rb_objspace_alloc(void)
 {
     rb_objspace_t *objspace = calloc1(sizeof(rb_objspace_t));
+
+    objspace->flags.gc_stressful = RTEST(initial_stress);
+    objspace->gc_stress_mode = initial_stress;
+
     objspace->flags.measure_gc = 1;
     malloc_limit = gc_params.malloc_limit_min;
     objspace->finalize_deferred_pjob = rb_postponed_job_preregister(0, gc_finalize_deferred, objspace);
@@ -1907,7 +1910,10 @@ rb_objspace_alloc(void)
 
     rb_darray_make_without_gc(&objspace->weak_references, 0);
 
+    // TODO: debug why on Windows Ruby crashes on boot when GC is on.
+#ifdef _WIN32
     dont_gc_on();
+#endif
 
     return objspace;
 }
@@ -3550,14 +3556,6 @@ Init_heap(void)
 
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
-}
-
-void
-Init_gc_stress(void)
-{
-    rb_objspace_t *objspace = &rb_objspace;
-
-    gc_stress_set(objspace, ruby_initial_gc_stress);
 }
 
 typedef int each_obj_callback(void *, void *, size_t, void *);
@@ -6406,11 +6404,11 @@ gc_mark_machine_stack_location_maybe(rb_objspace_t *objspace, VALUE obj)
     gc_mark_maybe(objspace, obj);
 
 #ifdef RUBY_ASAN_ENABLED
-    rb_execution_context_t *ec = objspace->marking_machine_context_ec;
+    const rb_execution_context_t *ec = objspace->marking_machine_context_ec;
     void *fake_frame_start;
     void *fake_frame_end;
     bool is_fake_frame = asan_get_fake_stack_extents(
-        ec->thread_ptr->asan_fake_stack_handle, obj,
+        ec->machine.asan_fake_stack_handle, obj,
         ec->machine.stack_start, ec->machine.stack_end,
         &fake_frame_start, &fake_frame_end
     );
@@ -6495,13 +6493,25 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_execution_context_t *ec
 #endif
 
 void
-rb_gc_mark_machine_stack(const rb_execution_context_t *ec)
+rb_gc_mark_machine_context(const rb_execution_context_t *ec)
 {
+    rb_objspace_t *objspace = &rb_objspace;
+#ifdef RUBY_ASAN_ENABLED
+    objspace->marking_machine_context_ec = ec;
+#endif
+
     VALUE *stack_start, *stack_end;
+
     GET_STACK_BOUNDS(stack_start, stack_end, 0);
     RUBY_DEBUG_LOG("ec->th:%u stack_start:%p stack_end:%p", rb_ec_thread_ptr(ec)->serial, stack_start, stack_end);
 
-    rb_gc_mark_locations(stack_start, stack_end);
+    each_stack_location(objspace, ec, stack_start, stack_end, gc_mark_machine_stack_location_maybe);
+    int num_regs = sizeof(ec->machine.regs)/(sizeof(VALUE));
+    each_location(objspace, (VALUE*)&ec->machine.regs, num_regs, gc_mark_machine_stack_location_maybe);
+
+#ifdef RUBY_ASAN_ENABLED
+    objspace->marking_machine_context_ec = NULL;
+#endif
 }
 
 static void
@@ -8696,11 +8706,12 @@ rb_gc_writebarrier_remember(VALUE obj)
 }
 
 void
-rb_copy_wb_protected_attribute(VALUE dest, VALUE obj)
+rb_gc_copy_attributes(VALUE dest, VALUE obj)
 {
     if (RVALUE_WB_UNPROTECTED(obj)) {
         rb_gc_writebarrier_unprotect(dest);
     }
+    rb_gc_copy_finalizer(dest, obj);
 }
 
 size_t
@@ -8955,7 +8966,7 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
     /* reason may be clobbered, later, so keep set immediate_sweep here */
     objspace->flags.immediate_sweep = !!(reason & GPR_FLAG_IMMEDIATE_SWEEP);
 
-    if (!heap_allocated_pages) return FALSE; /* heap is not ready */
+    if (!heap_allocated_pages) return TRUE; /* heap is not ready */
     if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(objspace)) return TRUE; /* GC is not allowed */
 
     GC_ASSERT(gc_mode(objspace) == gc_mode_none);
@@ -9351,18 +9362,20 @@ gc_set_candidate_object_i(void *vstart, void *vend, size_t stride, void *data)
     rb_objspace_t *objspace = &rb_objspace;
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-        switch (BUILTIN_TYPE(v)) {
-          case T_NONE:
-          case T_ZOMBIE:
-            break;
-          case T_STRING:
-            // precompute the string coderange. This both save time for when it will be
-            // eventually needed, and avoid mutating heap pages after a potential fork.
-            rb_enc_str_coderange(v);
-            // fall through
-          default:
-            if (!RVALUE_OLD_P(v) && !RVALUE_WB_UNPROTECTED(v)) {
-                RVALUE_AGE_SET_CANDIDATE(objspace, v);
+        asan_unpoisoning_object(v) {
+            switch (BUILTIN_TYPE(v)) {
+            case T_NONE:
+            case T_ZOMBIE:
+                break;
+            case T_STRING:
+                // precompute the string coderange. This both save time for when it will be
+                // eventually needed, and avoid mutating heap pages after a potential fork.
+                rb_enc_str_coderange(v);
+                // fall through
+            default:
+                if (!RVALUE_OLD_P(v) && !RVALUE_WB_UNPROTECTED(v)) {
+                    RVALUE_AGE_SET_CANDIDATE(objspace, v);
+                }
             }
         }
     }
@@ -9548,19 +9561,25 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
         DURING_GC_COULD_MALLOC_REGION_END();
     }
 
-    st_data_t srcid = (st_data_t)src, id;
+    if (FL_TEST((VALUE)src, FL_SEEN_OBJ_ID)) {
+        /* If the source object's object_id has been seen, we need to update
+         * the object to object id mapping. */
+        st_data_t srcid = (st_data_t)src, id;
 
-    /* If the source object's object_id has been seen, we need to update
-     * the object to object id mapping. */
-    if (st_lookup(objspace->obj_to_id_tbl, srcid, &id)) {
         gc_report(4, objspace, "Moving object with seen id: %p -> %p\n", (void *)src, (void *)dest);
         /* Resizing the st table could cause a malloc */
         DURING_GC_COULD_MALLOC_REGION_START();
         {
-            st_delete(objspace->obj_to_id_tbl, &srcid, 0);
+            if (!st_delete(objspace->obj_to_id_tbl, &srcid, &id)) {
+                rb_bug("gc_move: object ID seen, but not in mapping table: %s", obj_info((VALUE)src));
+            }
+
             st_insert(objspace->obj_to_id_tbl, (st_data_t)dest, id);
         }
         DURING_GC_COULD_MALLOC_REGION_END();
+    }
+    else {
+        GC_ASSERT(!st_lookup(objspace->obj_to_id_tbl, (st_data_t)src, NULL));
     }
 
     /* Move the object */
@@ -10391,7 +10410,9 @@ gc_compact_stats(VALUE self)
 static void
 root_obj_check_moved_i(const char *category, VALUE obj, void *data)
 {
-    if (gc_object_moved_p(&rb_objspace, obj)) {
+    rb_objspace_t *objspace = data;
+
+    if (gc_object_moved_p(objspace, obj)) {
         rb_bug("ROOT %s points to MOVED: %p -> %s", category, (void *)obj, obj_info(rb_gc_location(obj)));
     }
 }
@@ -10408,9 +10429,11 @@ reachable_object_check_moved_i(VALUE ref, void *data)
 static int
 heap_check_moved_i(void *vstart, void *vend, size_t stride, void *data)
 {
+    rb_objspace_t *objspace = data;
+
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-        if (gc_object_moved_p(&rb_objspace, v)) {
+        if (gc_object_moved_p(objspace, v)) {
             /* Moved object still on the heap, something may have a reference. */
         }
         else {
@@ -10575,8 +10598,8 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
 
     gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue);
 
-    objspace_reachable_objects_from_root(objspace, root_obj_check_moved_i, NULL);
-    objspace_each_objects(objspace, heap_check_moved_i, NULL, TRUE);
+    objspace_reachable_objects_from_root(objspace, root_obj_check_moved_i, objspace);
+    objspace_each_objects(objspace, heap_check_moved_i, objspace, TRUE);
 
     objspace->rcompactor.compare_func = NULL;
     return gc_compact_stats(self);
@@ -11147,18 +11170,14 @@ gc_stress_get(rb_execution_context_t *ec, VALUE self)
     return ruby_gc_stress_mode;
 }
 
-static void
-gc_stress_set(rb_objspace_t *objspace, VALUE flag)
-{
-    objspace->flags.gc_stressful = RTEST(flag);
-    objspace->gc_stress_mode = flag;
-}
-
 static VALUE
 gc_stress_set_m(rb_execution_context_t *ec, VALUE self, VALUE flag)
 {
     rb_objspace_t *objspace = &rb_objspace;
-    gc_stress_set(objspace, flag);
+
+    objspace->flags.gc_stressful = RTEST(flag);
+    objspace->gc_stress_mode = flag;
+
     return flag;
 }
 

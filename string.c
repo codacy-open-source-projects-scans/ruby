@@ -1340,7 +1340,7 @@ rb_str_new_shared(VALUE str)
 VALUE
 rb_str_new_frozen(VALUE orig)
 {
-    if (OBJ_FROZEN(orig)) return orig;
+    if (RB_FL_TEST_RAW(orig, FL_FREEZE | STR_CHILLED) == FL_FREEZE) return orig;
     return str_new_frozen(rb_obj_class(orig), orig);
 }
 
@@ -1831,6 +1831,12 @@ rb_ec_str_resurrect(struct rb_execution_context_struct *ec, VALUE str, bool chil
         STR_CHILL_RAW(new_str);
     }
     return new_str;
+}
+
+bool
+rb_str_chilled_p(VALUE str)
+{
+    return CHILLED_STRING_P(str);
 }
 
 /*

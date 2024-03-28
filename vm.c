@@ -3399,10 +3399,7 @@ rb_execution_context_mark(const rb_execution_context_t *ec)
     if (ec->machine.stack_start && ec->machine.stack_end &&
         ec != GET_EC() /* marked for current ec at the first stage of marking */
         ) {
-        rb_gc_mark_machine_stack(ec);
-        rb_gc_mark_locations((VALUE *)&ec->machine.regs,
-                             (VALUE *)(&ec->machine.regs) +
-                             sizeof(ec->machine.regs) / (sizeof(VALUE)));
+        rb_gc_mark_machine_context(ec);
     }
 
     rb_gc_mark(ec->errinfo);
@@ -3911,6 +3908,7 @@ Init_VM(void)
     /* FrozenCore (hidden) */
     fcore = rb_class_new(rb_cBasicObject);
     rb_set_class_path(fcore, rb_cRubyVM, "FrozenCore");
+    rb_vm_register_global_object(rb_class_path_cached(fcore));
     RBASIC(fcore)->flags = T_ICLASS;
     klass = rb_singleton_class(fcore);
     rb_define_method_id(klass, id_core_set_method_alias, m_core_set_method_alias, 3);
@@ -3930,7 +3928,6 @@ Init_VM(void)
     RBASIC_CLEAR_CLASS(klass);
     rb_obj_freeze(klass);
     rb_vm_register_global_object(fcore);
-    rb_vm_register_global_object(rb_class_path_cached(fcore));
     rb_mRubyVMFrozenCore = fcore;
 
     /*
@@ -4201,7 +4198,9 @@ Init_VM(void)
          */
         rb_define_global_const("TOPLEVEL_BINDING", rb_binding_new());
 
+#ifdef _WIN32
         rb_objspace_gc_enable(vm->objspace);
+#endif
     }
     vm_init_redefined_flag();
 

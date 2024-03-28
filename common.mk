@@ -471,8 +471,6 @@ ruby.imp: $(COMMONOBJS)
 	$(Q){ \
 	$(NM) -Pgp $(COMMONOBJS) | \
 	awk 'BEGIN{print "#!"}; $$2~/^[A-TV-Z]$$/&&$$1!~/^$(SYMBOL_PREFIX)(Init_|InitVM_|ruby_static_id_|.*_threadptr_|rb_ec_)|^\./{print $$1}'; \
-	($(CHDIR) $(srcdir) && \
-	 exec sed -n '/^RJIT_FUNC_EXPORTED/!d;N;s/.*\n\(rb_[a-zA-Z_0-9]*\).*/$(SYMBOL_PREFIX)\1/p' cont.c gc.c thread*c vm*.c) \
 	} | \
 	sort -u -o $@
 
@@ -3108,6 +3106,7 @@ class.$(OBJEXT): {$(VPATH)}vm_core.h
 class.$(OBJEXT): {$(VPATH)}vm_debug.h
 class.$(OBJEXT): {$(VPATH)}vm_opts.h
 class.$(OBJEXT): {$(VPATH)}vm_sync.h
+class.$(OBJEXT): {$(VPATH)}yjit.h
 compar.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 compar.$(OBJEXT): $(hdrdir)/ruby/version.h
 compar.$(OBJEXT): $(top_srcdir)/internal/basic_operators.h
