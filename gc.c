@@ -1884,40 +1884,6 @@ rb_gc_initial_stress_set(VALUE flag)
     initial_stress = flag;
 }
 
-rb_objspace_t *
-rb_objspace_alloc(void)
-{
-    rb_objspace_t *objspace = calloc1(sizeof(rb_objspace_t));
-
-    objspace->flags.gc_stressful = RTEST(initial_stress);
-    objspace->gc_stress_mode = initial_stress;
-
-    objspace->flags.measure_gc = 1;
-    malloc_limit = gc_params.malloc_limit_min;
-    objspace->finalize_deferred_pjob = rb_postponed_job_preregister(0, gc_finalize_deferred, objspace);
-    if (objspace->finalize_deferred_pjob == POSTPONED_JOB_HANDLE_INVALID) {
-        rb_bug("Could not preregister postponed job for GC");
-    }
-
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-
-        size_pool->slot_size = (1 << i) * BASE_SLOT_SIZE;
-
-        ccan_list_head_init(&SIZE_POOL_EDEN_HEAP(size_pool)->pages);
-        ccan_list_head_init(&SIZE_POOL_TOMB_HEAP(size_pool)->pages);
-    }
-
-    rb_darray_make_without_gc(&objspace->weak_references, 0);
-
-    // TODO: debug why on Windows Ruby crashes on boot when GC is on.
-#ifdef _WIN32
-    dont_gc_on();
-#endif
-
-    return objspace;
-}
-
 static void free_stack_chunks(mark_stack_t *);
 static void mark_stack_free_cache(mark_stack_t *);
 static void heap_page_free(rb_objspace_t *objspace, struct heap_page *page);
@@ -1955,7 +1921,7 @@ rb_objspace_free(rb_objspace_t *objspace)
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
 
-    rb_darray_free_without_gc(objspace->weak_references);
+    rb_darray_free(objspace->weak_references);
 
     free(objspace);
 }
@@ -3523,10 +3489,37 @@ static const struct st_hash_type object_id_hash_type = {
     object_id_hash,
 };
 
-void
-Init_heap(void)
+rb_objspace_t *
+rb_objspace_alloc(void)
 {
-    rb_objspace_t *objspace = &rb_objspace;
+    rb_objspace_t *objspace = calloc1(sizeof(rb_objspace_t));
+    ruby_current_vm_ptr->objspace = objspace;
+
+    objspace->flags.gc_stressful = RTEST(initial_stress);
+    objspace->gc_stress_mode = initial_stress;
+
+    objspace->flags.measure_gc = 1;
+    malloc_limit = gc_params.malloc_limit_min;
+    objspace->finalize_deferred_pjob = rb_postponed_job_preregister(0, gc_finalize_deferred, objspace);
+    if (objspace->finalize_deferred_pjob == POSTPONED_JOB_HANDLE_INVALID) {
+        rb_bug("Could not preregister postponed job for GC");
+    }
+
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+        rb_size_pool_t *size_pool = &size_pools[i];
+
+        size_pool->slot_size = (1 << i) * BASE_SLOT_SIZE;
+
+        ccan_list_head_init(&SIZE_POOL_EDEN_HEAP(size_pool)->pages);
+        ccan_list_head_init(&SIZE_POOL_TOMB_HEAP(size_pool)->pages);
+    }
+
+    rb_darray_make(&objspace->weak_references, 0);
+
+    // TODO: debug why on Windows Ruby crashes on boot when GC is on.
+#ifdef _WIN32
+    dont_gc_on();
+#endif
 
 #if defined(INIT_HEAP_PAGE_ALLOC_USE_MMAP)
     /* Need to determine if we can use mmap at runtime. */
@@ -3556,6 +3549,7 @@ Init_heap(void)
 
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
+    return objspace;
 }
 
 typedef int each_obj_callback(void *, void *, size_t, void *);
@@ -3735,6 +3729,7 @@ objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void
     objspace_each_exec(protected, &each_obj_data);
 }
 
+#if GC_CAN_COMPILE_COMPACTION
 static void
 objspace_each_pages(rb_objspace_t *objspace, each_page_callback *callback, void *data, bool protected)
 {
@@ -3746,6 +3741,7 @@ objspace_each_pages(rb_objspace_t *objspace, each_page_callback *callback, void 
     };
     objspace_each_exec(protected, &each_obj_data);
 }
+#endif
 
 struct os_each_struct {
     size_t num;
@@ -6777,7 +6773,11 @@ rb_gc_mark_weak(VALUE *ptr)
 
     rgengc_check_relation(objspace, obj);
 
-    rb_darray_append_without_gc(&objspace->weak_references, ptr);
+    DURING_GC_COULD_MALLOC_REGION_START();
+    {
+        rb_darray_append(&objspace->weak_references, ptr);
+    }
+    DURING_GC_COULD_MALLOC_REGION_END();
 
     objspace->profile.weak_references_count++;
 }
@@ -7942,7 +7942,12 @@ gc_update_weak_references(rb_objspace_t *objspace)
     objspace->profile.retained_weak_references_count = retained_weak_references_count;
 
     rb_darray_clear(objspace->weak_references);
-    rb_darray_resize_capa_without_gc(&objspace->weak_references, retained_weak_references_count);
+
+    DURING_GC_COULD_MALLOC_REGION_START();
+    {
+        rb_darray_resize_capa(&objspace->weak_references, retained_weak_references_count);
+    }
+    DURING_GC_COULD_MALLOC_REGION_END();
 }
 
 static void
@@ -8763,12 +8768,6 @@ rb_gc_ractor_newobj_cache_clear(rb_ractor_newobj_cache_t *newobj_cache)
 }
 
 void
-rb_gc_force_recycle(VALUE obj)
-{
-    /* no-op */
-}
-
-void
 rb_gc_register_mark_object(VALUE obj)
 {
     if (!is_pointer_to_heap(&rb_objspace, (void *)obj))
@@ -9364,15 +9363,15 @@ gc_set_candidate_object_i(void *vstart, void *vend, size_t stride, void *data)
     for (; v != (VALUE)vend; v += stride) {
         asan_unpoisoning_object(v) {
             switch (BUILTIN_TYPE(v)) {
-            case T_NONE:
-            case T_ZOMBIE:
+              case T_NONE:
+              case T_ZOMBIE:
                 break;
-            case T_STRING:
+              case T_STRING:
                 // precompute the string coderange. This both save time for when it will be
                 // eventually needed, and avoid mutating heap pages after a potential fork.
                 rb_enc_str_coderange(v);
                 // fall through
-            default:
+              default:
                 if (!RVALUE_OLD_P(v) && !RVALUE_WB_UNPROTECTED(v)) {
                     RVALUE_AGE_SET_CANDIDATE(objspace, v);
                 }
@@ -10202,9 +10201,7 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
         break;
 
       case T_SYMBOL:
-        if (DYNAMIC_SYM_P((VALUE)any)) {
-            UPDATE_IF_MOVED(objspace, RSYMBOL(any)->fstr);
-        }
+        UPDATE_IF_MOVED(objspace, RSYMBOL(any)->fstr);
         break;
 
       case T_FLOAT:
@@ -10549,7 +10546,7 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
 
             /* Find out which pool has the most pages */
             size_t max_existing_pages = 0;
-            for(int i = 0; i < SIZE_POOL_COUNT; i++) {
+            for (int i = 0; i < SIZE_POOL_COUNT; i++) {
                 rb_size_pool_t *size_pool = &size_pools[i];
                 rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
                 max_existing_pages = MAX(max_existing_pages, heap->total_pages);
@@ -13505,7 +13502,8 @@ rb_gcdebug_sentinel(VALUE obj, const char *name)
 
 #endif /* GC_DEBUG */
 
-/*
+/* :nodoc:
+ *
  *  call-seq:
  *    GC.add_stress_to_class(class[, ...])
  *
@@ -13524,7 +13522,8 @@ rb_gcdebug_add_stress_to_class(int argc, VALUE *argv, VALUE self)
     return self;
 }
 
-/*
+/* :nodoc:
+ *
  *  call-seq:
  *    GC.remove_stress_to_class(class[, ...])
  *

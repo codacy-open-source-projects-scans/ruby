@@ -831,6 +831,20 @@ begin
       EOC
     end
 
+    def test_auto_indent_with_various_spaces
+      start_terminal(5, 30, %W{ruby -I#{@pwd}/lib #{@pwd}/test/reline/yamatanooroti/multiline_repl --auto-indent}, startup_message: 'Multiline REPL.')
+      write "(\n\C-v"
+      write "\C-k\n\C-v"
+      write "\C-k)"
+      close
+      assert_screen(<<~EOC)
+        Multiline REPL.
+        prompt> (
+        prompt> ^K
+        prompt> )
+      EOC
+    end
+
     def test_autowrap_in_the_middle_of_a_line
       start_terminal(5, 20, %W{ruby -I#{@pwd}/lib #{@pwd}/test/reline/yamatanooroti/multiline_repl}, startup_message: 'Multiline REPL.')
       write("def abcdefg; end\C-b\C-b\C-b\C-b\C-b")
@@ -1105,6 +1119,19 @@ begin
         prompt>           St
         r             String
                       Struct
+      EOC
+    end
+
+    def test_force_insert_before_autocomplete
+      start_terminal(20, 20, %W{ruby -I#{@pwd}/lib #{@pwd}/test/reline/yamatanooroti/multiline_repl --autocomplete}, startup_message: 'Multiline REPL.')
+      write('Sy')
+      write(";St\t\t")
+      close
+      assert_screen(<<~'EOC')
+        Multiline REPL.
+        prompt> Sy;Struct
+                   String
+                   Struct
       EOC
     end
 
@@ -1659,6 +1686,23 @@ begin
       end
       assert_screen(<<~EOC)
         Multiline REPL.
+        prompt>
+      EOC
+    end
+
+    def test_thread_safe
+      start_terminal(6, 30, %W{ruby -I#{@pwd}/lib #{@pwd}/test/reline/yamatanooroti/multiline_repl --auto-indent}, startup_message: 'Multiline REPL.')
+      write("[Thread.new{Reline.readline'>'},Thread.new{Reline.readmultiline('>'){true}}].map(&:join).size\n")
+      write("exit\n")
+      write("exit\n")
+      write("42\n")
+      close
+      assert_screen(<<~EOC)
+        >exit
+        >exit
+        => 2
+        prompt> 42
+        => 42
         prompt>
       EOC
     end

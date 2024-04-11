@@ -730,10 +730,10 @@ clean-local:: clean-runnable
 bin/clean-runnable:: PHONY
 	$(Q)$(CHDIR) bin 2>$(NULL) && $(RM) $(PROGRAM) $(WPROGRAM) $(GORUBY)$(EXEEXT) bin/*.$(DLEXT) 2>$(NULL) || $(NULLCMD)
 lib/clean-runnable:: PHONY
-	$(Q)$(CHDIR) lib 2>$(NULL) && $(RM) $(LIBRUBY_A) $(LIBRUBY) $(LIBRUBY_ALIASES) $(RUBY_BASE_NAME)/$(RUBY_PROGRAM_VERSION) $(RUBY_BASE_NAME)/vendor_ruby 2>$(NULL) || $(NULLCMD)
+	$(Q)$(CHDIR) lib 2>$(NULL) && $(RM) $(LIBRUBY_A) $(LIBRUBY) $(LIBRUBY_ALIASES) $(RUBY_BASE_NAME)/$(ruby_version) $(RUBY_BASE_NAME)/vendor_ruby 2>$(NULL) || $(NULLCMD)
 clean-runnable:: bin/clean-runnable lib/clean-runnable PHONY
 	$(Q)$(RMDIR) lib/$(RUBY_BASE_NAME) lib bin 2>$(NULL) || $(NULLCMD)
-	-$(Q)$(RM) $(EXTOUT)/$(arch)/rbconfig.rb
+	-$(Q)$(RM) $(EXTOUT)/$(arch)/rbconfig.rb $(EXTOUT)/common/$(arch)
 	-$(Q)$(RMALL) exe/
 clean-ext:: PHONY
 clean-golf: PHONY
@@ -3534,6 +3534,7 @@ compile.$(OBJEXT): {$(VPATH)}prism/prism.h
 compile.$(OBJEXT): {$(VPATH)}prism/version.h
 compile.$(OBJEXT): {$(VPATH)}prism_compile.c
 compile.$(OBJEXT): {$(VPATH)}prism_compile.h
+compile.$(OBJEXT): {$(VPATH)}ractor.h
 compile.$(OBJEXT): {$(VPATH)}re.h
 compile.$(OBJEXT): {$(VPATH)}regex.h
 compile.$(OBJEXT): {$(VPATH)}ruby_assert.h

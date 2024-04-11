@@ -8,17 +8,16 @@ Note that each entry is kept to a minimum, see links for details.
 ## Language changes
 
 * String literals in files without a `frozen_string_literal` comment now behave
-  as if they were frozen. If they are mutated a deprecation warning is emited.
+  as if they were frozen. If they are mutated a deprecation warning is emitted.
   These warnings can be enabled with `-W:deprecated` or by setting `Warning[:deprecated] = true`.
-  To disable this change you can run Ruby with the `--disable-frozen-string-literal` command line
-  argument. [[Feature #20205]]
+  To disable this change, you can run Ruby with the `--disable-frozen-string-literal`
+  command line argument. [[Feature #20205]]
 
 * `it` is added to reference a block parameter. [[Feature #18980]]
 
 * Keyword splatting `nil` when calling methods is now supported.
-  `**nil` is treated similar to `**{}`, passing no keywords,
-  and not calling any conversion methods.
-  [[Bug #20064]]
+  `**nil` is treated similarly to `**{}`, passing no keywords,
+  and not calling any conversion methods.  [[Bug #20064]]
 
 * Block passing is no longer allowed in index.  [[Bug #19918]]
 
@@ -43,10 +42,11 @@ The following default gems are updated.
 * fiddle 1.1.3
 * io-console 0.7.2
 * irb 1.12.0
+* json 2.7.2
 * net-http 0.4.1
-* prism 0.24.0
+* prism 0.25.0
 * rdoc 6.6.3.1
-* reline 0.5.0
+* reline 0.5.1
 * resolv 0.4.0
 * stringio 3.1.1
 * strscan 3.1.1
@@ -54,13 +54,14 @@ The following default gems are updated.
 The following bundled gems are updated.
 
 * minitest 5.22.3
+* rake 13.2.1
 * test-unit 3.6.2
 * net-ftp 0.3.4
 * net-imap 0.4.10
 * net-smtp 0.5.0
 * rbs 3.4.4
 * typeprof 0.21.11
-* debug 1.9.1
+* debug 1.9.2
 
 The following bundled gems are promoted from default gems.
 
@@ -101,7 +102,8 @@ See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/log
 
 ## C API updates
 
-* `rb_newobj` and `rb_newobj_of` (and corresponding macros `RB_NEWOBJ`, `RB_NEWOBJ_OF`, `NEWOBJ`, `NEWOBJ_OF`) have been removed [[Feature #20265]].
+* `rb_newobj` and `rb_newobj_of` (and corresponding macros `RB_NEWOBJ`, `RB_NEWOBJ_OF`, `NEWOBJ`, `NEWOBJ_OF`) have been removed. [[Feature #20265]]
+* Removed deprecated function `rb_gc_force_recycle`. [[Feature #18290]]
 
 ## Implementation improvements
 
@@ -111,6 +113,7 @@ See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/log
 
 [Feature #13557]: https://bugs.ruby-lang.org/issues/13557
 [Feature #16495]: https://bugs.ruby-lang.org/issues/16495
+[Feature #18290]: https://bugs.ruby-lang.org/issues/18290
 [Feature #18980]: https://bugs.ruby-lang.org/issues/18980
 [Feature #19117]: https://bugs.ruby-lang.org/issues/19117
 [Bug #19918]:     https://bugs.ruby-lang.org/issues/19918

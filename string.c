@@ -87,6 +87,8 @@ VALUE rb_cSymbol;
  * 2:     STR_SHARED (equal to ELTS_SHARED)
  *            The string is shared. The buffer this string points to is owned by
  *            another string (the shared root).
+ * 3:     STR_CHILLED (will be frozen in a future version)
+ *            The string appears frozen but can be mutated with a warning.
  * 5:     STR_SHARED_ROOT
  *            Other strings may point to the contents of this string. When this
  *            flag is set, STR_SHARED must not be set.
@@ -1148,6 +1150,7 @@ str_cat_conv_enc_opts(VALUE newstr, long ofs, const char *ptr, long len,
         rb_str_resize(newstr, olen);
     }
     DATA_PTR(econv_wrapper) = 0;
+    RB_GC_GUARD(econv_wrapper);
     rb_econv_close(ec);
     switch (ret) {
       case econv_finished:
@@ -11762,6 +11765,9 @@ sym_inspect(VALUE sym)
         RB_GC_GUARD(orig_str);
     }
     dest[0] = ':';
+
+    RUBY_ASSERT_BUILTIN_TYPE(str, T_STRING);
+
     return str;
 }
 

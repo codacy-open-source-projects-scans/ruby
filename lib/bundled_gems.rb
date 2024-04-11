@@ -26,6 +26,8 @@ module Gem::BUNDLED_GEMS
     "resolv-replace" => "3.4.0",
     "rinda" => "3.4.0",
     "syslog" => "3.4.0",
+    "ostruct" => "3.5.0",
+    "pstore" => "3.5.0",
   }.freeze
 
   EXACT = {
@@ -41,6 +43,8 @@ module Gem::BUNDLED_GEMS
     "resolv-replace" => true,
     "rinda" => true,
     "syslog" => true,
+    "ostruct" => true,
+    "pstore" => true,
   }.freeze
 
   PREFIXED = {
@@ -104,9 +108,9 @@ module Gem::BUNDLED_GEMS
     _t, path = $:.resolve_feature_path(feature)
     if gem = find_gem(path)
       return if specs.include?(gem)
-      caller = caller_locations(3, 3).find {|c| c&.absolute_path}
+      caller = caller_locations(3, 3)&.find {|c| c&.absolute_path}
       return if find_gem(caller&.absolute_path)
-    elsif SINCE[name]
+    elsif SINCE[name] && !path
       gem = true
     else
       return

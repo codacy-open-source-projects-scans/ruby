@@ -75,6 +75,7 @@ module Reline
 
     def initialize
       self.output = STDOUT
+      @mutex = Mutex.new
       @dialog_proc_list = {}
       yield self
       @completion_quote_character = nil
@@ -219,26 +220,16 @@ module Reline
 
     Reline::DEFAULT_DIALOG_PROC_AUTOCOMPLETE = ->() {
       # autocomplete
-      return nil unless config.autocompletion
-      if just_cursor_moving and completion_journey_data.nil?
-        # Auto complete starts only when edited
-        return nil
-      end
-      pre, target, post = retrieve_completion_block(true)
-      if target.nil? or target.empty? or (completion_journey_data&.pointer == -1 and target.size <= 3)
-        return nil
-      end
-      if completion_journey_data and completion_journey_data.list
-        result = completion_journey_data.list.dup
-        result.shift
-        pointer = completion_journey_data.pointer - 1
-      else
-        result = call_completion_proc_with_checking_args(pre, target, post)
-        pointer = nil
-      end
-      if result and result.size == 1 and result[0] == target and pointer != 0
-        result = nil
-      end
+      return unless config.autocompletion
+
+      journey_data = completion_journey_data
+      return unless journey_data
+
+      target = journey_data.list[journey_data.pointer]
+      result = journey_data.list.drop(1)
+      pointer = journey_data.pointer - 1
+      return if target.empty? || (result == [target] && pointer < 0)
+
       target_width = Reline::Unicode.calculate_width(target)
       x = cursor_pos.x - target_width
       if x < 0
@@ -264,12 +255,15 @@ module Reline
     Reline::DEFAULT_DIALOG_CONTEXT = Array.new
 
     def readmultiline(prompt = '', add_hist = false, &confirm_multiline_termination)
-      Reline.update_iogate
-      io_gate.with_raw_input do
+      @mutex.synchronize do
         unless confirm_multiline_termination
           raise ArgumentError.new('#readmultiline needs block to confirm multiline termination')
         end
-        inner_readline(prompt, add_hist, true, &confirm_multiline_termination)
+
+        Reline.update_iogate
+        io_gate.with_raw_input do
+          inner_readline(prompt, add_hist, true, &confirm_multiline_termination)
+        end
 
         whole_buffer = line_editor.whole_buffer.dup
         whole_buffer.taint if RUBY_VERSION < '2.7'
@@ -288,17 +282,21 @@ module Reline
     end
 
     def readline(prompt = '', add_hist = false)
-      Reline.update_iogate
-      inner_readline(prompt, add_hist, false)
+      @mutex.synchronize do
+        Reline.update_iogate
+        io_gate.with_raw_input do
+          inner_readline(prompt, add_hist, false)
+        end
 
-      line = line_editor.line.dup
-      line.taint if RUBY_VERSION < '2.7'
-      if add_hist and line and line.chomp("\n").size > 0
-        Reline::HISTORY << line.chomp("\n")
+        line = line_editor.line.dup
+        line.taint if RUBY_VERSION < '2.7'
+        if add_hist and line and line.chomp("\n").size > 0
+          Reline::HISTORY << line.chomp("\n")
+        end
+
+        line_editor.reset_line if line_editor.line.nil?
+        line
       end
-
-      line_editor.reset_line if line_editor.line.nil?
-      line
     end
 
     private def inner_readline(prompt, add_hist, multiline, &confirm_multiline_termination)
@@ -365,19 +363,10 @@ module Reline
         io_gate.move_cursor_column(0)
       rescue Errno::EIO
         # Maybe the I/O has been closed.
-      rescue StandardError => e
+      ensure
         line_editor.finalize
         io_gate.deprep(otio)
-        raise e
-      rescue Exception
-        # Including Interrupt
-        line_editor.finalize
-        io_gate.deprep(otio)
-        raise
       end
-
-      line_editor.finalize
-      io_gate.deprep(otio)
     end
 
     # GNU Readline waits for "keyseq-timeout" milliseconds to see if the ESC

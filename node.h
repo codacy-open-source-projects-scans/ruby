@@ -31,8 +31,7 @@ typedef struct {
 } node_buffer_list_t;
 
 struct node_buffer_struct {
-    node_buffer_list_t unmarkable;
-    node_buffer_list_t markable;
+    node_buffer_list_t buffer_list;
     struct rb_ast_local_table_link *local_tables;
     // - id (sequence number)
     // - token_type
@@ -54,9 +53,6 @@ rb_ast_t *rb_ast_new(void);
 #endif
 size_t rb_ast_memsize(const rb_ast_t*);
 void rb_ast_dispose(rb_ast_t*);
-#if RUBY_DEBUG
-void rb_ast_node_type_change(NODE *n, enum node_type type);
-#endif
 const char *ruby_node_name(int node);
 void rb_node_init(NODE *n, enum node_type type);
 
@@ -73,10 +69,6 @@ VALUE rb_parser_dump_tree(const NODE *node, int comment);
 const struct kwtable *rb_reserved_word(const char *, unsigned int);
 
 struct parser_params;
-void *rb_parser_malloc(struct parser_params *, size_t);
-void *rb_parser_realloc(struct parser_params *, void *, size_t);
-void *rb_parser_calloc(struct parser_params *, size_t, size_t);
-void rb_parser_free(struct parser_params *, void *);
 PRINTF_ARGS(void rb_parser_printf(struct parser_params *parser, const char *fmt, ...), 2, 3);
 VALUE rb_node_set_type(NODE *n, enum node_type t);
 
