@@ -181,6 +181,23 @@ impl Assembler
                             iterator.map_insn_index(&mut asm);
                             iterator.next_unmapped(); // Pop merged Insn::Mov
                         }
+                        (Opnd::Reg(_), Opnd::Reg(_), Some(Insn::Mov { dest, src }))
+                        if out == src && live_ranges[index] == index + 1 && {
+                            // We want to do `dest == left`, but `left` has already gone
+                            // through lower_stack_opnd() while `dest` has not. So we
+                            // lower `dest` before comparing.
+                            let lowered_dest = if let Opnd::Stack { .. } = dest {
+                                asm.lower_stack_opnd(dest)
+                            } else {
+                                *dest
+                            };
+                            lowered_dest == *left
+                        } => {
+                            *out = *dest;
+                            asm.push_insn(insn);
+                            iterator.map_insn_index(&mut asm);
+                            iterator.next_unmapped(); // Pop merged Insn::Mov
+                        }
                         _ => {
                             match (unmapped_opnds[0], unmapped_opnds[1]) {
                                 (Opnd::Mem(_), Opnd::Mem(_)) => {
@@ -778,6 +795,8 @@ impl Assembler
                         Target::SideExit { .. } => unreachable!("Target::SideExit should have been compiled by compile_side_exit"),
                     }
                 }
+
+                Insn::Joz(..) | Insn::Jonz(..) => unreachable!("Joz/Jonz should be unused for now"),
 
                 // Atomically increment a counter at a given memory location
                 Insn::IncrCounter { mem, value } => {

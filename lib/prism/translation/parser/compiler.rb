@@ -947,8 +947,35 @@ module Prism
         def visit_interpolated_string_node(node)
           if node.heredoc?
             children, closing = visit_heredoc(node)
+            opening = token(node.opening_loc)
 
-            return builder.string_compose(token(node.opening_loc), children, closing)
+            start_offset = node.opening_loc.end_offset + 1
+            end_offset = node.parts.first.location.start_offset
+
+            # In the below case, the offsets should be the same:
+            #
+            # <<~HEREDOC
+            #   a #{b}
+            # HEREDOC
+            #
+            # But in this case, the end_offset would be greater than the start_offset:
+            #
+            # <<~HEREDOC
+            #   #{b}
+            # HEREDOC
+            #
+            # So we need to make sure the result node's heredoc range is correct, without updating the children
+            result = if start_offset < end_offset
+              # We need to add a padding string to ensure that the heredoc has correct range for its body
+              padding_string_node = builder.string_internal(["", srange_offsets(start_offset, end_offset)])
+              node_with_correct_location = builder.string_compose(opening, [padding_string_node, *children], closing)
+              # But the padding string should not be included in the final AST, so we need to update the result's children
+              node_with_correct_location.updated(:dstr, children)
+            else
+              builder.string_compose(opening, children, closing)
+            end
+
+            return result
           end
 
           parts = if node.parts.one? { |part| part.type == :string_node }
@@ -1003,6 +1030,12 @@ module Prism
           end
         end
 
+        # -> { it }
+        # ^^^^^^^^^
+        def visit_it_parameters_node(node)
+          builder.args(nil, [], nil, false)
+        end
+
         # foo(bar: baz)
         #     ^^^^^^^^
         def visit_keyword_hash_node(node)
@@ -1025,13 +1058,14 @@ module Prism
         # ^^^^^
         def visit_lambda_node(node)
           parameters = node.parameters
+          implicit_parameters = parameters.is_a?(NumberedParametersNode) || parameters.is_a?(ItParametersNode)
 
           builder.block(
             builder.call_lambda(token(node.operator_loc)),
             [node.opening, srange(node.opening_loc)],
             if parameters.nil?
               builder.args(nil, [], nil, false)
-            elsif node.parameters.is_a?(NumberedParametersNode)
+            elsif implicit_parameters
               visit(node.parameters)
             else
               builder.args(
@@ -1041,7 +1075,7 @@ module Prism
                 false
               )
             end,
-            node.body&.accept(copy_compiler(forwarding: parameters.is_a?(NumberedParametersNode) ? [] : find_forwarding(parameters&.parameters))),
+            node.body&.accept(copy_compiler(forwarding: implicit_parameters ? [] : find_forwarding(parameters&.parameters))),
             [node.closing, srange(node.closing_loc)]
           )
         end
@@ -1049,7 +1083,14 @@ module Prism
         # foo
         # ^^^
         def visit_local_variable_read_node(node)
-          builder.ident([node.name, srange(node.location)]).updated(:lvar)
+          name = node.name
+
+          # This is just a guess. parser doesn't have support for the implicit
+          # `it` variable yet, so we'll probably have to visit this once it
+          # does.
+          name = :it if name == :"0it"
+
+          builder.ident([name, srange(node.location)]).updated(:lvar)
         end
 
         # foo = 1
@@ -1508,19 +1549,29 @@ module Prism
           elsif node.opening == "?"
             builder.character([node.unescaped, srange(node.location)])
           else
-            parts = if node.content.lines.count <= 1 || node.unescaped.lines.count <= 1
-              [builder.string_internal([node.unescaped, srange(node.content_loc)])]
-            else
-              start_offset = node.content_loc.start_offset
+            content_lines = node.content.lines
+            unescaped_lines = node.unescaped.lines
 
-              [node.content.lines, node.unescaped.lines].transpose.map do |content_line, unescaped_line|
-                end_offset = start_offset + content_line.length
-                offsets = srange_offsets(start_offset, end_offset)
-                start_offset = end_offset
+            parts =
+              if content_lines.length <= 1 || unescaped_lines.length <= 1
+                [builder.string_internal([node.unescaped, srange(node.content_loc)])]
+              elsif content_lines.length != unescaped_lines.length
+                # This occurs when we have line continuations in the string. We
+                # need to come back and fix this, but for now this stops the
+                # code from breaking when we encounter it because of trying to
+                # transpose arrays of different lengths.
+                [builder.string_internal([node.unescaped, srange(node.content_loc)])]
+              else
+                start_offset = node.content_loc.start_offset
 
-                builder.string_internal([unescaped_line, offsets])
+                [content_lines, unescaped_lines].transpose.map do |content_line, unescaped_line|
+                  end_offset = start_offset + content_line.length
+                  offsets = srange_offsets(start_offset, end_offset)
+                  start_offset = end_offset
+
+                  builder.string_internal([unescaped_line, offsets])
+                end
               end
-            end
 
             builder.string_compose(
               token(node.opening_loc),
@@ -1838,13 +1889,14 @@ module Prism
         def visit_block(call, block)
           if block
             parameters = block.parameters
+            implicit_parameters = parameters.is_a?(NumberedParametersNode) || parameters.is_a?(ItParametersNode)
 
             builder.block(
               call,
               token(block.opening_loc),
               if parameters.nil?
                 builder.args(nil, [], nil, false)
-              elsif parameters.is_a?(NumberedParametersNode)
+              elsif implicit_parameters
                 visit(parameters)
               else
                 builder.args(
@@ -1859,7 +1911,7 @@ module Prism
                   false
                 )
               end,
-              block.body&.accept(copy_compiler(forwarding: parameters.is_a?(NumberedParametersNode) ? [] : find_forwarding(parameters&.parameters))),
+              block.body&.accept(copy_compiler(forwarding: implicit_parameters ? [] : find_forwarding(parameters&.parameters))),
               token(block.closing_loc)
             )
           else

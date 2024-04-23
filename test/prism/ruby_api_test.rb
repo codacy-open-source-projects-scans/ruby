@@ -198,6 +198,17 @@ module Prism
       assert_equal 7, location.end_code_units_column(Encoding::UTF_32LE)
     end
 
+    def test_location_chop
+      location = Prism.parse("foo").value.location
+
+      assert_equal "fo", location.chop.slice
+      assert_equal "", location.chop.chop.chop.slice
+
+      # Check that we don't go negative.
+      10.times { location = location.chop }
+      assert_equal "", location.slice
+    end
+
     def test_heredoc?
       refute parse_expression("\"foo\"").heredoc?
       refute parse_expression("\"foo \#{1}\"").heredoc?
@@ -231,6 +242,21 @@ module Prism
       assert_equal 8, base[parse_expression("0o1")]
       assert_equal 10, base[parse_expression("0d1")]
       assert_equal 16, base[parse_expression("0x1")]
+    end
+
+    def test_node_equality
+      assert_operator parse_expression("1"), :===, parse_expression("1")
+      assert_operator Prism.parse("1").value, :===, Prism.parse("1").value
+
+      complex_source = "class Something; @var = something.else { _1 }; end"
+      assert_operator parse_expression(complex_source), :===, parse_expression(complex_source)
+
+      refute_operator parse_expression("1"), :===, parse_expression("2")
+      refute_operator parse_expression("1"), :===, parse_expression("0x1")
+
+      complex_source_1 = "class Something; @var = something.else { _1 }; end"
+      complex_source_2 = "class Something; @var = something.else { _2 }; end"
+      refute_operator parse_expression(complex_source_1), :===, parse_expression(complex_source_2)
     end
 
     private
