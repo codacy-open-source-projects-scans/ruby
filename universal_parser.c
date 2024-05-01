@@ -168,12 +168,12 @@
 #define rb_ascii8bit_encoding   p->config->ascii8bit_encoding
 #define rb_enc_codelen          p->config->enc_codelen
 #define rb_enc_mbcput           p->config->enc_mbcput
+#define rb_enc_mbclen           p->config->enc_mbclen
 #define rb_enc_find_index       p->config->enc_find_index
 #define rb_enc_from_index       p->config->enc_from_index
 #define rb_enc_isspace          p->config->enc_isspace
 #define ENC_CODERANGE_7BIT      p->config->enc_coderange_7bit
 #define ENC_CODERANGE_UNKNOWN   p->config->enc_coderange_unknown
-#define ENCODING_IS_ASCII8BIT   p->config->encoding_is_ascii8bit
 #define rb_usascii_encoding     p->config->usascii_encoding
 
 #define rb_local_defined          p->config->local_defined
