@@ -13,7 +13,7 @@
 #include "internal/static_assert.h"
 
 #ifdef UNIVERSAL_PARSER
-#define rb_encoding void
+#define rb_encoding const void
 #endif
 
 struct rb_iseq_struct;          /* in vm_core.h */
@@ -54,7 +54,7 @@ rb_parser_t *rb_ruby_parser_set_context(rb_parser_t *p, const struct rb_iseq_str
 void rb_ruby_parser_set_script_lines(rb_parser_t *p);
 void rb_ruby_parser_error_tolerant(rb_parser_t *p);
 void rb_ruby_parser_keep_tokens(rb_parser_t *p);
-typedef VALUE (rb_parser_lex_gets_func)(struct parser_params*, rb_parser_input_data, int);
+typedef rb_parser_string_t*(rb_parser_lex_gets_func)(struct parser_params*, rb_parser_input_data, int);
 rb_ast_t *rb_parser_compile(rb_parser_t *p, rb_parser_lex_gets_func *gets, const char *fname_ptr, long fname_len, rb_encoding *fname_enc, rb_parser_input_data input, int line);
 
 RUBY_SYMBOL_EXPORT_BEGIN

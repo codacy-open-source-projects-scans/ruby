@@ -7,13 +7,16 @@ errors:
   - ARGUMENT_BARE_HASH
   - ARGUMENT_BLOCK_FORWARDING
   - ARGUMENT_BLOCK_MULTI
+  - ARGUMENT_CONFLICT_AMPERSAND
+  - ARGUMENT_CONFLICT_STAR
+  - ARGUMENT_CONFLICT_STAR_STAR
   - ARGUMENT_FORMAL_CLASS
   - ARGUMENT_FORMAL_CONSTANT
   - ARGUMENT_FORMAL_GLOBAL
   - ARGUMENT_FORMAL_IVAR
   - ARGUMENT_FORWARDING_UNBOUND
   - ARGUMENT_IN
-  - ARGUMENT_NO_FORWARDING_AMP
+  - ARGUMENT_NO_FORWARDING_AMPERSAND
   - ARGUMENT_NO_FORWARDING_ELLIPSES
   - ARGUMENT_NO_FORWARDING_STAR
   - ARGUMENT_NO_FORWARDING_STAR_STAR
@@ -95,6 +98,7 @@ errors:
   - EXPECT_EXPRESSION_AFTER_SPLAT_HASH
   - EXPECT_EXPRESSION_AFTER_STAR
   - EXPECT_IDENT_REQ_PARAMETER
+  - EXPECT_IN_DELIMITER
   - EXPECT_LPAREN_REQ_PARAMETER
   - EXPECT_MESSAGE
   - EXPECT_RBRACKET
@@ -123,16 +127,18 @@ errors:
   - HASH_ROCKET
   - HASH_TERM
   - HASH_VALUE
+  - HEREDOC_IDENTIFIER
   - HEREDOC_TERM
   - INCOMPLETE_QUESTION_MARK
   - INCOMPLETE_VARIABLE_CLASS
-  - INCOMPLETE_VARIABLE_CLASS_3_3_0
+  - INCOMPLETE_VARIABLE_CLASS_3_3
   - INCOMPLETE_VARIABLE_INSTANCE
-  - INCOMPLETE_VARIABLE_INSTANCE_3_3_0
+  - INCOMPLETE_VARIABLE_INSTANCE_3_3
   - INSTANCE_VARIABLE_BARE
   - INVALID_BLOCK_EXIT
   - INVALID_CHARACTER
   - INVALID_ENCODING_MAGIC_COMMENT
+  - INVALID_ESCAPE_CHARACTER
   - INVALID_FLOAT_EXPONENT
   - INVALID_LOCAL_VARIABLE_READ
   - INVALID_LOCAL_VARIABLE_WRITE
@@ -141,16 +147,19 @@ errors:
   - INVALID_MULTIBYTE_ESCAPE
   - INVALID_NUMBER_BINARY
   - INVALID_NUMBER_DECIMAL
+  - INVALID_NUMBER_FRACTION
   - INVALID_NUMBER_HEXADECIMAL
   - INVALID_NUMBER_OCTAL
-  - INVALID_NUMBER_UNDERSCORE
+  - INVALID_NUMBER_UNDERSCORE_INNER
+  - INVALID_NUMBER_UNDERSCORE_TRAILING
   - INVALID_PERCENT
   - INVALID_PRINTABLE_CHARACTER
   - INVALID_RETRY_AFTER_ELSE
   - INVALID_RETRY_AFTER_ENSURE
   - INVALID_RETRY_WITHOUT_RESCUE
+  - INVALID_SYMBOL
   - INVALID_VARIABLE_GLOBAL
-  - INVALID_VARIABLE_GLOBAL_3_3_0
+  - INVALID_VARIABLE_GLOBAL_3_3
   - INVALID_YIELD
   - IT_NOT_ALLOWED_NUMBERED
   - IT_NOT_ALLOWED_ORDINARY
@@ -184,6 +193,7 @@ errors:
   - PARAMETER_ASSOC_SPLAT_MULTI
   - PARAMETER_BLOCK_MULTI
   - PARAMETER_CIRCULAR
+  - PARAMETER_FORWARDING_AFTER_REST
   - PARAMETER_METHOD_NAME
   - PARAMETER_NAME_DUPLICATED
   - PARAMETER_NO_DEFAULT
@@ -194,6 +204,7 @@ errors:
   - PARAMETER_STAR
   - PARAMETER_UNEXPECTED_FWD
   - PARAMETER_WILD_LOOSE_COMMA
+  - PARAMETER_UNEXPECTED_NO_KW
   - PATTERN_CAPTURE_DUPLICATE
   - PATTERN_EXPRESSION_AFTER_BRACKET
   - PATTERN_EXPRESSION_AFTER_COMMA
@@ -205,8 +216,10 @@ errors:
   - PATTERN_EXPRESSION_AFTER_PIPE
   - PATTERN_EXPRESSION_AFTER_RANGE
   - PATTERN_EXPRESSION_AFTER_REST
+  - PATTERN_HASH_IMPLICIT
   - PATTERN_HASH_KEY
   - PATTERN_HASH_KEY_DUPLICATE
+  - PATTERN_HASH_KEY_INTERPOLATED
   - PATTERN_HASH_KEY_LABEL
   - PATTERN_HASH_KEY_LOCALS
   - PATTERN_IDENT_AFTER_HROCKET
@@ -247,6 +260,9 @@ errors:
   - UNARY_RECEIVER
   - UNDEF_ARGUMENT
   - UNEXPECTED_BLOCK_ARGUMENT
+  - UNEXPECTED_INDEX_BLOCK
+  - UNEXPECTED_INDEX_KEYWORDS
+  - UNEXPECTED_SAFE_NAVIGATION
   - UNEXPECTED_TOKEN_CLOSE_CONTEXT
   - UNEXPECTED_TOKEN_IGNORE
   - UNTIL_TERM
@@ -266,7 +282,7 @@ warnings:
   - COMPARISON_AFTER_COMPARISON
   - DOT_DOT_DOT_EOL
   - EQUAL_IN_CONDITIONAL
-  - EQUAL_IN_CONDITIONAL_3_3_0
+  - EQUAL_IN_CONDITIONAL_3_3
   - END_IN_METHOD
   - DUPLICATED_HASH_KEY
   - DUPLICATED_WHEN_CLAUSE
@@ -279,6 +295,7 @@ warnings:
   - KEYWORD_EOL
   - LITERAL_IN_CONDITION_DEFAULT
   - LITERAL_IN_CONDITION_VERBOSE
+  - SHAREABLE_CONSTANT_VALUE_LINE
   - SHEBANG_CARRIAGE_RETURN
   - UNEXPECTED_CARRIAGE_RETURN
   - UNREACHABLE_STATEMENT
@@ -617,6 +634,8 @@ tokens:
 flags:
   - name: ArgumentsNodeFlags
     values:
+      - name: CONTAINS_KEYWORDS
+        comment: "if arguments contain keywords"
       - name: CONTAINS_KEYWORD_SPLAT
         comment: "if arguments contain keyword splat"
     comment: Flags for arguments nodes.
@@ -1194,9 +1213,9 @@ nodes:
         type: constant
       - name: write_name
         type: constant
-      - name: operator
+      - name: binary_operator
         type: constant
-      - name: operator_loc
+      - name: binary_operator_loc
         type: location
       - name: value
         type: node
@@ -1352,11 +1371,11 @@ nodes:
         type: constant
       - name: name_loc
         type: location
-      - name: operator_loc
+      - name: binary_operator_loc
         type: location
       - name: value
         type: node
-      - name: operator
+      - name: binary_operator
         type: constant
     comment: |
       Represents assigning to a class variable using an operator that isn't `=`.
@@ -1462,11 +1481,11 @@ nodes:
         type: constant
       - name: name_loc
         type: location
-      - name: operator_loc
+      - name: binary_operator_loc
         type: location
       - name: value
         type: node
-      - name: operator
+      - name: binary_operator
         type: constant
     comment: |
       Represents assigning to a constant using an operator that isn't `=`.
@@ -1517,23 +1536,9 @@ nodes:
 
               a.b::C
               ^^^
-      - name: child
-        type: node
-        kind:
-          - ConstantReadNode
-          - MissingNode
-        comment: |
-          The right-hand node of the path. Always a `ConstantReadNode` in a
-          valid Ruby syntax tree.
-
-              ::Foo
-                ^^^
-
-              self::Test
-                    ^^^^
-
-              a.b::C
-                   ^
+      - name: name
+        type: constant?
+        comment: The name of the constant being accessed. This could be `nil` in the event of a syntax error.
       - name: delimiter_loc
         type: location
         comment: |
@@ -1544,6 +1549,16 @@ nodes:
 
               One::Two
                  ^^
+      - name: name_loc
+        type: location
+        comment: |
+          The location of the name of the constant.
+
+              ::Foo
+                ^^^
+
+              One::Two
+                   ^^^
     comment: |
       Represents accessing a constant through a path of `::` operators.
 
@@ -1554,11 +1569,11 @@ nodes:
       - name: target
         type: node
         kind: ConstantPathNode
-      - name: operator_loc
+      - name: binary_operator_loc
         type: location
       - name: value
         type: node
-      - name: operator
+      - name: binary_operator
         type: constant
     comment: |
       Represents assigning to a constant path using an operator that isn't `=`.
@@ -1583,12 +1598,11 @@ nodes:
     fields:
       - name: parent
         type: node?
-      - name: child
-        type: node
-        kind:
-          - ConstantReadNode
-          - MissingNode
+      - name: name
+        type: constant?
       - name: delimiter_loc
+        type: location
+      - name: name_loc
         type: location
     comment: |
       Represents writing to a constant path in a context that doesn't have an explicit value.
@@ -1926,11 +1940,11 @@ nodes:
         type: constant
       - name: name_loc
         type: location
-      - name: operator_loc
+      - name: binary_operator_loc
         type: location
       - name: value
         type: node
-      - name: operator
+      - name: binary_operator
         type: constant
     comment: |
       Represents assigning to a global variable using an operator that isn't `=`.
@@ -2262,9 +2276,9 @@ nodes:
         type: location
       - name: block
         type: node?
-      - name: operator
+      - name: binary_operator
         type: constant
-      - name: operator_loc
+      - name: binary_operator_loc
         type: location
       - name: value
         type: node
@@ -2350,11 +2364,11 @@ nodes:
         type: constant
       - name: name_loc
         type: location
-      - name: operator_loc
+      - name: binary_operator_loc
         type: location
       - name: value
         type: node
-      - name: operator
+      - name: binary_operator
         type: constant
     comment: |
       Represents assigning to an instance variable using an operator that isn't `=`.
@@ -2630,13 +2644,13 @@ nodes:
     fields:
       - name: name_loc
         type: location
-      - name: operator_loc
+      - name: binary_operator_loc
         type: location
       - name: value
         type: node
       - name: name
         type: constant
-      - name: operator
+      - name: binary_operator
         type: constant
       - name: depth
         type: uint32
@@ -3071,6 +3085,8 @@ nodes:
           # On parsing error of `f(**kwargs, ...)` or `f(**nil, ...)`, the keyword_rest value is moved here:
           - KeywordRestParameterNode
           - NoKeywordsParameterNode
+          # On parsing error of `f(..., ...)`, the first forwarding parameter is moved here:
+          - ForwardingParameterNode
       - name: keywords
         type: node[]
         kind:
