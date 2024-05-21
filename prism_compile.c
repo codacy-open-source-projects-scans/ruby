@@ -570,6 +570,7 @@ pm_interpolated_node_compile(rb_iseq_t *iseq, const pm_node_list_t *parts, const
 
     if (parts_size > 0) {
         VALUE current_string = Qnil;
+        pm_line_column_t current_location = *node_location;
 
         for (size_t index = 0; index < parts_size; index++) {
             const pm_node_t *part = parts->nodes[index];
@@ -590,6 +591,7 @@ pm_interpolated_node_compile(rb_iseq_t *iseq, const pm_node_list_t *parts, const
                 }
                 else {
                     current_string = string_value;
+                    if (index != 0) current_location = PM_NODE_END_LINE_COLUMN(scope_node->parser, part);
                 }
             }
             else {
@@ -616,6 +618,7 @@ pm_interpolated_node_compile(rb_iseq_t *iseq, const pm_node_list_t *parts, const
                     }
                     else {
                         current_string = string_value;
+                        current_location = PM_NODE_START_LINE_COLUMN(scope_node->parser, part);
                     }
                 }
                 else {
@@ -640,11 +643,13 @@ pm_interpolated_node_compile(rb_iseq_t *iseq, const pm_node_list_t *parts, const
                         current_string = rb_enc_str_new(NULL, 0, encoding);
                     }
 
-                    PUSH_INSN1(ret, *node_location, putobject, rb_fstring(current_string));
+                    PUSH_INSN1(ret, current_location, putobject, rb_fstring(current_string));
                     PM_COMPILE_NOT_POPPED(part);
-                    PUSH_INSN(ret, *node_location, dup);
-                    PUSH_INSN1(ret, *node_location, objtostring, new_callinfo(iseq, idTo_s, 0, VM_CALL_FCALL | VM_CALL_ARGS_SIMPLE , NULL, FALSE));
-                    PUSH_INSN(ret, *node_location, anytostring);
+
+                    const pm_line_column_t current_location = PM_NODE_START_LINE_COLUMN(scope_node->parser, part);
+                    PUSH_INSN(ret, current_location, dup);
+                    PUSH_INSN1(ret, current_location, objtostring, new_callinfo(iseq, idTo_s, 0, VM_CALL_FCALL | VM_CALL_ARGS_SIMPLE, NULL, FALSE));
+                    PUSH_INSN(ret, current_location, anytostring);
 
                     current_string = Qnil;
                     stack_size += 2;
@@ -656,10 +661,10 @@ pm_interpolated_node_compile(rb_iseq_t *iseq, const pm_node_list_t *parts, const
             current_string = rb_fstring(current_string);
 
             if (stack_size == 0 && interpolated) {
-                PUSH_INSN1(ret, *node_location, putstring, current_string);
+                PUSH_INSN1(ret, current_location, putstring, current_string);
             }
             else {
-                PUSH_INSN1(ret, *node_location, putobject, current_string);
+                PUSH_INSN1(ret, current_location, putobject, current_string);
             }
 
             current_string = Qnil;
@@ -2863,6 +2868,7 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         scope->encoding = previous->encoding;
         scope->filepath_encoding = previous->filepath_encoding;
         scope->constants = previous->constants;
+        scope->coverage_enabled = previous->coverage_enabled;
     }
 
     switch (PM_NODE_TYPE(node)) {
@@ -5406,7 +5412,6 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             }
 
             COMPILE_ERROR(ERROR_ARGS "Invalid break");
-            rb_bug("Invalid break");
         }
         return;
       }
@@ -8745,7 +8750,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             break;
         }
 
-        if (PM_NODE_TYPE_P(scope_node->ast_node, PM_CLASS_NODE)) {
+        if (PM_NODE_TYPE_P(scope_node->ast_node, PM_CLASS_NODE) || PM_NODE_TYPE_P(scope_node->ast_node, PM_MODULE_NODE)) {
             const pm_line_column_t end_location = PM_NODE_END_LINE_COLUMN(scope_node->parser, scope_node->ast_node);
             ADD_TRACE(ret, RUBY_EVENT_END);
             ISEQ_COMPILE_DATA(iseq)->last_line = end_location.line;
@@ -9269,7 +9274,8 @@ pm_parse_process_error(const pm_parse_result_t *result)
         }
     }
 
-    VALUE error = rb_exc_new(rb_eSyntaxError, pm_buffer_value(&buffer), pm_buffer_length(&buffer));
+    VALUE message = rb_enc_str_new(pm_buffer_value(&buffer), pm_buffer_length(&buffer), result->node.encoding);
+    VALUE error = rb_exc_new_str(rb_eSyntaxError, message);
 
     rb_encoding *filepath_encoding = result->node.filepath_encoding != NULL ? result->node.filepath_encoding : rb_utf8_encoding();
     VALUE path = rb_enc_str_new((const char *) pm_string_source(filepath), pm_string_length(filepath), filepath_encoding);
@@ -9279,9 +9285,6 @@ pm_parse_process_error(const pm_parse_result_t *result)
 
     return error;
 }
-
-void rb_enc_compile_warning(rb_encoding *enc, const char *file, int line, const char *fmt, ...);
-void rb_enc_compile_warn(rb_encoding *enc, const char *file, int line, const char *fmt, ...);
 
 /**
  * Parse the parse result and raise a Ruby error if there are any syntax errors.
@@ -9297,12 +9300,15 @@ pm_parse_process(pm_parse_result_t *result, pm_node_t *node)
     // freed regardless of whether or we return an error.
     pm_scope_node_t *scope_node = &result->node;
     rb_encoding *filepath_encoding = scope_node->filepath_encoding;
+    int coverage_enabled = scope_node->coverage_enabled;
 
     pm_scope_node_init(node, scope_node, NULL);
     scope_node->filepath_encoding = filepath_encoding;
 
     scope_node->encoding = rb_enc_find(parser->encoding->name);
     if (!scope_node->encoding) rb_bug("Encoding not found %s!", parser->encoding->name);
+
+    scope_node->coverage_enabled = coverage_enabled;
 
     // Emit all of the various warnings from the parse.
     const pm_diagnostic_t *warning;
@@ -9453,6 +9459,7 @@ pm_load_file(pm_parse_result_t *result, VALUE filepath, bool load_error)
 VALUE
 pm_parse_file(pm_parse_result_t *result, VALUE filepath)
 {
+    result->node.filepath_encoding = rb_enc_get(filepath);
     pm_options_filepath_set(&result->options, RSTRING_PTR(filepath));
     RB_GC_GUARD(filepath);
 

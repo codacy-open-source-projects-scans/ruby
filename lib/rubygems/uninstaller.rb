@@ -32,7 +32,7 @@ class Gem::Uninstaller
   attr_reader :bin_dir
 
   ##
-  # The gem repository the gem will be installed into
+  # The gem repository the gem will be uninstalled from
 
   attr_reader :gem_home
 
@@ -49,7 +49,9 @@ class Gem::Uninstaller
     # TODO: document the valid options
     @gem                = gem
     @version            = options[:version] || Gem::Requirement.default
-    @gem_home           = File.realpath(options[:install_dir] || Gem.dir)
+    @install_dir        = options[:install_dir]
+    @gem_home           = File.realpath(@install_dir || Gem.dir)
+    @user_dir           = File.exist?(Gem.user_dir) ? File.realpath(Gem.user_dir) : Gem.user_dir
     @force_executables  = options[:executables]
     @force_all          = options[:all]
     @force_ignore       = options[:ignore]
@@ -69,7 +71,7 @@ class Gem::Uninstaller
 
     # only add user directory if install_dir is not set
     @user_install = false
-    @user_install = options[:user_install] unless options[:install_dir]
+    @user_install = options[:user_install] unless @install_dir
 
     # Optimization: populated during #uninstall
     @default_specs_matching_uninstall_params = []
@@ -104,7 +106,7 @@ class Gem::Uninstaller
 
     list, other_repo_specs = list.partition do |spec|
       @gem_home == spec.base_dir ||
-        (@user_install && spec.base_dir == Gem.user_dir)
+        (@user_install && spec.base_dir == @user_dir)
     end
 
     list.sort!
@@ -238,7 +240,7 @@ class Gem::Uninstaller
 
   def remove(spec)
     unless path_ok?(@gem_home, spec) ||
-           (@user_install && path_ok?(Gem.user_dir, spec))
+           (@user_install && path_ok?(@user_dir, spec))
       e = Gem::GemNotInHomeException.new \
         "Gem '#{spec.full_name}' is not installed in directory #{@gem_home}"
       e.spec = spec
@@ -290,7 +292,8 @@ class Gem::Uninstaller
   # Regenerates plugin wrappers after removal.
 
   def regenerate_plugins
-    latest = Gem::Specification.latest_spec_for(@spec.name)
+    specification_record = @install_dir ? Gem::SpecificationRecord.from_path(@install_dir) : Gem::Specification.specification_record
+    latest = specification_record.latest_spec_for(@spec.name)
     return if latest.nil?
 
     regenerate_plugins_for(latest, plugin_dir_for(@spec))

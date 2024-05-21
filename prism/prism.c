@@ -423,7 +423,7 @@ lex_mode_pop(pm_parser_t *parser) {
  * This is the equivalent of IS_lex_state is CRuby.
  */
 static inline bool
-lex_state_p(pm_parser_t *parser, pm_lex_state_t state) {
+lex_state_p(const pm_parser_t *parser, pm_lex_state_t state) {
     return parser->lex_state & state;
 }
 
@@ -1630,7 +1630,7 @@ not_provided(pm_parser_t *parser) {
     return (pm_token_t) { .type = PM_TOKEN_NOT_PROVIDED, .start = parser->start, .end = parser->start };
 }
 
-#define PM_LOCATION_NULL_VALUE(parser) ((pm_location_t) { .start = parser->start, .end = parser->start })
+#define PM_LOCATION_NULL_VALUE(parser) ((pm_location_t) { .start = (parser)->start, .end = (parser)->start })
 #define PM_LOCATION_TOKEN_VALUE(token) ((pm_location_t) { .start = (token)->start, .end = (token)->end })
 #define PM_LOCATION_NODE_VALUE(node) ((pm_location_t) { .start = (node)->location.start, .end = (node)->location.end })
 #define PM_LOCATION_NODE_BASE_VALUE(node) ((pm_location_t) { .start = (node)->base.location.start, .end = (node)->base.location.end })
@@ -2827,8 +2827,7 @@ static pm_call_node_t *
 pm_call_node_fcall_synthesized_create(pm_parser_t *parser, pm_arguments_node_t *arguments, pm_constant_id_t name) {
     pm_call_node_t *node = pm_call_node_create(parser, PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY);
 
-    node->base.location.start = parser->start;
-    node->base.location.end = parser->start;
+    node->base.location = PM_LOCATION_NULL_VALUE(parser);
     node->arguments = arguments;
 
     node->name = name;
@@ -4621,7 +4620,7 @@ pm_global_variable_read_node_synthesized_create(pm_parser_t *parser, pm_constant
     *node = (pm_global_variable_read_node_t) {
         {
             .type = PM_GLOBAL_VARIABLE_READ_NODE,
-            .location = { .start = parser->start, .end = parser->start }
+            .location = PM_LOCATION_NULL_VALUE(parser)
         },
         .name = name
     };
@@ -4663,11 +4662,11 @@ pm_global_variable_write_node_synthesized_create(pm_parser_t *parser, pm_constan
     *node = (pm_global_variable_write_node_t) {
         {
             .type = PM_GLOBAL_VARIABLE_WRITE_NODE,
-            .location = { .start = parser->start, .end = parser->start }
+            .location = PM_LOCATION_NULL_VALUE(parser)
         },
         .name = name,
-        .name_loc = { .start = parser->start, .end = parser->start },
-        .operator_loc = { .start = parser->start, .end = parser->start },
+        .name_loc = PM_LOCATION_NULL_VALUE(parser),
+        .operator_loc = PM_LOCATION_NULL_VALUE(parser),
         .value = value
     };
 
@@ -7355,9 +7354,9 @@ pm_symbol_node_synthesized_create(pm_parser_t *parser, const char *content) {
         {
             .type = PM_SYMBOL_NODE,
             .flags = PM_NODE_FLAG_STATIC_LITERAL | PM_SYMBOL_FLAGS_FORCED_US_ASCII_ENCODING,
-            .location = { .start = parser->start, .end = parser->start }
+            .location = PM_LOCATION_NULL_VALUE(parser)
         },
-        .value_loc = { .start = parser->start, .end = parser->start },
+        .value_loc = PM_LOCATION_NULL_VALUE(parser),
         .unescaped = { 0 }
     };
 
@@ -7758,10 +7757,10 @@ pm_while_node_synthesized_create(pm_parser_t *parser, pm_node_t *predicate, pm_s
     *node = (pm_while_node_t) {
         {
             .type = PM_WHILE_NODE,
-            .location = { .start = parser->start, .end = parser->start }
+            .location = PM_LOCATION_NULL_VALUE(parser)
         },
-        .keyword_loc = { .start = parser->start, .end = parser->start },
-        .closing_loc = { .start = parser->start, .end = parser->start },
+        .keyword_loc = PM_LOCATION_NULL_VALUE(parser),
+        .closing_loc = PM_LOCATION_NULL_VALUE(parser),
         .predicate = predicate,
         .statements = statements
     };
@@ -8067,7 +8066,7 @@ pm_do_loop_stack_p(pm_parser_t *parser) {
  * is beyond the end of the source then return '\0'.
  */
 static inline uint8_t
-peek_at(pm_parser_t *parser, const uint8_t *cursor) {
+peek_at(const pm_parser_t *parser, const uint8_t *cursor) {
     if (cursor < parser->end) {
         return *cursor;
     } else {
@@ -8090,7 +8089,7 @@ peek_offset(pm_parser_t *parser, ptrdiff_t offset) {
  * that position is beyond the end of the source then return '\0'.
  */
 static inline uint8_t
-peek(pm_parser_t *parser) {
+peek(const pm_parser_t *parser) {
     return peek_at(parser, parser->current.end);
 }
 
@@ -8153,6 +8152,14 @@ next_newline(const uint8_t *cursor, ptrdiff_t length) {
     // of the encodings that we support have \n as a component of a multi-byte
     // character.
     return memchr(cursor, '\n', (size_t) length);
+}
+
+/**
+ * This is equivalent to the predicate of warn_balanced in CRuby.
+ */
+static inline bool
+ambiguous_operator_p(const pm_parser_t *parser, bool space_seen) {
+    return !lex_state_p(parser, PM_LEX_STATE_CLASS | PM_LEX_STATE_DOT | PM_LEX_STATE_FNAME | PM_LEX_STATE_ENDFN) && space_seen && !pm_char_is_whitespace(peek(parser));
 }
 
 /**
@@ -8995,8 +9002,8 @@ lex_global_variable(pm_parser_t *parser) {
                 // If we get here, then we have a $ followed by something that
                 // isn't recognized as a global variable.
                 pm_diagnostic_id_t diag_id = parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 ? PM_ERR_INVALID_VARIABLE_GLOBAL_3_3 : PM_ERR_INVALID_VARIABLE_GLOBAL;
-                size_t width = parser->encoding->char_width(parser->current.end, parser->end - parser->current.end);
-                PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, diag_id, (int) ((parser->current.end + width) - parser->current.start), (const char *) parser->current.start);
+                const uint8_t *end = parser->current.end + parser->encoding->char_width(parser->current.end, parser->end - parser->current.end);
+                PM_PARSER_ERR_FORMAT(parser, parser->current.start, end, diag_id, (int) (end - parser->current.start), (const char *) parser->current.start);
             }
 
             return PM_TOKEN_GLOBAL_VARIABLE;
@@ -9389,7 +9396,7 @@ escape_unicode(pm_parser_t *parser, const uint8_t *string, size_t length) {
  */
 static inline uint8_t
 escape_byte(uint8_t value, const uint8_t flags) {
-    if (flags & PM_ESCAPE_FLAG_CONTROL) value &= 0x1f;
+    if (flags & PM_ESCAPE_FLAG_CONTROL) value &= 0x9f;
     if (flags & PM_ESCAPE_FLAG_META) value |= 0x80;
     return value;
 }
@@ -9489,22 +9496,7 @@ escape_write_escape_encoded(pm_parser_t *parser, pm_buffer_t *buffer) {
 static inline void
 escape_write_byte(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expression_buffer, uint8_t flags, uint8_t byte) {
     if (flags & PM_ESCAPE_FLAG_REGEXP) {
-        pm_buffer_append_bytes(regular_expression_buffer, (const uint8_t *) "\\x", 2);
-
-        uint8_t byte1 = (uint8_t) ((byte >> 4) & 0xF);
-        uint8_t byte2 = (uint8_t) (byte & 0xF);
-
-        if (byte1 >= 0xA) {
-            pm_buffer_append_byte(regular_expression_buffer, (uint8_t) ((byte1 - 0xA) + 'A'));
-        } else {
-            pm_buffer_append_byte(regular_expression_buffer, (uint8_t) (byte1 + '0'));
-        }
-
-        if (byte2 >= 0xA) {
-            pm_buffer_append_byte(regular_expression_buffer, (uint8_t) (byte2 - 0xA + 'A'));
-        } else {
-            pm_buffer_append_byte(regular_expression_buffer, (uint8_t) (byte2 + '0'));
-        }
+        pm_buffer_append_format(regular_expression_buffer, "\\x%02X", byte);
     }
 
     escape_write_byte_encoded(parser, buffer, byte);
@@ -9539,57 +9531,57 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
     switch (peek(parser)) {
         case '\\': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\\', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\\', flags));
             return;
         }
         case '\'': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\'', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\'', flags));
             return;
         }
         case 'a': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\a', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\a', flags));
             return;
         }
         case 'b': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\b', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\b', flags));
             return;
         }
         case 'e': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\033', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\033', flags));
             return;
         }
         case 'f': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\f', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\f', flags));
             return;
         }
         case 'n': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\n', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\n', flags));
             return;
         }
         case 'r': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\r', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\r', flags));
             return;
         }
         case 's': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte(' ', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte(' ', flags));
             return;
         }
         case 't': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\t', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\t', flags));
             return;
         }
         case 'v': {
             parser->current.end++;
-            escape_write_byte_encoded(parser, buffer, escape_byte('\v', flags));
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, escape_byte('\v', flags));
             return;
         }
         case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': {
@@ -9606,7 +9598,7 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                 }
             }
 
-            escape_write_byte_encoded(parser, buffer, value);
+            escape_write_byte(parser, buffer, regular_expression_buffer, flags, value);
             return;
         }
         case 'x': {
@@ -9625,11 +9617,16 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                     parser->current.end++;
                 }
 
+                value = escape_byte(value, flags);
                 if (flags & PM_ESCAPE_FLAG_REGEXP) {
-                    pm_buffer_append_bytes(regular_expression_buffer, start, (size_t) (parser->current.end - start));
+                    if (flags & (PM_ESCAPE_FLAG_CONTROL | PM_ESCAPE_FLAG_META)) {
+                        pm_buffer_append_format(regular_expression_buffer, "\\x%02X", value);
+                    } else {
+                        pm_buffer_append_bytes(regular_expression_buffer, start, (size_t) (parser->current.end - start));
+                    }
                 }
 
-                escape_write_byte_encoded(parser, buffer, escape_byte(value, flags));
+                escape_write_byte_encoded(parser, buffer, value);
             } else {
                 pm_parser_err_current(parser, PM_ERR_ESCAPE_INVALID_HEXADECIMAL);
             }
@@ -9658,7 +9655,8 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                         pm_parser_err(parser, unicode_start, unicode_start + hexadecimal_length, PM_ERR_ESCAPE_INVALID_UNICODE_LONG);
                     } else if (hexadecimal_length == 0) {
                         // there are not hexadecimal characters
-                        pm_parser_err(parser, unicode_start, unicode_start + hexadecimal_length, PM_ERR_ESCAPE_INVALID_UNICODE);
+                        pm_parser_err(parser, parser->current.end, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE);
+                        pm_parser_err(parser, parser->current.end, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_TERM);
                         return;
                     }
 
@@ -9707,10 +9705,6 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                 }
             }
 
-            if (flags & (PM_ESCAPE_FLAG_CONTROL | PM_ESCAPE_FLAG_META)) {
-                pm_parser_err(parser, start, parser->current.end, PM_ERR_INVALID_ESCAPE_CHARACTER);
-            }
-
             return;
         }
         case 'c': {
@@ -9733,6 +9727,12 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                         return;
                     }
                     parser->current.end++;
+
+                    if (match(parser, 'u') || match(parser, 'U')) {
+                        pm_parser_err(parser, parser->current.start, parser->current.end, PM_ERR_INVALID_ESCAPE_CHARACTER);
+                        return;
+                    }
+
                     escape_read(parser, buffer, regular_expression_buffer, flags | PM_ESCAPE_FLAG_CONTROL);
                     return;
                 case ' ':
@@ -9760,7 +9760,8 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
         case 'C': {
             parser->current.end++;
             if (peek(parser) != '-') {
-                pm_parser_err_current(parser, PM_ERR_ESCAPE_INVALID_CONTROL);
+                size_t width = parser->encoding->char_width(parser->current.end, parser->end - parser->current.end);
+                pm_parser_err(parser, parser->current.start, parser->current.end + width, PM_ERR_ESCAPE_INVALID_CONTROL);
                 return;
             }
 
@@ -9783,6 +9784,12 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                         return;
                     }
                     parser->current.end++;
+
+                    if (match(parser, 'u') || match(parser, 'U')) {
+                        pm_parser_err(parser, parser->current.start, parser->current.end, PM_ERR_INVALID_ESCAPE_CHARACTER);
+                        return;
+                    }
+
                     escape_read(parser, buffer, regular_expression_buffer, flags | PM_ESCAPE_FLAG_CONTROL);
                     return;
                 case ' ':
@@ -9797,7 +9804,8 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                     return;
                 default: {
                     if (!char_is_ascii_printable(peeked)) {
-                        pm_parser_err_current(parser, PM_ERR_ESCAPE_INVALID_CONTROL);
+                        size_t width = parser->encoding->char_width(parser->current.end, parser->end - parser->current.end);
+                        pm_parser_err(parser, parser->current.start, parser->current.end + width, PM_ERR_ESCAPE_INVALID_CONTROL);
                         return;
                     }
 
@@ -9810,7 +9818,8 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
         case 'M': {
             parser->current.end++;
             if (peek(parser) != '-') {
-                pm_parser_err_current(parser, PM_ERR_ESCAPE_INVALID_META);
+                size_t width = parser->encoding->char_width(parser->current.end, parser->end - parser->current.end);
+                pm_parser_err(parser, parser->current.start, parser->current.end + width, PM_ERR_ESCAPE_INVALID_META);
                 return;
             }
 
@@ -9828,6 +9837,12 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                         return;
                     }
                     parser->current.end++;
+
+                    if (match(parser, 'u') || match(parser, 'U')) {
+                        pm_parser_err(parser, parser->current.start, parser->current.end, PM_ERR_INVALID_ESCAPE_CHARACTER);
+                        return;
+                    }
+
                     escape_read(parser, buffer, regular_expression_buffer, flags | PM_ESCAPE_FLAG_META);
                     return;
                 case ' ':
@@ -9842,7 +9857,8 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                     return;
                 default:
                     if (!char_is_ascii_printable(peeked)) {
-                        pm_parser_err_current(parser, PM_ERR_ESCAPE_INVALID_META);
+                        size_t width = parser->encoding->char_width(parser->current.end, parser->end - parser->current.end);
+                        pm_parser_err(parser, parser->current.start, parser->current.end + width, PM_ERR_ESCAPE_INVALID_META);
                         return;
                     }
 
@@ -10803,6 +10819,8 @@ parser_lex(pm_parser_t *parser) {
                             type = PM_TOKEN_USTAR_STAR;
                         } else if (lex_state_beg_p(parser)) {
                             type = PM_TOKEN_USTAR_STAR;
+                        } else if (ambiguous_operator_p(parser, space_seen)) {
+                            PM_PARSER_WARN_TOKEN_FORMAT(parser, parser->current, PM_WARN_AMBIGUOUS_BINARY_OPERATOR, "**", "argument prefix");
                         }
 
                         if (lex_state_operator_p(parser)) {
@@ -10826,6 +10844,8 @@ parser_lex(pm_parser_t *parser) {
                         type = PM_TOKEN_USTAR;
                     } else if (lex_state_beg_p(parser)) {
                         type = PM_TOKEN_USTAR;
+                    } else if (ambiguous_operator_p(parser, space_seen)) {
+                        PM_PARSER_WARN_TOKEN_FORMAT(parser, parser->current, PM_WARN_AMBIGUOUS_BINARY_OPERATOR, "*", "argument prefix");
                     }
 
                     if (lex_state_operator_p(parser)) {
@@ -10999,6 +11019,10 @@ parser_lex(pm_parser_t *parser) {
                             LEX(PM_TOKEN_LESS_LESS_EQUAL);
                         }
 
+                        if (ambiguous_operator_p(parser, space_seen)) {
+                            PM_PARSER_WARN_TOKEN_FORMAT(parser, parser->current, PM_WARN_AMBIGUOUS_BINARY_OPERATOR, "<<", "here document");
+                        }
+
                         if (lex_state_operator_p(parser)) {
                             lex_state_set(parser, PM_LEX_STATE_ARG);
                         } else {
@@ -11112,6 +11136,8 @@ parser_lex(pm_parser_t *parser) {
                         type = PM_TOKEN_UAMPERSAND;
                     } else if (lex_state_beg_p(parser)) {
                         type = PM_TOKEN_UAMPERSAND;
+                    } else if (ambiguous_operator_p(parser, space_seen)) {
+                        PM_PARSER_WARN_TOKEN_FORMAT(parser, parser->current, PM_WARN_AMBIGUOUS_BINARY_OPERATOR, "&", "argument prefix");
                     }
 
                     if (lex_state_operator_p(parser)) {
@@ -11186,6 +11212,10 @@ parser_lex(pm_parser_t *parser) {
                         LEX(PM_TOKEN_UPLUS);
                     }
 
+                    if (ambiguous_operator_p(parser, space_seen)) {
+                        PM_PARSER_WARN_TOKEN_FORMAT(parser, parser->current, PM_WARN_AMBIGUOUS_BINARY_OPERATOR, "+", "unary operator");
+                    }
+
                     lex_state_set(parser, PM_LEX_STATE_BEG);
                     LEX(PM_TOKEN_PLUS);
                 }
@@ -11221,6 +11251,10 @@ parser_lex(pm_parser_t *parser) {
                     if (is_beg || spcarg) {
                         lex_state_set(parser, PM_LEX_STATE_BEG);
                         LEX(pm_char_is_decimal_digit(peek(parser)) ? PM_TOKEN_UMINUS_NUM : PM_TOKEN_UMINUS);
+                    }
+
+                    if (ambiguous_operator_p(parser, space_seen)) {
+                        PM_PARSER_WARN_TOKEN_FORMAT(parser, parser->current, PM_WARN_AMBIGUOUS_BINARY_OPERATOR, "-", "unary operator");
                     }
 
                     lex_state_set(parser, PM_LEX_STATE_BEG);
@@ -11321,6 +11355,10 @@ parser_lex(pm_parser_t *parser) {
                         LEX(PM_TOKEN_REGEXP_BEGIN);
                     }
 
+                    if (ambiguous_operator_p(parser, space_seen)) {
+                        PM_PARSER_WARN_TOKEN_FORMAT(parser, parser->current, PM_WARN_AMBIGUOUS_BINARY_OPERATOR, "/", "regexp literal");
+                    }
+
                     if (lex_state_operator_p(parser)) {
                         lex_state_set(parser, PM_LEX_STATE_ARG);
                     } else {
@@ -11356,7 +11394,7 @@ parser_lex(pm_parser_t *parser) {
                     // operator because we don't want to move into the string
                     // lex mode unnecessarily.
                     if ((lex_state_beg_p(parser) || lex_state_arg_p(parser)) && (parser->current.end >= parser->end)) {
-                        pm_parser_err_current(parser, PM_ERR_INVALID_PERCENT);
+                        pm_parser_err_current(parser, PM_ERR_INVALID_PERCENT_EOF);
                         LEX(PM_TOKEN_PERCENT);
                     }
 
@@ -11375,10 +11413,7 @@ parser_lex(pm_parser_t *parser) {
 
                             const uint8_t delimiter = pm_lex_percent_delimiter(parser);
                             lex_mode_push_string(parser, true, false, lex_mode_incrementor(delimiter), lex_mode_terminator(delimiter));
-
-                            if (parser->current.end < parser->end) {
-                                LEX(PM_TOKEN_STRING_BEGIN);
-                            }
+                            LEX(PM_TOKEN_STRING_BEGIN);
                         }
 
                         // Delimiters for %-literals cannot be alphanumeric. We
@@ -11503,6 +11538,10 @@ parser_lex(pm_parser_t *parser) {
                                 pm_parser_err_current(parser, PM_ERR_INVALID_PERCENT);
                                 goto lex_next_token;
                         }
+                    }
+
+                    if (ambiguous_operator_p(parser, space_seen)) {
+                        PM_PARSER_WARN_TOKEN_FORMAT(parser, parser->current, PM_WARN_AMBIGUOUS_BINARY_OPERATOR, "%", "string literal");
                     }
 
                     lex_state_set(parser, lex_state_operator_p(parser) ? PM_LEX_STATE_ARG : PM_LEX_STATE_BEG);
@@ -13552,8 +13591,8 @@ parse_targets_validate(pm_parser_t *parser, pm_node_t *first_target, pm_binding_
  */
 static pm_statements_node_t *
 parse_statements(pm_parser_t *parser, pm_context_t context) {
-    // First, skip past any optional terminators that might be at the beginning of
-    // the statements.
+    // First, skip past any optional terminators that might be at the beginning
+    // of the statements.
     while (accept2(parser, PM_TOKEN_SEMICOLON, PM_TOKEN_NEWLINE));
 
     // If we have a terminator, then we can just return NULL.
@@ -13569,20 +13608,20 @@ parse_statements(pm_parser_t *parser, pm_context_t context) {
         pm_node_t *node = parse_expression(parser, PM_BINDING_POWER_STATEMENT, true, PM_ERR_CANNOT_PARSE_EXPRESSION);
         pm_statements_node_body_append(parser, statements, node);
 
-        // If we're recovering from a syntax error, then we need to stop parsing the
-        // statements now.
+        // If we're recovering from a syntax error, then we need to stop parsing
+        // the statements now.
         if (parser->recovering) {
-            // If this is the level of context where the recovery has happened, then
-            // we can mark the parser as done recovering.
+            // If this is the level of context where the recovery has happened,
+            // then we can mark the parser as done recovering.
             if (context_terminator(context, &parser->current)) parser->recovering = false;
             break;
         }
 
-        // If we have a terminator, then we will parse all consecutive terminators
-        // and then continue parsing the statements list.
+        // If we have a terminator, then we will parse all consecutive
+        // terminators and then continue parsing the statements list.
         if (accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON)) {
-            // If we have a terminator, then we will continue parsing the statements
-            // list.
+            // If we have a terminator, then we will continue parsing the
+            // statements list.
             while (accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON));
             if (context_terminator(context, &parser->current)) break;
 
@@ -13590,27 +13629,28 @@ parse_statements(pm_parser_t *parser, pm_context_t context) {
             continue;
         }
 
-        // At this point we have a list of statements that are not terminated by a
-        // newline or semicolon. At this point we need to check if we're at the end
-        // of the statements list. If we are, then we should break out of the loop.
+        // At this point we have a list of statements that are not terminated by
+        // a newline or semicolon. At this point we need to check if we're at
+        // the end of the statements list. If we are, then we should break out
+        // of the loop.
         if (context_terminator(context, &parser->current)) break;
 
         // At this point, we have a syntax error, because the statement was not
         // terminated by a newline or semicolon, and we're not at the end of the
-        // statements list. Ideally we should scan forward to determine if we should
-        // insert a missing terminator or break out of parsing the statements list
-        // at this point.
+        // statements list. Ideally we should scan forward to determine if we
+        // should insert a missing terminator or break out of parsing the
+        // statements list at this point.
         //
-        // We don't have that yet, so instead we'll do a more naive approach. If we
-        // were unable to parse an expression, then we will skip past this token and
-        // continue parsing the statements list. Otherwise we'll add an error and
-        // continue parsing the statements list.
+        // We don't have that yet, so instead we'll do a more naive approach. If
+        // we were unable to parse an expression, then we will skip past this
+        // token and continue parsing the statements list. Otherwise we'll add
+        // an error and continue parsing the statements list.
         if (PM_NODE_TYPE_P(node, PM_MISSING_NODE)) {
             parser_lex(parser);
 
             while (accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON));
             if (context_terminator(context, &parser->current)) break;
-        } else if (!accept1(parser, PM_TOKEN_NEWLINE)) {
+        } else if (!accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_EOF)) {
             // This is an inlined version of accept1 because the error that we
             // want to add has varargs. If this happens again, we should
             // probably extract a helper function.
@@ -15384,6 +15424,10 @@ parse_string_part(pm_parser_t *parser) {
         //     "aaa #{bbb} #@ccc ddd"
         //          ^^^^^^
         case PM_TOKEN_EMBEXPR_BEGIN: {
+            // Ruby disallows seeing encoding around interpolation in strings,
+            // even though it is known at parse time.
+            parser->explicit_encoding = NULL;
+
             pm_lex_state_t state = parser->lex_state;
             int brace_nesting = parser->brace_nesting;
 
@@ -15406,6 +15450,13 @@ parse_string_part(pm_parser_t *parser) {
             expect1(parser, PM_TOKEN_EMBEXPR_END, PM_ERR_EMBEXPR_END);
             pm_token_t closing = parser->previous;
 
+            // If this set of embedded statements only contains a single
+            // statement, then Ruby does not consider it as a possible statement
+            // that could emit a line event.
+            if (statements != NULL && statements->body.size == 1) {
+                pm_node_flag_unset(statements->body.nodes[0], PM_NODE_FLAG_NEWLINE);
+            }
+
             return (pm_node_t *) pm_embedded_statements_node_create(parser, &opening, statements, &closing);
         }
 
@@ -15416,6 +15467,10 @@ parse_string_part(pm_parser_t *parser) {
         //     "aaa #{bbb} #@ccc ddd"
         //                 ^^^^^
         case PM_TOKEN_EMBVAR: {
+            // Ruby disallows seeing encoding around interpolation in strings,
+            // even though it is known at parse time.
+            parser->explicit_encoding = NULL;
+
             lex_state_set(parser, PM_LEX_STATE_BEG);
             parser_lex(parser);
 
@@ -16877,6 +16932,7 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
             // start with a single string content node.
             pm_string_t unescaped;
             pm_token_t content;
+
             if (match1(parser, PM_TOKEN_EOF)) {
                 unescaped = PM_STRING_EMPTY;
                 content = not_provided(parser);
@@ -16939,7 +16995,19 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
             if (match2(parser, PM_TOKEN_STRING_END, PM_TOKEN_EOF)) {
                 node = (pm_node_t *) pm_string_node_create_unescaped(parser, &opening, &content, &parser->current, &unescaped);
                 pm_node_flag_set(node, parse_unescaped_encoding(parser));
-                expect1(parser, PM_TOKEN_STRING_END, PM_ERR_STRING_LITERAL_EOF);
+
+                // Kind of odd behavior, but basically if we have an
+                // unterminated string and it ends in a newline, we back up one
+                // character so that the error message is on the last line of
+                // content in the string.
+                if (!accept1(parser, PM_TOKEN_STRING_END)) {
+                    const uint8_t *location = parser->previous.end;
+                    if (location > parser->start && location[-1] == '\n') location--;
+                    pm_parser_err(parser, location, location, PM_ERR_STRING_LITERAL_EOF);
+
+                    parser->previous.start = parser->previous.end;
+                    parser->previous.type = PM_TOKEN_MISSING;
+                }
             } else if (accept1(parser, PM_TOKEN_LABEL_END)) {
                 node = (pm_node_t *) pm_symbol_node_create_unescaped(parser, &opening, &content, &parser->previous, &unescaped, parse_symbol_encoding(parser, &content, &unescaped, true));
             } else {
@@ -17428,7 +17496,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             // If we didn't find a terminator and we didn't find a right
             // parenthesis, then this is a syntax error.
-            if (!terminator_found) {
+            if (!terminator_found && !match1(parser, PM_TOKEN_EOF)) {
                 PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_EXPECT_EOL_AFTER_STATEMENT, pm_token_type_human(parser->current.type));
             }
 
@@ -17457,7 +17525,9 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     if (match1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) break;
                 } else if (match1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
                     break;
-                } else {
+                } else if (!match1(parser, PM_TOKEN_EOF)) {
+                    // If we're at the end of the file, then we're going to add
+                    // an error after this for the ) anyway.
                     PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_EXPECT_EOL_AFTER_STATEMENT, pm_token_type_human(parser->current.type));
                 }
             }
@@ -21552,6 +21622,7 @@ typedef struct {
 #define PM_COLOR_GRAY "\033[38;5;102m"
 #define PM_COLOR_RED "\033[1;31m"
 #define PM_COLOR_RESET "\033[m"
+#define PM_ERROR_TRUNCATE 30
 
 static inline pm_error_t *
 pm_parser_errors_format_sort(const pm_parser_t *parser, const pm_list_t *error_list, const pm_newline_list_t *newline_list) {
@@ -21606,7 +21677,7 @@ pm_parser_errors_format_sort(const pm_parser_t *parser, const pm_list_t *error_l
 }
 
 static inline void
-pm_parser_errors_format_line(const pm_parser_t *parser, const pm_newline_list_t *newline_list, const char *number_prefix, int32_t line, pm_buffer_t *buffer) {
+pm_parser_errors_format_line(const pm_parser_t *parser, const pm_newline_list_t *newline_list, const char *number_prefix, int32_t line, uint32_t column_start, uint32_t column_end, pm_buffer_t *buffer) {
     int32_t line_delta = line - parser->start_line;
     assert(line_delta >= 0);
 
@@ -21623,9 +21694,25 @@ pm_parser_errors_format_line(const pm_parser_t *parser, const pm_newline_list_t 
     }
 
     pm_buffer_append_format(buffer, number_prefix, line);
+
+    // Here we determine if we should truncate the end of the line.
+    bool truncate_end = false;
+    if ((column_end != 0) && ((end - (start + column_end)) >= PM_ERROR_TRUNCATE)) {
+        end = start + column_end + PM_ERROR_TRUNCATE;
+        truncate_end = true;
+    }
+
+    // Here we determine if we should truncate the start of the line.
+    if (column_start >= PM_ERROR_TRUNCATE) {
+        pm_buffer_append_string(buffer, "... ", 4);
+        start += column_start;
+    }
+
     pm_buffer_append_string(buffer, (const char *) start, (size_t) (end - start));
 
-    if (end == parser->end && end[-1] != '\n') {
+    if (truncate_end) {
+        pm_buffer_append_string(buffer, " ...\n", 5);
+    } else if (end == parser->end && end[-1] != '\n') {
         pm_buffer_append_string(buffer, "\n", 1);
     }
 }
@@ -21740,6 +21827,7 @@ pm_parser_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, 
     // display the same line twice in case the errors are close enough in the
     // source.
     int32_t last_line = parser->start_line - 1;
+    uint32_t last_column_start = 0;
     const pm_encoding_t *encoding = parser->encoding;
 
     for (size_t index = 0; index < error_list->size; index++) {
@@ -21754,11 +21842,11 @@ pm_parser_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, 
                 }
 
                 pm_buffer_append_string(buffer, "  ", 2);
-                pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line - 2, buffer);
+                pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line - 2, 0, 0, buffer);
             }
 
             pm_buffer_append_string(buffer, "  ", 2);
-            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line - 1, buffer);
+            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line - 1, 0, 0, buffer);
         }
 
         // If this is the first error or we're on a new line, then we'll display
@@ -21769,7 +21857,17 @@ pm_parser_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, 
             } else {
                 pm_buffer_append_string(buffer, "> ", 2);
             }
-            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line, buffer);
+
+            last_column_start = error->column_start;
+
+            // Find the maximum column end of all the errors on this line.
+            uint32_t column_end = error->column_end;
+            for (size_t next_index = index + 1; next_index < error_list->size; next_index++) {
+                if (errors[next_index].line != error->line) break;
+                if (errors[next_index].column_end > column_end) column_end = errors[next_index].column_end;
+            }
+
+            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line, error->column_start, column_end, buffer);
         }
 
         const uint8_t *start = &parser->start[newline_list->offsets[error->line - start_line]];
@@ -21788,6 +21886,11 @@ pm_parser_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, 
         pm_buffer_append_string(buffer, error_format.blank_prefix, error_format.blank_prefix_length);
 
         size_t column = 0;
+        if (last_column_start >= PM_ERROR_TRUNCATE) {
+            pm_buffer_append_string(buffer, "    ", 4);
+            column = last_column_start;
+        }
+
         while (column < error->column_start) {
             pm_buffer_append_byte(buffer, ' ');
 
@@ -21827,12 +21930,12 @@ pm_parser_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, 
 
         if (next_line - last_line > 1) {
             pm_buffer_append_string(buffer, "  ", 2);
-            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, ++last_line, buffer);
+            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, ++last_line, 0, 0, buffer);
         }
 
         if (next_line - last_line > 1) {
             pm_buffer_append_string(buffer, "  ", 2);
-            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, ++last_line, buffer);
+            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, ++last_line, 0, 0, buffer);
         }
     }
 
@@ -21840,6 +21943,7 @@ pm_parser_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, 
     xfree(errors);
 }
 
+#undef PM_ERROR_TRUNCATE
 #undef PM_COLOR_GRAY
 #undef PM_COLOR_RED
 #undef PM_COLOR_RESET
