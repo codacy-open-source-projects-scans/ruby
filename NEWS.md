@@ -7,8 +7,8 @@ Note that each entry is kept to a minimum, see links for details.
 
 ## Language changes
 
-* String literals in files without a `frozen_string_literal` comment now behave
-  as if they were frozen. If they are mutated a deprecation warning is emitted.
+* String literals in files without a `frozen_string_literal` comment now emit a deprecation warning
+  when they are mutated.
   These warnings can be enabled with `-W:deprecated` or by setting `Warning[:deprecated] = true`.
   To disable this change, you can run Ruby with the `--disable-frozen-string-literal`
   command line argument. [[Feature #20205]]
@@ -50,7 +50,7 @@ The following default gems are updated.
 * net-http 0.4.1
 * optparse 0.5.0
 * prism 0.29.0
-* rdoc 6.6.3.1
+* rdoc 6.7.0
 * reline 0.5.7
 * resolv 0.4.0
 * stringio 3.1.1
@@ -58,7 +58,7 @@ The following default gems are updated.
 
 The following bundled gems are updated.
 
-* minitest 5.23.0
+* minitest 5.23.1
 * rake 13.2.1
 * test-unit 3.6.2
 * rexml 3.2.8
@@ -124,7 +124,7 @@ See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/log
   a warning on verbose mode (`-w`).
   [[Feature #15554]]
 
-* Redefining some core methods that are specially optimized by the interpeter
+* Redefining some core methods that are specially optimized by the interpreter
   and JIT like `String.freeze` or `Integer#+` now emits a performance class
   warning (`-W:performance` or `Warning[:performance] = true`).
   [[Feature #20429]]

@@ -708,7 +708,7 @@ pm_parser_scope_push(pm_parser_t *parser, bool closed) {
         .previous = parser->current_scope,
         .locals = { 0 },
         .parameters = PM_SCOPE_PARAMETERS_NONE,
-        .numbered_parameters = PM_SCOPE_NUMBERED_PARAMETERS_NONE,
+        .implicit_parameters = { 0 },
         .shareable_constant = (closed || parser->current_scope == NULL) ? PM_SCOPE_SHAREABLE_CONSTANT_NONE : parser->current_scope->shareable_constant,
         .closed = closed
     };
@@ -1183,6 +1183,31 @@ pm_check_value_expression(pm_node_t *node) {
                 return NULL;
             case PM_BEGIN_NODE: {
                 pm_begin_node_t *cast = (pm_begin_node_t *) node;
+
+                if (cast->statements == NULL && cast->ensure_clause != NULL) {
+                    node = (pm_node_t *) cast->ensure_clause;
+                }
+                else {
+                    if (cast->rescue_clause != NULL) {
+                        if (cast->rescue_clause->statements == NULL) {
+                            return NULL;
+                        }
+                        else if (cast->else_clause != NULL) {
+                            node = (pm_node_t *) cast->else_clause;
+                        }
+                        else {
+                            node = (pm_node_t *) cast->statements;
+                        }
+                    }
+                    else {
+                        node = (pm_node_t *) cast->statements;
+                    }
+                }
+
+                break;
+            }
+            case PM_ENSURE_NODE: {
+                pm_ensure_node_t *cast = (pm_ensure_node_t *) node;
                 node = (pm_node_t *) cast->statements;
                 break;
             }
@@ -4290,7 +4315,7 @@ pm_float_node_imaginary_create(pm_parser_t *parser, const pm_token_t *token) {
 }
 
 /**
- * Allocate and initialize a new FloatNode node from a FLOAT_RATIONAL token.
+ * Allocate and initialize a new RationalNode node from a FLOAT_RATIONAL token.
  */
 static pm_rational_node_t *
 pm_float_node_rational_create(pm_parser_t *parser, const pm_token_t *token) {
@@ -4300,16 +4325,44 @@ pm_float_node_rational_create(pm_parser_t *parser, const pm_token_t *token) {
     *node = (pm_rational_node_t) {
         {
             .type = PM_RATIONAL_NODE,
-            .flags = PM_NODE_FLAG_STATIC_LITERAL,
+            .flags = PM_INTEGER_BASE_FLAGS_DECIMAL | PM_NODE_FLAG_STATIC_LITERAL,
             .location = PM_LOCATION_TOKEN_VALUE(token)
         },
-        .numeric = (pm_node_t *) pm_float_node_create(parser, &((pm_token_t) {
-            .type = PM_TOKEN_FLOAT,
-            .start = token->start,
-            .end = token->end - 1
-        }))
+        .numerator = { 0 },
+        .denominator = { 0 }
     };
 
+    const uint8_t *start = token->start;
+    const uint8_t *end = token->end - 1; // r
+
+    while (start < end && *start == '0') start++; // 0.1 -> .1
+    while (end > start && end[-1] == '0') end--; // 1.0 -> 1.
+
+    size_t length = (size_t) (end - start);
+    if (length == 1) {
+        node->denominator.value = 1;
+        return node;
+    }
+
+    const uint8_t *point = memchr(start, '.', length);
+    assert(point && "should have a decimal point");
+
+    uint8_t *digits = malloc(length);
+    if (digits == NULL) {
+        fputs("[pm_float_node_rational_create] Failed to allocate memory", stderr);
+        abort();
+    }
+
+    memcpy(digits, start, (unsigned long) (point - start));
+    memcpy(digits + (point - start), point + 1, (unsigned long) (end - point - 1));
+    pm_integer_parse(&node->numerator, PM_INTEGER_BASE_DEFAULT, digits, digits + length - 1);
+
+    digits[0] = '1';
+    if (end - point > 1) memset(digits + 1, '0', (size_t) (end - point - 1));
+    pm_integer_parse(&node->denominator, PM_INTEGER_BASE_DEFAULT, digits, digits + (end - point));
+    free(digits);
+
+    pm_integers_reduce(&node->numerator, &node->denominator);
     return node;
 }
 
@@ -4943,7 +4996,7 @@ pm_integer_node_imaginary_create(pm_parser_t *parser, pm_node_flags_t base, cons
 }
 
 /**
- * Allocate and initialize a new IntegerNode node from an INTEGER_RATIONAL
+ * Allocate and initialize a new RationalNode node from an INTEGER_RATIONAL
  * token.
  */
 static pm_rational_node_t *
@@ -4954,15 +5007,23 @@ pm_integer_node_rational_create(pm_parser_t *parser, pm_node_flags_t base, const
     *node = (pm_rational_node_t) {
         {
             .type = PM_RATIONAL_NODE,
-            .flags = PM_NODE_FLAG_STATIC_LITERAL,
+            .flags = base | PM_NODE_FLAG_STATIC_LITERAL,
             .location = PM_LOCATION_TOKEN_VALUE(token)
         },
-        .numeric = (pm_node_t *) pm_integer_node_create(parser, base, &((pm_token_t) {
-            .type = PM_TOKEN_INTEGER,
-            .start = token->start,
-            .end = token->end - 1
-        }))
+        .numerator = { 0 },
+        .denominator = { .value = 1, 0 }
     };
+
+    pm_integer_base_t integer_base = PM_INTEGER_BASE_DECIMAL;
+    switch (base) {
+        case PM_INTEGER_BASE_FLAGS_BINARY: integer_base = PM_INTEGER_BASE_BINARY; break;
+        case PM_INTEGER_BASE_FLAGS_OCTAL: integer_base = PM_INTEGER_BASE_OCTAL; break;
+        case PM_INTEGER_BASE_FLAGS_DECIMAL: break;
+        case PM_INTEGER_BASE_FLAGS_HEXADECIMAL: integer_base = PM_INTEGER_BASE_HEXADECIMAL; break;
+        default: assert(false && "unreachable"); break;
+    }
+
+    pm_integer_parse(&node->numerator, integer_base, token->start, token->end - 1);
 
     return node;
 }
@@ -5462,6 +5523,23 @@ pm_interpolated_xstring_node_closing_set(pm_interpolated_x_string_node_t *node, 
 }
 
 /**
+ * Create a local variable read that is reading the implicit 'it' variable.
+ */
+static pm_it_local_variable_read_node_t *
+pm_it_local_variable_read_node_create(pm_parser_t *parser, const pm_token_t *name) {
+    pm_it_local_variable_read_node_t *node = PM_ALLOC_NODE(parser, pm_it_local_variable_read_node_t);
+
+    *node = (pm_it_local_variable_read_node_t) {
+        {
+            .type = PM_IT_LOCAL_VARIABLE_READ_NODE,
+            .location = PM_LOCATION_TOKEN_VALUE(name)
+        }
+    };
+
+    return node;
+}
+
+/**
  * Allocate and initialize a new ItParametersNode node.
  */
 static pm_it_parameters_node_t *
@@ -5771,28 +5849,6 @@ pm_local_variable_write_node_create(pm_parser_t *parser, pm_constant_id_t name, 
 static inline bool
 pm_token_is_it(const uint8_t *start, const uint8_t *end) {
     return (end - start == 2) && (start[0] == 'i') && (start[1] == 't');
-}
-
-/**
- * Returns true if the given node is `it` default parameter.
- */
-static inline bool
-pm_node_is_it(pm_parser_t *parser, pm_node_t *node) {
-    // Check if it's a local variable reference
-    if (node->type != PM_CALL_NODE) {
-        return false;
-    }
-
-    // Check if it's a variable call
-    pm_call_node_t *call_node = (pm_call_node_t *) node;
-    if (!PM_NODE_FLAG_P(call_node, PM_CALL_NODE_FLAGS_VARIABLE_CALL)) {
-        return false;
-    }
-
-    // Check if it's called `it`
-    pm_constant_id_t id = ((pm_call_node_t *)node)->name;
-    pm_constant_t *constant = pm_constant_pool_id_to_constant(&parser->constant_pool, id);
-    return pm_token_is_it(constant->start, constant->start + constant->length);
 }
 
 /**
@@ -7916,51 +7972,6 @@ pm_parser_local_add_constant(pm_parser_t *parser, const char *start, size_t leng
 }
 
 /**
- * Create a local variable read that is reading the implicit 'it' variable.
- */
-static pm_local_variable_read_node_t *
-pm_local_variable_read_node_create_it(pm_parser_t *parser, const pm_token_t *name) {
-    if (parser->current_scope->parameters & PM_SCOPE_PARAMETERS_ORDINARY) {
-        pm_parser_err_token(parser, name, PM_ERR_IT_NOT_ALLOWED_ORDINARY);
-        return NULL;
-    }
-
-    if (parser->current_scope->parameters & PM_SCOPE_PARAMETERS_NUMBERED) {
-        pm_parser_err_token(parser, name, PM_ERR_IT_NOT_ALLOWED_NUMBERED);
-        return NULL;
-    }
-
-    parser->current_scope->parameters |= PM_SCOPE_PARAMETERS_IT;
-
-    pm_constant_id_t name_id = pm_parser_constant_id_constant(parser, "0it", 3);
-    pm_parser_local_add(parser, name_id, name->start, name->end, 0);
-
-    return pm_local_variable_read_node_create_constant_id(parser, name, name_id, 0, false);
-}
-
-/**
- * Convert a `it` variable call node to a node for `it` default parameter.
- */
-static pm_node_t *
-pm_node_check_it(pm_parser_t *parser, pm_node_t *node) {
-    if (
-        (parser->version != PM_OPTIONS_VERSION_CRUBY_3_3) &&
-        !parser->current_scope->closed &&
-        (parser->current_scope->numbered_parameters != PM_SCOPE_NUMBERED_PARAMETERS_DISALLOWED) &&
-        pm_node_is_it(parser, node)
-    ) {
-        pm_local_variable_read_node_t *read = pm_local_variable_read_node_create_it(parser, &parser->previous);
-
-        if (read != NULL) {
-            pm_node_destroy(parser, node);
-            node = (pm_node_t *) read;
-        }
-    }
-
-    return node;
-}
-
-/**
  * Add a parameter name to the current scope and check whether the name of the
  * parameter is unique or not.
  *
@@ -7995,6 +8006,7 @@ pm_parser_scope_pop(pm_parser_t *parser) {
     pm_scope_t *scope = parser->current_scope;
     parser->current_scope = scope->previous;
     pm_locals_free(&scope->locals);
+    pm_node_list_free(&scope->implicit_parameters);
     xfree(scope);
 }
 
@@ -10962,6 +10974,7 @@ parser_lex(pm_parser_t *parser) {
                                     // If we have quotes, then we're going to go until we find the
                                     // end quote.
                                     while ((parser->current.end < parser->end) && quote != (pm_heredoc_quote_t) (*parser->current.end)) {
+                                        if (*parser->current.end == '\r' || *parser->current.end == '\n') break;
                                         parser->current.end++;
                                     }
                                 }
@@ -12354,9 +12367,10 @@ parser_lex(pm_parser_t *parser) {
 
             // If we are immediately following a newline and we have hit the
             // terminator, then we need to return the ending of the heredoc.
-            if (!line_continuation && current_token_starts_line(parser)) {
+            if (current_token_starts_line(parser)) {
                 const uint8_t *start = parser->current.start;
-                if (start + ident_length <= parser->end) {
+
+                if (!line_continuation && (start + ident_length <= parser->end)) {
                     const uint8_t *newline = next_newline(start, parser->end - start);
                     const uint8_t *ident_end = newline;
                     const uint8_t *terminator_end = newline;
@@ -12512,11 +12526,8 @@ parser_lex(pm_parser_t *parser) {
                             }
 
                             parser->current.end = breakpoint + 1;
-
-                            if (!was_line_continuation) {
-                                pm_token_buffer_flush(parser, &token_buffer);
-                                LEX(PM_TOKEN_STRING_CONTENT);
-                            }
+                            pm_token_buffer_flush(parser, &token_buffer);
+                            LEX(PM_TOKEN_STRING_CONTENT);
                         }
 
                         // Otherwise we hit a newline and it wasn't followed by
@@ -13152,6 +13163,30 @@ parse_unwriteable_target(pm_parser_t *parser, pm_node_t *target) {
 }
 
 /**
+ * When an implicit local variable is written to or targeted, it becomes a
+ * regular, named local variable. This function removes it from the list of
+ * implicit parameters when that happens.
+ */
+static void
+parse_target_implicit_parameter(pm_parser_t *parser, pm_node_t *node) {
+    pm_node_list_t *implicit_parameters = &parser->current_scope->implicit_parameters;
+
+    for (size_t index = 0; index < implicit_parameters->size; index++) {
+        if (implicit_parameters->nodes[index] == node) {
+            // If the node is not the last one in the list, we need to shift the
+            // remaining nodes down to fill the gap. This is extremely unlikely
+            // to happen.
+            if (index != implicit_parameters->size - 1) {
+                memcpy(&implicit_parameters->nodes[index], &implicit_parameters->nodes[index + 1], (implicit_parameters->size - index - 1) * sizeof(pm_node_t *));
+            }
+
+            implicit_parameters->size--;
+            break;
+        }
+    }
+}
+
+/**
  * Convert the given node into a valid target node.
  */
 static pm_node_t *
@@ -13201,7 +13236,10 @@ parse_target(pm_parser_t *parser, pm_node_t *target, bool multiple) {
             target->type = PM_GLOBAL_VARIABLE_TARGET_NODE;
             return target;
         case PM_LOCAL_VARIABLE_READ_NODE: {
-            pm_refute_numbered_parameter(parser, target->location.start, target->location.end);
+            if (pm_token_is_numbered_parameter(target->location.start, target->location.end)) {
+                PM_PARSER_ERR_FORMAT(parser, target->location.start, target->location.end, PM_ERR_PARAMETER_NUMBERED_RESERVED, target->location.start);
+                parse_target_implicit_parameter(parser, target);
+            }
 
             const pm_local_variable_read_node_t *cast = (const pm_local_variable_read_node_t *) target;
             uint32_t name = cast->name;
@@ -13212,6 +13250,15 @@ parse_target(pm_parser_t *parser, pm_node_t *target, bool multiple) {
             target->type = PM_LOCAL_VARIABLE_TARGET_NODE;
 
             return target;
+        }
+        case PM_IT_LOCAL_VARIABLE_READ_NODE: {
+            pm_constant_id_t name = pm_parser_local_add_constant(parser, "it", 2);
+            pm_node_t *node = (pm_node_t *) pm_local_variable_target_node_create(parser, &target->location, name, 0);
+
+            parse_target_implicit_parameter(parser, target);
+            pm_node_destroy(parser, target);
+
+            return node;
         }
         case PM_INSTANCE_VARIABLE_READ_NODE:
             assert(sizeof(pm_instance_variable_target_node_t) == sizeof(pm_instance_variable_read_node_t));
@@ -13365,17 +13412,33 @@ parse_write(pm_parser_t *parser, pm_node_t *target, pm_token_t *operator, pm_nod
             return (pm_node_t *) node;
         }
         case PM_LOCAL_VARIABLE_READ_NODE: {
-            pm_refute_numbered_parameter(parser, target->location.start, target->location.end);
             pm_local_variable_read_node_t *local_read = (pm_local_variable_read_node_t *) target;
 
             pm_constant_id_t name = local_read->name;
-            uint32_t depth = local_read->depth;
-            pm_locals_unread(&pm_parser_scope_find(parser, depth)->locals, name);
-
             pm_location_t name_loc = target->location;
+
+            uint32_t depth = local_read->depth;
+            pm_scope_t *scope = pm_parser_scope_find(parser, depth);
+
+            if (pm_token_is_numbered_parameter(target->location.start, target->location.end)) {
+                pm_diagnostic_id_t diag_id = (scope->parameters & PM_SCOPE_PARAMETERS_NUMBERED_FOUND) ? PM_ERR_EXPRESSION_NOT_WRITABLE_NUMBERED : PM_ERR_PARAMETER_NUMBERED_RESERVED;
+                PM_PARSER_ERR_FORMAT(parser, target->location.start, target->location.end, diag_id, target->location.start);
+                parse_target_implicit_parameter(parser, target);
+            }
+
+            pm_locals_unread(&scope->locals, name);
             pm_node_destroy(parser, target);
 
             return (pm_node_t *) pm_local_variable_write_node_create(parser, name, depth, value, &name_loc, operator);
+        }
+        case PM_IT_LOCAL_VARIABLE_READ_NODE: {
+            pm_constant_id_t name = pm_parser_local_add_constant(parser, "it", 2);
+            pm_node_t *node = (pm_node_t *) pm_local_variable_write_node_create(parser, name, 0, value, &target->location, operator);
+
+            parse_target_implicit_parameter(parser, target);
+            pm_node_destroy(parser, target);
+
+            return node;
         }
         case PM_INSTANCE_VARIABLE_READ_NODE: {
             pm_node_t *write_node = (pm_node_t *) pm_instance_variable_write_node_create(parser, (pm_instance_variable_read_node_t *) target, operator, value);
@@ -13672,7 +13735,7 @@ parse_statements(pm_parser_t *parser, pm_context_t context) {
  */
 static void
 pm_hash_key_static_literals_add(pm_parser_t *parser, pm_static_literals_t *literals, pm_node_t *node) {
-    const pm_node_t *duplicated = pm_static_literals_add(&parser->newline_list, parser->start_line, literals, node);
+    const pm_node_t *duplicated = pm_static_literals_add(&parser->newline_list, parser->start_line, literals, node, true);
 
     if (duplicated != NULL) {
         pm_buffer_t buffer = { 0 };
@@ -13698,13 +13761,16 @@ pm_hash_key_static_literals_add(pm_parser_t *parser, pm_static_literals_t *liter
  */
 static void
 pm_when_clause_static_literals_add(pm_parser_t *parser, pm_static_literals_t *literals, pm_node_t *node) {
-    if (pm_static_literals_add(&parser->newline_list, parser->start_line, literals, node) != NULL) {
+    pm_node_t *previous;
+
+    if ((previous = pm_static_literals_add(&parser->newline_list, parser->start_line, literals, node, false)) != NULL) {
         pm_diagnostic_list_append_format(
             &parser->warning_list,
             node->location.start,
             node->location.end,
             PM_WARN_DUPLICATED_WHEN_CLAUSE,
-            pm_newline_list_line_column(&parser->newline_list, node->location.start, parser->start_line).line
+            pm_newline_list_line_column(&parser->newline_list, node->location.start, parser->start_line).line,
+            pm_newline_list_line_column(&parser->newline_list, previous->location.start, parser->start_line).line
         );
     }
 }
@@ -14819,37 +14885,107 @@ parse_block_parameters(
 }
 
 /**
+ * Return true if any of the visible scopes to the current context are using
+ * numbered parameters.
+ */
+static bool
+outer_scope_using_numbered_parameters_p(pm_parser_t *parser) {
+    for (pm_scope_t *scope = parser->current_scope->previous; scope != NULL && !scope->closed; scope = scope->previous) {
+        if (scope->parameters & PM_SCOPE_PARAMETERS_NUMBERED_FOUND) return true;
+    }
+
+    return false;
+}
+
+/**
+ * These are the names of the various numbered parameters. We have them here so
+ * that when we insert them into the constant pool we can use a constant string
+ * and not have to allocate.
+ */
+static const char * const pm_numbered_parameter_names[] = {
+    "_1", "_2", "_3", "_4", "_5", "_6", "_7", "_8", "_9"
+};
+
+/**
  * Return the node that should be used in the parameters field of a block-like
  * (block or lambda) node, depending on the kind of parameters that were
  * declared in the current scope.
  */
 static pm_node_t *
 parse_blocklike_parameters(pm_parser_t *parser, pm_node_t *parameters, const pm_token_t *opening, const pm_token_t *closing) {
-    uint8_t masked = parser->current_scope->parameters & PM_SCOPE_PARAMETERS_TYPE_MASK;
+    pm_node_list_t *implicit_parameters = &parser->current_scope->implicit_parameters;
 
-    if (masked == PM_SCOPE_PARAMETERS_NONE) {
-        assert(parameters == NULL);
-        return NULL;
-    } else if (masked == PM_SCOPE_PARAMETERS_ORDINARY) {
-        assert(parameters != NULL);
-        return parameters;
-    } else if (masked == PM_SCOPE_PARAMETERS_NUMBERED) {
-        assert(parameters == NULL);
+    // If we have ordinary parameters, then we will return them as the set of
+    // parameters.
+    if (parameters != NULL) {
+        // If we also have implicit parameters, then this is an error.
+        if (implicit_parameters->size > 0) {
+            pm_node_t *node = implicit_parameters->nodes[0];
 
-        int8_t maximum = parser->current_scope->numbered_parameters;
-        if (maximum > 0) {
-            const pm_location_t location = { .start = opening->start, .end = closing->end };
-            return (pm_node_t *) pm_numbered_parameters_node_create(parser, &location, (uint8_t) maximum);
+            if (PM_NODE_TYPE_P(node, PM_LOCAL_VARIABLE_READ_NODE)) {
+                pm_parser_err_node(parser, node, PM_ERR_NUMBERED_PARAMETER_ORDINARY);
+            } else if (PM_NODE_TYPE_P(node, PM_IT_LOCAL_VARIABLE_READ_NODE)) {
+                pm_parser_err_node(parser, node, PM_ERR_IT_NOT_ALLOWED_ORDINARY);
+            } else {
+                assert(false && "unreachable");
+            }
         }
 
-        return NULL;
-    } else if (masked == PM_SCOPE_PARAMETERS_IT) {
-        assert(parameters == NULL);
-        return (pm_node_t *) pm_it_parameters_node_create(parser, opening, closing);
-    } else {
-        assert(false && "unreachable");
+        return parameters;
+    }
+
+    // If we don't have any implicit parameters, then the set of parameters is
+    // NULL.
+    if (implicit_parameters->size == 0) {
         return NULL;
     }
+
+    // If we don't have ordinary parameters, then we now must validate our set
+    // of implicit parameters. We can only have numbered parameters or it, but
+    // they cannot be mixed.
+    uint8_t numbered_parameter = 0;
+    bool it_parameter = false;
+
+    for (size_t index = 0; index < implicit_parameters->size; index++) {
+        pm_node_t *node = implicit_parameters->nodes[index];
+
+        if (PM_NODE_TYPE_P(node, PM_LOCAL_VARIABLE_READ_NODE)) {
+            if (it_parameter) {
+                pm_parser_err_node(parser, node, PM_ERR_NUMBERED_PARAMETER_IT);
+            } else if (outer_scope_using_numbered_parameters_p(parser)) {
+                pm_parser_err_node(parser, node, PM_ERR_NUMBERED_PARAMETER_OUTER_BLOCK);
+            } else if (parser->current_scope->parameters & PM_SCOPE_PARAMETERS_NUMBERED_INNER) {
+                pm_parser_err_node(parser, node, PM_ERR_NUMBERED_PARAMETER_INNER_BLOCK);
+            } else if (pm_token_is_numbered_parameter(node->location.start, node->location.end)) {
+                numbered_parameter = MAX(numbered_parameter, (uint8_t) (node->location.start[1] - '0'));
+            } else {
+                assert(false && "unreachable");
+            }
+        } else if (PM_NODE_TYPE_P(node, PM_IT_LOCAL_VARIABLE_READ_NODE)) {
+            if (numbered_parameter > 0) {
+                pm_parser_err_node(parser, node, PM_ERR_IT_NOT_ALLOWED_NUMBERED);
+            } else {
+                it_parameter = true;
+            }
+        }
+    }
+
+    if (numbered_parameter > 0) {
+        // Go through the parent scopes and mark them as being disallowed from
+        // using numbered parameters because this inner scope is using them.
+        for (pm_scope_t *scope = parser->current_scope->previous; scope != NULL && !scope->closed; scope = scope->previous) {
+            scope->parameters |= PM_SCOPE_PARAMETERS_NUMBERED_INNER;
+        }
+
+        const pm_location_t location = { .start = opening->start, .end = closing->end };
+        return (pm_node_t *) pm_numbered_parameters_node_create(parser, &location, numbered_parameter);
+    }
+
+    if (it_parameter) {
+        return (pm_node_t *) pm_it_parameters_node_create(parser, opening, closing);
+    }
+
+    return NULL;
 }
 
 /**
@@ -14866,9 +15002,6 @@ parse_block(pm_parser_t *parser) {
     pm_block_parameters_node_t *block_parameters = NULL;
 
     if (accept1(parser, PM_TOKEN_PIPE)) {
-        assert(parser->current_scope->parameters == PM_SCOPE_PARAMETERS_NONE);
-        parser->current_scope->parameters = PM_SCOPE_PARAMETERS_ORDINARY;
-
         pm_token_t block_parameters_opening = parser->previous;
         if (match1(parser, PM_TOKEN_PIPE)) {
             block_parameters = pm_block_parameters_node_create(parser, NULL, &block_parameters_opening);
@@ -15366,7 +15499,7 @@ parse_conditional(pm_parser_t *parser, pm_context_t context) {
 #define PM_CASE_WRITABLE PM_CLASS_VARIABLE_READ_NODE: case PM_CONSTANT_PATH_NODE: \
     case PM_CONSTANT_READ_NODE: case PM_GLOBAL_VARIABLE_READ_NODE: case PM_LOCAL_VARIABLE_READ_NODE: \
     case PM_INSTANCE_VARIABLE_READ_NODE: case PM_MULTI_TARGET_NODE: case PM_BACK_REFERENCE_READ_NODE: \
-    case PM_NUMBERED_REFERENCE_READ_NODE
+    case PM_NUMBERED_REFERENCE_READ_NODE: case PM_IT_LOCAL_VARIABLE_READ_NODE
 
 // Assert here that the flags are the same so that we can safely switch the type
 // of the node without having to move the flags.
@@ -15786,74 +15919,43 @@ parse_alias_argument(pm_parser_t *parser, bool first) {
 }
 
 /**
- * Return true if any of the visible scopes to the current context are using
- * numbered parameters.
- */
-static bool
-outer_scope_using_numbered_parameters_p(pm_parser_t *parser) {
-    for (pm_scope_t *scope = parser->current_scope->previous; scope != NULL && !scope->closed; scope = scope->previous) {
-        if (scope->numbered_parameters > 0) return true;
-    }
-
-    return false;
-}
-
-/**
- * These are the names of the various numbered parameters. We have them here so
- * that when we insert them into the constant pool we can use a constant string
- * and not have to allocate.
- */
-static const char * const pm_numbered_parameter_names[] = {
-    "_1", "_2", "_3", "_4", "_5", "_6", "_7", "_8", "_9"
-};
-
-/**
  * Parse an identifier into either a local variable read. If the local variable
  * is not found, it returns NULL instead.
  */
-static pm_local_variable_read_node_t *
+static pm_node_t *
 parse_variable(pm_parser_t *parser) {
+    pm_constant_id_t name_id = pm_parser_constant_id_token(parser, &parser->previous);
     int depth;
-    if ((depth = pm_parser_local_depth(parser, &parser->previous)) != -1) {
-        return pm_local_variable_read_node_create(parser, &parser->previous, (uint32_t) depth);
+
+    if ((depth = pm_parser_local_depth_constant_id(parser, name_id)) != -1) {
+        return (pm_node_t *) pm_local_variable_read_node_create_constant_id(parser, &parser->previous, name_id, (uint32_t) depth, false);
     }
 
     pm_scope_t *current_scope = parser->current_scope;
-    if (!current_scope->closed && current_scope->numbered_parameters != PM_SCOPE_NUMBERED_PARAMETERS_DISALLOWED && pm_token_is_numbered_parameter(parser->previous.start, parser->previous.end)) {
-        // Now that we know we have a numbered parameter, we need to check
-        // if it's allowed in this context. If it is, then we will create a
-        // local variable read. If it's not, then we'll create a normal call
-        // node but add an error.
-        if (current_scope->parameters & PM_SCOPE_PARAMETERS_ORDINARY) {
-            pm_parser_err_previous(parser, PM_ERR_NUMBERED_PARAMETER_ORDINARY);
-        } else if (current_scope->parameters & PM_SCOPE_PARAMETERS_IT) {
-            pm_parser_err_previous(parser, PM_ERR_NUMBERED_PARAMETER_IT);
-        } else if (outer_scope_using_numbered_parameters_p(parser)) {
-            pm_parser_err_previous(parser, PM_ERR_NUMBERED_PARAMETER_OUTER_SCOPE);
-        } else {
-            // Indicate that this scope is using numbered params so that child
-            // scopes cannot. We subtract the value for the character '0' to get
-            // the actual integer value of the number (only _1 through _9 are
-            // valid).
-            int8_t numbered_parameters = (int8_t) (parser->previous.start[1] - '0');
-            current_scope->parameters |= PM_SCOPE_PARAMETERS_NUMBERED;
-
-            if (numbered_parameters > current_scope->numbered_parameters) {
-                current_scope->numbered_parameters = numbered_parameters;
+    if (!current_scope->closed && !(current_scope->parameters & PM_SCOPE_PARAMETERS_IMPLICIT_DISALLOWED)) {
+        if (pm_token_is_numbered_parameter(parser->previous.start, parser->previous.end)) {
+            // When you use a numbered parameter, it implies the existence of
+            // all of the locals that exist before it. For example, referencing
+            // _2 means that _1 must exist. Therefore here we loop through all
+            // of the possibilities and add them into the constant pool.
+            uint8_t maximum = (uint8_t) (parser->previous.start[1] - '0');
+            for (uint8_t number = 1; number <= maximum; number++) {
+                pm_parser_local_add_constant(parser, pm_numbered_parameter_names[number - 1], 2);
             }
 
-            // When you use a numbered parameter, it implies the existence
-            // of all of the locals that exist before it. For example,
-            // referencing _2 means that _1 must exist. Therefore here we
-            // loop through all of the possibilities and add them into the
-            // constant pool.
-            for (int8_t numbered_param = 1; numbered_param <= numbered_parameters - 1; numbered_param++) {
-                pm_parser_local_add_constant(parser, pm_numbered_parameter_names[numbered_param - 1], 2);
+            if (!match1(parser, PM_TOKEN_EQUAL)) {
+                parser->current_scope->parameters |= PM_SCOPE_PARAMETERS_NUMBERED_FOUND;
             }
 
-            // Finally we can create the local variable read node.
-            pm_constant_id_t name_id = pm_parser_local_add_constant(parser, pm_numbered_parameter_names[numbered_parameters - 1], 2);
-            return pm_local_variable_read_node_create_constant_id(parser, &parser->previous, name_id, 0, false);
+            pm_node_t *node = (pm_node_t *) pm_local_variable_read_node_create_constant_id(parser, &parser->previous, name_id, 0, false);
+            pm_node_list_append(&current_scope->implicit_parameters, node);
+
+            return node;
+        } else if ((parser->version != PM_OPTIONS_VERSION_CRUBY_3_3) && pm_token_is_it(parser->previous.start, parser->previous.end)) {
+            pm_node_t *node = (pm_node_t *) pm_it_local_variable_read_node_create(parser, &parser->previous);
+            pm_node_list_append(&current_scope->implicit_parameters, node);
+
+            return node;
         }
     }
 
@@ -15868,8 +15970,8 @@ parse_variable_call(pm_parser_t *parser) {
     pm_node_flags_t flags = 0;
 
     if (!match1(parser, PM_TOKEN_PARENTHESIS_LEFT) && (parser->previous.end[-1] != '!') && (parser->previous.end[-1] != '?')) {
-        pm_local_variable_read_node_t *node = parse_variable(parser);
-        if (node != NULL) return (pm_node_t *) node;
+        pm_node_t *node = parse_variable(parser);
+        if (node != NULL) return node;
         flags |= PM_CALL_NODE_FLAGS_VARIABLE_CALL;
     }
 
@@ -16269,7 +16371,7 @@ parse_pattern_hash_implicit_value(pm_parser_t *parser, pm_constant_id_list_t *ca
  */
 static void
 parse_pattern_hash_key(pm_parser_t *parser, pm_static_literals_t *keys, pm_node_t *node) {
-    if (pm_static_literals_add(&parser->newline_list, parser->start_line, keys, node) != NULL) {
+    if (pm_static_literals_add(&parser->newline_list, parser->start_line, keys, node, true) != NULL) {
         pm_parser_err_node(parser, node, PM_ERR_PATTERN_HASH_KEY_DUPLICATE);
     }
 }
@@ -16557,19 +16659,8 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
                     pm_node_t *variable = (pm_node_t *) parse_variable(parser);
 
                     if (variable == NULL) {
-                        if (
-                            (parser->version != PM_OPTIONS_VERSION_CRUBY_3_3) &&
-                            !parser->current_scope->closed &&
-                            (parser->current_scope->numbered_parameters != PM_SCOPE_NUMBERED_PARAMETERS_DISALLOWED) &&
-                            pm_token_is_it(parser->previous.start, parser->previous.end)
-                        ) {
-                            pm_local_variable_read_node_t *read = pm_local_variable_read_node_create_it(parser, &parser->previous);
-                            if (read == NULL) read = pm_local_variable_read_node_create(parser, &parser->previous, 0);
-                            variable = (pm_node_t *) read;
-                        } else {
-                            PM_PARSER_ERR_TOKEN_FORMAT_CONTENT(parser, parser->previous, PM_ERR_NO_LOCAL_VARIABLE);
-                            variable = (pm_node_t *) pm_local_variable_read_node_missing_create(parser, &parser->previous, 0);
-                        }
+                        PM_PARSER_ERR_TOKEN_FORMAT_CONTENT(parser, parser->previous, PM_ERR_NO_LOCAL_VARIABLE);
+                        variable = (pm_node_t *) pm_local_variable_read_node_missing_create(parser, &parser->previous, 0);
                     }
 
                     return (pm_node_t *) pm_pinned_variable_node_create(parser, &operator, variable);
@@ -16864,10 +16955,12 @@ parse_negative_numeric(pm_node_t *node) {
             cast->value = -cast->value;
             break;
         }
-        case PM_RATIONAL_NODE:
-            node->location.start--;
-            parse_negative_numeric(((pm_rational_node_t *) node)->numeric);
+        case PM_RATIONAL_NODE: {
+            pm_rational_node_t *cast = (pm_rational_node_t *) node;
+            cast->base.location.start--;
+            cast->numerator.negative = true;
             break;
+        }
         case PM_IMAGINARY_NODE:
             node->location.start--;
             parse_negative_numeric(((pm_imaginary_node_t *) node)->numeric);
@@ -17317,8 +17410,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     break;
                 }
 
-                if (pm_array_node_size(array) != 0) {
-                    expect1(parser, PM_TOKEN_COMMA, PM_ERR_ARRAY_SEPARATOR);
+                // Ensure that we have a comma between elements in the array.
+                if ((pm_array_node_size(array) != 0) && !accept1(parser, PM_TOKEN_COMMA)) {
+                    const uint8_t *location = parser->previous.end;
+                    PM_PARSER_ERR_FORMAT(parser, location, location, PM_ERR_ARRAY_SEPARATOR, pm_token_type_human(parser->current.type));
+
+                    parser->previous.start = location;
+                    parser->previous.type = PM_TOKEN_MISSING;
                 }
 
                 // If we have a right bracket immediately following a comma,
@@ -17746,8 +17844,28 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 ) {
                     pm_arguments_t arguments = { 0 };
                     parse_arguments_list(parser, &arguments, true, accepts_command_call);
-
                     pm_call_node_t *fcall = pm_call_node_fcall_create(parser, &identifier, &arguments);
+
+                    if (PM_NODE_TYPE_P(node, PM_IT_LOCAL_VARIABLE_READ_NODE)) {
+                        // If we're about to convert an 'it' implicit local
+                        // variable read into a method call, we need to remove
+                        // it from the list of implicit local variables.
+                        parse_target_implicit_parameter(parser, node);
+                    } else {
+                        // Otherwise, we're about to convert a regular local
+                        // variable read into a method call, in which case we
+                        // need to indicate that this was not a read for the
+                        // purposes of warnings.
+                        assert(PM_NODE_TYPE_P(node, PM_LOCAL_VARIABLE_READ_NODE));
+
+                        if (pm_token_is_numbered_parameter(identifier.start, identifier.end)) {
+                            parse_target_implicit_parameter(parser, node);
+                        } else {
+                            pm_local_variable_read_node_t *cast = (pm_local_variable_read_node_t *) node;
+                            pm_locals_unread(&pm_parser_scope_find(parser, cast->depth)->locals, cast->name);
+                        }
+                    }
+
                     pm_node_destroy(parser, node);
                     return (pm_node_t *) fcall;
                 }
@@ -17755,31 +17873,6 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if ((binding_power == PM_BINDING_POWER_STATEMENT) && match1(parser, PM_TOKEN_COMMA)) {
                 node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
-            } else {
-                // Check if `it` is not going to be assigned.
-                switch (parser->current.type) {
-                    case PM_TOKEN_AMPERSAND_AMPERSAND_EQUAL:
-                    case PM_TOKEN_AMPERSAND_EQUAL:
-                    case PM_TOKEN_CARET_EQUAL:
-                    case PM_TOKEN_EQUAL:
-                    case PM_TOKEN_GREATER_GREATER_EQUAL:
-                    case PM_TOKEN_LESS_LESS_EQUAL:
-                    case PM_TOKEN_MINUS_EQUAL:
-                    case PM_TOKEN_PARENTHESIS_RIGHT:
-                    case PM_TOKEN_PERCENT_EQUAL:
-                    case PM_TOKEN_PIPE_EQUAL:
-                    case PM_TOKEN_PIPE_PIPE_EQUAL:
-                    case PM_TOKEN_PLUS_EQUAL:
-                    case PM_TOKEN_SLASH_EQUAL:
-                    case PM_TOKEN_STAR_EQUAL:
-                    case PM_TOKEN_STAR_STAR_EQUAL:
-                        break;
-                    default:
-                        // Once we know it's neither a method call nor an
-                        // assignment, we can finally create `it` default
-                        // parameter.
-                        node = pm_node_check_it(parser, node);
-                }
             }
 
             return node;
@@ -18040,6 +18133,8 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                             // as frozen because when clause strings are frozen.
                             if (PM_NODE_TYPE_P(condition, PM_STRING_NODE)) {
                                 pm_node_flag_set(condition, PM_STRING_FLAGS_FROZEN | PM_NODE_FLAG_STATIC_LITERAL);
+                            } else if (PM_NODE_TYPE_P(condition, PM_SOURCE_FILE_NODE)) {
+                                pm_node_flag_set(condition, PM_NODE_FLAG_STATIC_LITERAL);
                             }
 
                             pm_when_clause_static_literals_add(parser, &literals, condition);
@@ -18445,7 +18540,6 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
                     if (match2(parser, PM_TOKEN_DOT, PM_TOKEN_COLON_COLON)) {
                         receiver = parse_variable_call(parser);
-                        receiver = pm_node_check_it(parser, receiver);
 
                         pm_parser_scope_push(parser, true);
                         lex_state_set(parser, PM_LEX_STATE_FNAME);
@@ -19641,9 +19735,6 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             switch (parser->current.type) {
                 case PM_TOKEN_PARENTHESIS_LEFT: {
-                    assert(parser->current_scope->parameters == PM_SCOPE_PARAMETERS_NONE);
-                    parser->current_scope->parameters = PM_SCOPE_PARAMETERS_ORDINARY;
-
                     pm_token_t opening = parser->current;
                     parser_lex(parser);
 
@@ -19660,9 +19751,6 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     break;
                 }
                 case PM_CASE_PARAMETER: {
-                    assert(parser->current_scope->parameters == PM_SCOPE_PARAMETERS_NONE);
-                    parser->current_scope->parameters = PM_SCOPE_PARAMETERS_ORDINARY;
-
                     pm_accepts_block_stack_push(parser, false);
                     pm_token_t opening = not_provided(parser);
                     block_parameters = parse_block_parameters(parser, false, &opening, true);
@@ -20114,7 +20202,6 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     return result;
                 }
                 case PM_CALL_NODE: {
-                    parser_lex(parser);
                     pm_call_node_t *cast = (pm_call_node_t *) node;
 
                     // If we have a vcall (a method with no arguments and no
@@ -20125,12 +20212,18 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                         pm_refute_numbered_parameter(parser, message_loc->start, message_loc->end);
 
                         pm_constant_id_t constant_id = pm_parser_local_add_location(parser, message_loc->start, message_loc->end, 1);
+                        parser_lex(parser);
+
                         pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
                         pm_node_t *result = (pm_node_t *) pm_local_variable_and_write_node_create(parser, (pm_node_t *) cast, &token, value, constant_id, 0);
 
                         pm_node_destroy(parser, (pm_node_t *) cast);
                         return result;
                     }
+
+                    // Move past the token here so that we have already added
+                    // the local variable by this point.
+                    parser_lex(parser);
 
                     // If there is no call operator and the message is "[]" then
                     // this is an aref expression, and we can transform it into
@@ -20227,7 +20320,6 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     return result;
                 }
                 case PM_CALL_NODE: {
-                    parser_lex(parser);
                     pm_call_node_t *cast = (pm_call_node_t *) node;
 
                     // If we have a vcall (a method with no arguments and no
@@ -20238,12 +20330,18 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                         pm_refute_numbered_parameter(parser, message_loc->start, message_loc->end);
 
                         pm_constant_id_t constant_id = pm_parser_local_add_location(parser, message_loc->start, message_loc->end, 1);
+                        parser_lex(parser);
+
                         pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
                         pm_node_t *result = (pm_node_t *) pm_local_variable_or_write_node_create(parser, (pm_node_t *) cast, &token, value, constant_id, 0);
 
                         pm_node_destroy(parser, (pm_node_t *) cast);
                         return result;
                     }
+
+                    // Move past the token here so that we have already added
+                    // the local variable by this point.
+                    parser_lex(parser);
 
                     // If there is no call operator and the message is "[]" then
                     // this is an aref expression, and we can transform it into
@@ -20654,7 +20752,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
 
                     if (
                         (parser->current.type == PM_TOKEN_PARENTHESIS_LEFT) ||
-                        (token_begins_expression_p(parser->current.type) || match3(parser, PM_TOKEN_UAMPERSAND, PM_TOKEN_USTAR, PM_TOKEN_USTAR_STAR))
+                        (accepts_command_call && (token_begins_expression_p(parser->current.type) || match3(parser, PM_TOKEN_UAMPERSAND, PM_TOKEN_USTAR, PM_TOKEN_USTAR_STAR)))
                     ) {
                         // If we have a constant immediately following a '::' operator, then
                         // this can either be a constant path or a method call, depending on
@@ -21197,7 +21295,7 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
 
             // Scopes given from the outside are not allowed to have numbered
             // parameters.
-            parser->current_scope->numbered_parameters = PM_SCOPE_NUMBERED_PARAMETERS_DISALLOWED;
+            parser->current_scope->parameters |= PM_SCOPE_PARAMETERS_IMPLICIT_DISALLOWED;
 
             for (size_t local_index = 0; local_index < scope->locals_count; local_index++) {
                 const pm_string_t *local = pm_options_scope_local_get(scope, local_index);
@@ -21585,365 +21683,3 @@ pm_serialize_parse_comments(pm_buffer_t *buffer, const uint8_t *source, size_t s
 }
 
 #endif
-
-/** An error that is going to be formatted into the output. */
-typedef struct {
-    /** A pointer to the diagnostic that was generated during parsing. */
-    pm_diagnostic_t *error;
-
-    /** The start line of the diagnostic message. */
-    int32_t line;
-
-    /** The column start of the diagnostic message. */
-    uint32_t column_start;
-
-    /** The column end of the diagnostic message. */
-    uint32_t column_end;
-} pm_error_t;
-
-/** The format that will be used to format the errors into the output. */
-typedef struct {
-    /** The prefix that will be used for line numbers. */
-    const char *number_prefix;
-
-    /** The prefix that will be used for blank lines. */
-    const char *blank_prefix;
-
-    /** The divider that will be used between sections of source code. */
-    const char *divider;
-
-    /** The length of the blank prefix. */
-    size_t blank_prefix_length;
-
-    /** The length of the divider. */
-    size_t divider_length;
-} pm_error_format_t;
-
-#define PM_COLOR_GRAY "\033[38;5;102m"
-#define PM_COLOR_RED "\033[1;31m"
-#define PM_COLOR_RESET "\033[m"
-#define PM_ERROR_TRUNCATE 30
-
-static inline pm_error_t *
-pm_parser_errors_format_sort(const pm_parser_t *parser, const pm_list_t *error_list, const pm_newline_list_t *newline_list) {
-    pm_error_t *errors = xcalloc(error_list->size, sizeof(pm_error_t));
-    if (errors == NULL) return NULL;
-
-    int32_t start_line = parser->start_line;
-    for (pm_diagnostic_t *error = (pm_diagnostic_t *) error_list->head; error != NULL; error = (pm_diagnostic_t *) error->node.next) {
-        pm_line_column_t start = pm_newline_list_line_column(newline_list, error->location.start, start_line);
-        pm_line_column_t end = pm_newline_list_line_column(newline_list, error->location.end, start_line);
-
-        // We're going to insert this error into the array in sorted order. We
-        // do this by finding the first error that has a line number greater
-        // than the current error and then inserting the current error before
-        // that one.
-        size_t index = 0;
-        while (
-            (index < error_list->size) &&
-            (errors[index].error != NULL) &&
-            (
-                (errors[index].line < start.line) ||
-                ((errors[index].line == start.line) && (errors[index].column_start < start.column))
-            )
-        ) index++;
-
-        // Now we're going to shift all of the errors after this one down one
-        // index to make room for the new error.
-        if (index + 1 < error_list->size) {
-            memmove(&errors[index + 1], &errors[index], sizeof(pm_error_t) * (error_list->size - index - 1));
-        }
-
-        // Finally, we'll insert the error into the array.
-        uint32_t column_end;
-        if (start.line == end.line) {
-            column_end = end.column;
-        } else {
-            column_end = (uint32_t) (newline_list->offsets[start.line - start_line + 1] - newline_list->offsets[start.line - start_line] - 1);
-        }
-
-        // Ensure we have at least one column of error.
-        if (start.column == column_end) column_end++;
-
-        errors[index] = (pm_error_t) {
-            .error = error,
-            .line = start.line,
-            .column_start = start.column,
-            .column_end = column_end
-        };
-    }
-
-    return errors;
-}
-
-static inline void
-pm_parser_errors_format_line(const pm_parser_t *parser, const pm_newline_list_t *newline_list, const char *number_prefix, int32_t line, uint32_t column_start, uint32_t column_end, pm_buffer_t *buffer) {
-    int32_t line_delta = line - parser->start_line;
-    assert(line_delta >= 0);
-
-    size_t index = (size_t) line_delta;
-    assert(index < newline_list->size);
-
-    const uint8_t *start = &parser->start[newline_list->offsets[index]];
-    const uint8_t *end;
-
-    if (index >= newline_list->size - 1) {
-        end = parser->end;
-    } else {
-        end = &parser->start[newline_list->offsets[index + 1]];
-    }
-
-    pm_buffer_append_format(buffer, number_prefix, line);
-
-    // Here we determine if we should truncate the end of the line.
-    bool truncate_end = false;
-    if ((column_end != 0) && ((end - (start + column_end)) >= PM_ERROR_TRUNCATE)) {
-        end = start + column_end + PM_ERROR_TRUNCATE;
-        truncate_end = true;
-    }
-
-    // Here we determine if we should truncate the start of the line.
-    if (column_start >= PM_ERROR_TRUNCATE) {
-        pm_buffer_append_string(buffer, "... ", 4);
-        start += column_start;
-    }
-
-    pm_buffer_append_string(buffer, (const char *) start, (size_t) (end - start));
-
-    if (truncate_end) {
-        pm_buffer_append_string(buffer, " ...\n", 5);
-    } else if (end == parser->end && end[-1] != '\n') {
-        pm_buffer_append_string(buffer, "\n", 1);
-    }
-}
-
-/**
- * Format the errors on the parser into the given buffer.
- */
-PRISM_EXPORTED_FUNCTION void
-pm_parser_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, pm_buffer_t *buffer, bool colorize, bool inline_messages) {
-    assert(error_list->size != 0);
-
-    // First, we're going to sort all of the errors by line number using an
-    // insertion sort into a newly allocated array.
-    const int32_t start_line = parser->start_line;
-    const pm_newline_list_t *newline_list = &parser->newline_list;
-
-    pm_error_t *errors = pm_parser_errors_format_sort(parser, error_list, newline_list);
-    if (errors == NULL) return;
-
-    // Now we're going to determine how we're going to format line numbers and
-    // blank lines based on the maximum number of digits in the line numbers
-    // that are going to be displaid.
-    pm_error_format_t error_format;
-    int32_t first_line_number = errors[0].line;
-    int32_t last_line_number = errors[error_list->size - 1].line;
-
-    // If we have a maximum line number that is negative, then we're going to
-    // use the absolute value for comparison but multiple by 10 to additionally
-    // have a column for the negative sign.
-    if (first_line_number < 0) first_line_number = (-first_line_number) * 10;
-    if (last_line_number < 0) last_line_number = (-last_line_number) * 10;
-    int32_t max_line_number = first_line_number > last_line_number ? first_line_number : last_line_number;
-
-    if (max_line_number < 10) {
-        if (colorize) {
-            error_format = (pm_error_format_t) {
-                .number_prefix = PM_COLOR_GRAY "%1" PRIi32 " | " PM_COLOR_RESET,
-                .blank_prefix = PM_COLOR_GRAY "  | " PM_COLOR_RESET,
-                .divider = PM_COLOR_GRAY "  ~~~~~" PM_COLOR_RESET "\n"
-            };
-        } else {
-            error_format = (pm_error_format_t) {
-                .number_prefix = "%1" PRIi32 " | ",
-                .blank_prefix = "  | ",
-                .divider = "  ~~~~~\n"
-            };
-        }
-    } else if (max_line_number < 100) {
-        if (colorize) {
-            error_format = (pm_error_format_t) {
-                .number_prefix = PM_COLOR_GRAY "%2" PRIi32 " | " PM_COLOR_RESET,
-                .blank_prefix = PM_COLOR_GRAY "   | " PM_COLOR_RESET,
-                .divider = PM_COLOR_GRAY "  ~~~~~~" PM_COLOR_RESET "\n"
-            };
-        } else {
-            error_format = (pm_error_format_t) {
-                .number_prefix = "%2" PRIi32 " | ",
-                .blank_prefix = "   | ",
-                .divider = "  ~~~~~~\n"
-            };
-        }
-    } else if (max_line_number < 1000) {
-        if (colorize) {
-            error_format = (pm_error_format_t) {
-                .number_prefix = PM_COLOR_GRAY "%3" PRIi32 " | " PM_COLOR_RESET,
-                .blank_prefix = PM_COLOR_GRAY "    | " PM_COLOR_RESET,
-                .divider = PM_COLOR_GRAY "  ~~~~~~~" PM_COLOR_RESET "\n"
-            };
-        } else {
-            error_format = (pm_error_format_t) {
-                .number_prefix = "%3" PRIi32 " | ",
-                .blank_prefix = "    | ",
-                .divider = "  ~~~~~~~\n"
-            };
-        }
-    } else if (max_line_number < 10000) {
-        if (colorize) {
-            error_format = (pm_error_format_t) {
-                .number_prefix = PM_COLOR_GRAY "%4" PRIi32 " | " PM_COLOR_RESET,
-                .blank_prefix = PM_COLOR_GRAY "     | " PM_COLOR_RESET,
-                .divider = PM_COLOR_GRAY "  ~~~~~~~~" PM_COLOR_RESET "\n"
-            };
-        } else {
-            error_format = (pm_error_format_t) {
-                .number_prefix = "%4" PRIi32 " | ",
-                .blank_prefix = "     | ",
-                .divider = "  ~~~~~~~~\n"
-            };
-        }
-    } else {
-        if (colorize) {
-            error_format = (pm_error_format_t) {
-                .number_prefix = PM_COLOR_GRAY "%5" PRIi32 " | " PM_COLOR_RESET,
-                .blank_prefix = PM_COLOR_GRAY "      | " PM_COLOR_RESET,
-                .divider = PM_COLOR_GRAY "  ~~~~~~~~" PM_COLOR_RESET "\n"
-            };
-        } else {
-            error_format = (pm_error_format_t) {
-                .number_prefix = "%5" PRIi32 " | ",
-                .blank_prefix = "      | ",
-                .divider = "  ~~~~~~~~\n"
-            };
-        }
-    }
-
-    error_format.blank_prefix_length = strlen(error_format.blank_prefix);
-    error_format.divider_length = strlen(error_format.divider);
-
-    // Now we're going to iterate through every error in our error list and
-    // display it. While we're iterating, we will display some padding lines of
-    // the source before the error to give some context. We'll be careful not to
-    // display the same line twice in case the errors are close enough in the
-    // source.
-    int32_t last_line = parser->start_line - 1;
-    uint32_t last_column_start = 0;
-    const pm_encoding_t *encoding = parser->encoding;
-
-    for (size_t index = 0; index < error_list->size; index++) {
-        pm_error_t *error = &errors[index];
-
-        // Here we determine how many lines of padding of the source to display,
-        // based on the difference from the last line that was displaid.
-        if (error->line - last_line > 1) {
-            if (error->line - last_line > 2) {
-                if ((index != 0) && (error->line - last_line > 3)) {
-                    pm_buffer_append_string(buffer, error_format.divider, error_format.divider_length);
-                }
-
-                pm_buffer_append_string(buffer, "  ", 2);
-                pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line - 2, 0, 0, buffer);
-            }
-
-            pm_buffer_append_string(buffer, "  ", 2);
-            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line - 1, 0, 0, buffer);
-        }
-
-        // If this is the first error or we're on a new line, then we'll display
-        // the line that has the error in it.
-        if ((index == 0) || (error->line != last_line)) {
-            if (colorize) {
-                pm_buffer_append_string(buffer, PM_COLOR_RED "> " PM_COLOR_RESET, 12);
-            } else {
-                pm_buffer_append_string(buffer, "> ", 2);
-            }
-
-            last_column_start = error->column_start;
-
-            // Find the maximum column end of all the errors on this line.
-            uint32_t column_end = error->column_end;
-            for (size_t next_index = index + 1; next_index < error_list->size; next_index++) {
-                if (errors[next_index].line != error->line) break;
-                if (errors[next_index].column_end > column_end) column_end = errors[next_index].column_end;
-            }
-
-            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, error->line, error->column_start, column_end, buffer);
-        }
-
-        const uint8_t *start = &parser->start[newline_list->offsets[error->line - start_line]];
-        if (start == parser->end) pm_buffer_append_byte(buffer, '\n');
-
-        // Now we'll display the actual error message. We'll do this by first
-        // putting the prefix to the line, then a bunch of blank spaces
-        // depending on the column, then as many carets as we need to display
-        // the width of the error, then the error message itself.
-        //
-        // Note that this doesn't take into account the width of the actual
-        // character when displaid in the terminal. For some east-asian
-        // languages or emoji, this means it can be thrown off pretty badly. We
-        // will need to solve this eventually.
-        pm_buffer_append_string(buffer, "  ", 2);
-        pm_buffer_append_string(buffer, error_format.blank_prefix, error_format.blank_prefix_length);
-
-        size_t column = 0;
-        if (last_column_start >= PM_ERROR_TRUNCATE) {
-            pm_buffer_append_string(buffer, "    ", 4);
-            column = last_column_start;
-        }
-
-        while (column < error->column_start) {
-            pm_buffer_append_byte(buffer, ' ');
-
-            size_t char_width = encoding->char_width(start + column, parser->end - (start + column));
-            column += (char_width == 0 ? 1 : char_width);
-        }
-
-        if (colorize) pm_buffer_append_string(buffer, PM_COLOR_RED, 7);
-        pm_buffer_append_byte(buffer, '^');
-
-        size_t char_width = encoding->char_width(start + column, parser->end - (start + column));
-        column += (char_width == 0 ? 1 : char_width);
-
-        while (column < error->column_end) {
-            pm_buffer_append_byte(buffer, '~');
-
-            size_t char_width = encoding->char_width(start + column, parser->end - (start + column));
-            column += (char_width == 0 ? 1 : char_width);
-        }
-
-        if (colorize) pm_buffer_append_string(buffer, PM_COLOR_RESET, 3);
-
-        if (inline_messages) {
-            pm_buffer_append_byte(buffer, ' ');
-            assert(error->error != NULL);
-
-            const char *message = error->error->message;
-            pm_buffer_append_string(buffer, message, strlen(message));
-        }
-
-        pm_buffer_append_byte(buffer, '\n');
-
-        // Here we determine how many lines of padding to display after the
-        // error, depending on where the next error is in source.
-        last_line = error->line;
-        int32_t next_line = (index == error_list->size - 1) ? (((int32_t) newline_list->size) + parser->start_line) : errors[index + 1].line;
-
-        if (next_line - last_line > 1) {
-            pm_buffer_append_string(buffer, "  ", 2);
-            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, ++last_line, 0, 0, buffer);
-        }
-
-        if (next_line - last_line > 1) {
-            pm_buffer_append_string(buffer, "  ", 2);
-            pm_parser_errors_format_line(parser, newline_list, error_format.number_prefix, ++last_line, 0, 0, buffer);
-        }
-    }
-
-    // Finally, we'll free the array of errors that we allocated.
-    xfree(errors);
-}
-
-#undef PM_ERROR_TRUNCATE
-#undef PM_COLOR_GRAY
-#undef PM_COLOR_RED
-#undef PM_COLOR_RESET
