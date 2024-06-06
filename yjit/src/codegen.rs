@@ -30,7 +30,6 @@ pub use crate::virtualmem::CodePtr;
 /// Status returned by code generation functions
 #[derive(PartialEq, Debug)]
 enum CodegenStatus {
-    SkipNextInsn,
     KeepCompiling,
     EndBlock,
 }
@@ -195,6 +194,13 @@ impl JITState {
     // Get the index of the next instruction
     fn next_insn_idx(&self) -> u16 {
         self.insn_idx + insn_len(self.get_opcode()) as u16
+    }
+
+    /// Get the index of the next instruction of the next instruction
+    fn next_next_insn_idx(&self) -> u16 {
+        let next_pc = unsafe { rb_iseq_pc_at_idx(self.iseq, self.next_insn_idx().into()) };
+        let next_opcode: usize = unsafe { rb_iseq_opcode_at_pc(self.iseq, next_pc) }.try_into().unwrap();
+        self.next_insn_idx() + insn_len(next_opcode) as u16
     }
 
     // Check if we are compiling the instruction at the stub PC
@@ -1098,7 +1104,16 @@ fn jump_to_next_insn(
     jit: &mut JITState,
     asm: &mut Assembler,
     ocb: &mut OutlinedCb,
-) -> Option<()> {
+) -> Option<CodegenStatus> {
+    end_block_with_jump(jit, asm, ocb, jit.next_insn_idx())
+}
+
+fn end_block_with_jump(
+    jit: &mut JITState,
+    asm: &mut Assembler,
+    ocb: &mut OutlinedCb,
+    continuation_insn_idx: u16,
+) -> Option<CodegenStatus> {
     // Reset the depth since in current usages we only ever jump to
     // chain_depth > 0 from the same instruction.
     let mut reset_depth = asm.ctx;
@@ -1106,20 +1121,20 @@ fn jump_to_next_insn(
 
     let jump_block = BlockId {
         iseq: jit.iseq,
-        idx: jit.next_insn_idx(),
+        idx: continuation_insn_idx,
     };
 
     // We are at the end of the current instruction. Record the boundary.
     if jit.record_boundary_patch_point {
         jit.record_boundary_patch_point = false;
-        let exit_pc = unsafe { jit.pc.offset(insn_len(jit.opcode).try_into().unwrap()) };
+        let exit_pc = unsafe { rb_iseq_pc_at_idx(jit.iseq, continuation_insn_idx.into())};
         let exit_pos = gen_outlined_exit(exit_pc, &reset_depth, ocb);
         record_global_inval_patch(asm, exit_pos?);
     }
 
     // Generate the jump instruction
     gen_direct_jump(jit, &reset_depth, jump_block, asm);
-    Some(())
+    Some(EndBlock)
 }
 
 // Compile a sequence of bytecode instructions for a given basic block version.
@@ -1282,13 +1297,6 @@ pub fn gen_single_block(
 
         // Move to the next instruction to compile
         insn_idx += insn_len(opcode) as u16;
-
-        // Move past next instruction when instructed
-        if status == Some(SkipNextInsn) {
-            let next_pc = unsafe { rb_iseq_pc_at_idx(iseq, insn_idx.into()) };
-            let next_opcode: usize = unsafe { rb_iseq_opcode_at_pc(iseq, next_pc) }.try_into().unwrap();
-            insn_idx += insn_len(next_opcode) as u16;
-        }
 
         // If the instruction terminates this block
         if status == Some(EndBlock) {
@@ -1519,7 +1527,7 @@ fn fuse_putobject_opt_ltlt(
 
         asm.stack_pop(1);
         fixnum_left_shift_body(asm, lhs, shift_amt as u64);
-        return Some(SkipNextInsn);
+        return end_block_with_jump(jit, asm, ocb, jit.next_next_insn_idx());
     }
     return None;
 }
@@ -2962,7 +2970,7 @@ fn gen_set_ivar(
     // The current shape doesn't contain this iv, we need to transition to another shape.
     let new_shape = if !shape_too_complex && receiver_t_object && ivar_index.is_none() {
         let current_shape = comptime_receiver.shape_of();
-        let next_shape = unsafe { rb_shape_get_next(current_shape, comptime_receiver, ivar_name) };
+        let next_shape = unsafe { rb_shape_get_next_no_warnings(current_shape, comptime_receiver, ivar_name) };
         let next_shape_id = unsafe { rb_shape_id(next_shape) };
 
         // If the VM ran out of shapes, or this class generated too many leaf,
@@ -6953,20 +6961,20 @@ fn push_splat_args(required_args: u32, asm: &mut Assembler) {
     asm.cmp(array_len_opnd, required_args.into());
     asm.jne(Target::side_exit(Counter::guard_send_splatarray_length_not_equal));
 
-    asm_comment!(asm, "Check last argument is not ruby2keyword hash");
+    // Check last element of array if present
+    if required_args > 0 {
+        asm_comment!(asm, "Check last argument is not ruby2keyword hash");
 
-    // Need to repeat this here to deal with register allocation
-    let array_reg = asm.load(asm.stack_opnd(0));
-
-    let ary_opnd = get_array_ptr(asm, array_reg);
-
-    let last_array_value = asm.load(Opnd::mem(64, ary_opnd, (required_args as i32 - 1) * (SIZEOF_VALUE as i32)));
-
-    guard_object_is_not_ruby2_keyword_hash(
-        asm,
-        last_array_value,
-        Counter::guard_send_splatarray_last_ruby2_keywords,
-    );
+        // Need to repeat this here to deal with register allocation
+        let array_reg = asm.load(asm.stack_opnd(0));
+        let ary_opnd = get_array_ptr(asm, array_reg);
+        let last_array_value = asm.load(Opnd::mem(64, ary_opnd, (required_args as i32 - 1) * (SIZEOF_VALUE as i32)));
+        guard_object_is_not_ruby2_keyword_hash(
+            asm,
+            last_array_value,
+            Counter::guard_send_splatarray_last_ruby2_keywords,
+        );
+    }
 
     asm_comment!(asm, "Push arguments from array");
     let array_opnd = asm.stack_pop(1);
