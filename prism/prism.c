@@ -14,180 +14,6 @@ pm_version(void) {
  */
 #define PM_TAB_WHITESPACE_SIZE 8
 
-#ifndef PM_DEBUG_LOGGING
-/**
- * Debugging logging will provide you with additional debugging functions as
- * well as automatically replace some functions with their debugging
- * counterparts.
- */
-#define PM_DEBUG_LOGGING 0
-#endif
-
-#if PM_DEBUG_LOGGING
-
-/******************************************************************************/
-/* Debugging                                                                  */
-/******************************************************************************/
-
-PRISM_ATTRIBUTE_UNUSED static const char *
-debug_context(pm_context_t context) {
-    switch (context) {
-        case PM_CONTEXT_BEGIN: return "BEGIN";
-        case PM_CONTEXT_BEGIN_ENSURE: return "BEGIN_ENSURE";
-        case PM_CONTEXT_BEGIN_ELSE: return "BEGIN_ELSE";
-        case PM_CONTEXT_BEGIN_RESCUE: return "BEGIN_RESCUE";
-        case PM_CONTEXT_BLOCK_BRACES: return "BLOCK_BRACES";
-        case PM_CONTEXT_BLOCK_KEYWORDS: return "BLOCK_KEYWORDS";
-        case PM_CONTEXT_BLOCK_ENSURE: return "BLOCK_ENSURE";
-        case PM_CONTEXT_BLOCK_ELSE: return "BLOCK_ELSE";
-        case PM_CONTEXT_BLOCK_RESCUE: return "BLOCK_RESCUE";
-        case PM_CONTEXT_CASE_IN: return "CASE_IN";
-        case PM_CONTEXT_CASE_WHEN: return "CASE_WHEN";
-        case PM_CONTEXT_CLASS: return "CLASS";
-        case PM_CONTEXT_CLASS_ELSE: return "CLASS_ELSE";
-        case PM_CONTEXT_CLASS_ENSURE: return "CLASS_ENSURE";
-        case PM_CONTEXT_CLASS_RESCUE: return "CLASS_RESCUE";
-        case PM_CONTEXT_DEF: return "DEF";
-        case PM_CONTEXT_DEF_PARAMS: return "DEF_PARAMS";
-        case PM_CONTEXT_DEF_ENSURE: return "DEF_ENSURE";
-        case PM_CONTEXT_DEF_ELSE: return "DEF_ELSE";
-        case PM_CONTEXT_DEF_RESCUE: return "DEF_RESCUE";
-        case PM_CONTEXT_DEFAULT_PARAMS: return "DEFAULT_PARAMS";
-        case PM_CONTEXT_DEFINED: return "DEFINED";
-        case PM_CONTEXT_ELSE: return "ELSE";
-        case PM_CONTEXT_ELSIF: return "ELSIF";
-        case PM_CONTEXT_EMBEXPR: return "EMBEXPR";
-        case PM_CONTEXT_FOR_INDEX: return "FOR_INDEX";
-        case PM_CONTEXT_FOR: return "FOR";
-        case PM_CONTEXT_IF: return "IF";
-        case PM_CONTEXT_LAMBDA_BRACES: return "LAMBDA_BRACES";
-        case PM_CONTEXT_LAMBDA_DO_END: return "LAMBDA_DO_END";
-        case PM_CONTEXT_LAMBDA_ENSURE: return "LAMBDA_ENSURE";
-        case PM_CONTEXT_LAMBDA_ELSE: return "LAMBDA_ELSE";
-        case PM_CONTEXT_LAMBDA_RESCUE: return "LAMBDA_RESCUE";
-        case PM_CONTEXT_MAIN: return "MAIN";
-        case PM_CONTEXT_MODULE: return "MODULE";
-        case PM_CONTEXT_MODULE_ELSE: return "MODULE_ELSE";
-        case PM_CONTEXT_MODULE_ENSURE: return "MODULE_ENSURE";
-        case PM_CONTEXT_MODULE_RESCUE: return "MODULE_RESCUE";
-        case PM_CONTEXT_NONE: return "NONE";
-        case PM_CONTEXT_PARENS: return "PARENS";
-        case PM_CONTEXT_POSTEXE: return "POSTEXE";
-        case PM_CONTEXT_PREDICATE: return "PREDICATE";
-        case PM_CONTEXT_PREEXE: return "PREEXE";
-        case PM_CONTEXT_RESCUE_MODIFIER: return "RESCUE_MODIFIER";
-        case PM_CONTEXT_SCLASS: return "SCLASS";
-        case PM_CONTEXT_SCLASS_ENSURE: return "SCLASS_ENSURE";
-        case PM_CONTEXT_SCLASS_ELSE: return "SCLASS_ELSE";
-        case PM_CONTEXT_SCLASS_RESCUE: return "SCLASS_RESCUE";
-        case PM_CONTEXT_TERNARY: return "TERNARY";
-        case PM_CONTEXT_UNLESS: return "UNLESS";
-        case PM_CONTEXT_UNTIL: return "UNTIL";
-        case PM_CONTEXT_WHILE: return "WHILE";
-    }
-    return NULL;
-}
-
-PRISM_ATTRIBUTE_UNUSED static void
-debug_contexts(pm_parser_t *parser) {
-    pm_context_node_t *context_node = parser->current_context;
-    fprintf(stderr, "CONTEXTS: ");
-
-    if (context_node != NULL) {
-        while (context_node != NULL) {
-            fprintf(stderr, "%s", debug_context(context_node->context));
-            context_node = context_node->prev;
-            if (context_node != NULL) {
-                fprintf(stderr, " <- ");
-            }
-        }
-    } else {
-        fprintf(stderr, "NONE");
-    }
-
-    fprintf(stderr, "\n");
-}
-
-PRISM_ATTRIBUTE_UNUSED static void
-debug_node(const pm_parser_t *parser, const pm_node_t *node) {
-    pm_buffer_t output_buffer = { 0 };
-    pm_prettyprint(&output_buffer, parser, node);
-
-    fprintf(stderr, "%.*s", (int) output_buffer.length, output_buffer.value);
-    pm_buffer_free(&output_buffer);
-}
-
-PRISM_ATTRIBUTE_UNUSED static void
-debug_lex_mode(pm_parser_t *parser) {
-    pm_lex_mode_t *lex_mode = parser->lex_modes.current;
-    bool first = true;
-
-    while (lex_mode != NULL) {
-        if (first) {
-            first = false;
-        } else {
-            fprintf(stderr, " <- ");
-        }
-
-        switch (lex_mode->mode) {
-            case PM_LEX_DEFAULT: fprintf(stderr, "DEFAULT"); break;
-            case PM_LEX_EMBEXPR: fprintf(stderr, "EMBEXPR"); break;
-            case PM_LEX_EMBVAR: fprintf(stderr, "EMBVAR"); break;
-            case PM_LEX_HEREDOC: fprintf(stderr, "HEREDOC"); break;
-            case PM_LEX_LIST: fprintf(stderr, "LIST (terminator=%c, interpolation=%d)", lex_mode->as.list.terminator, lex_mode->as.list.interpolation); break;
-            case PM_LEX_REGEXP: fprintf(stderr, "REGEXP (terminator=%c)", lex_mode->as.regexp.terminator); break;
-            case PM_LEX_STRING: fprintf(stderr, "STRING (terminator=%c, interpolation=%d)", lex_mode->as.string.terminator, lex_mode->as.string.interpolation); break;
-        }
-
-        lex_mode = lex_mode->prev;
-    }
-
-    fprintf(stderr, "\n");
-}
-
-PRISM_ATTRIBUTE_UNUSED static void
-debug_state(pm_parser_t *parser) {
-    fprintf(stderr, "STATE: ");
-    bool first = true;
-
-    if (parser->lex_state == PM_LEX_STATE_NONE) {
-        fprintf(stderr, "NONE\n");
-        return;
-    }
-
-#define CHECK_STATE(state) \
-    if (parser->lex_state & state) { \
-        if (!first) fprintf(stderr, "|"); \
-        fprintf(stderr, "%s", #state); \
-        first = false; \
-    }
-
-    CHECK_STATE(PM_LEX_STATE_BEG)
-    CHECK_STATE(PM_LEX_STATE_END)
-    CHECK_STATE(PM_LEX_STATE_ENDARG)
-    CHECK_STATE(PM_LEX_STATE_ENDFN)
-    CHECK_STATE(PM_LEX_STATE_ARG)
-    CHECK_STATE(PM_LEX_STATE_CMDARG)
-    CHECK_STATE(PM_LEX_STATE_MID)
-    CHECK_STATE(PM_LEX_STATE_FNAME)
-    CHECK_STATE(PM_LEX_STATE_DOT)
-    CHECK_STATE(PM_LEX_STATE_CLASS)
-    CHECK_STATE(PM_LEX_STATE_LABEL)
-    CHECK_STATE(PM_LEX_STATE_LABELED)
-    CHECK_STATE(PM_LEX_STATE_FITEM)
-
-#undef CHECK_STATE
-
-    fprintf(stderr, "\n");
-}
-
-PRISM_ATTRIBUTE_UNUSED static void
-debug_token(pm_token_t * token) {
-    fprintf(stderr, "%s: \"%.*s\"\n", pm_token_type_human(token->type), (int) (token->end - token->start), token->start);
-}
-
-#endif
-
 // Macros for min/max.
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
@@ -491,8 +317,52 @@ lex_state_set(pm_parser_t *parser, pm_lex_state_t state) {
     parser->lex_state = state;
 }
 
+#ifndef PM_DEBUG_LOGGING
+/**
+ * Debugging logging will print additional information to stdout whenever the
+ * lexer state changes.
+ */
+#define PM_DEBUG_LOGGING 0
+#endif
+
 #if PM_DEBUG_LOGGING
-static inline void
+PRISM_ATTRIBUTE_UNUSED static void
+debug_state(pm_parser_t *parser) {
+    fprintf(stderr, "STATE: ");
+    bool first = true;
+
+    if (parser->lex_state == PM_LEX_STATE_NONE) {
+        fprintf(stderr, "NONE\n");
+        return;
+    }
+
+#define CHECK_STATE(state) \
+    if (parser->lex_state & state) { \
+        if (!first) fprintf(stderr, "|"); \
+        fprintf(stderr, "%s", #state); \
+        first = false; \
+    }
+
+    CHECK_STATE(PM_LEX_STATE_BEG)
+    CHECK_STATE(PM_LEX_STATE_END)
+    CHECK_STATE(PM_LEX_STATE_ENDARG)
+    CHECK_STATE(PM_LEX_STATE_ENDFN)
+    CHECK_STATE(PM_LEX_STATE_ARG)
+    CHECK_STATE(PM_LEX_STATE_CMDARG)
+    CHECK_STATE(PM_LEX_STATE_MID)
+    CHECK_STATE(PM_LEX_STATE_FNAME)
+    CHECK_STATE(PM_LEX_STATE_DOT)
+    CHECK_STATE(PM_LEX_STATE_CLASS)
+    CHECK_STATE(PM_LEX_STATE_LABEL)
+    CHECK_STATE(PM_LEX_STATE_LABELED)
+    CHECK_STATE(PM_LEX_STATE_FITEM)
+
+#undef CHECK_STATE
+
+    fprintf(stderr, "\n");
+}
+
+static void
 debug_lex_state_set(pm_parser_t *parser, pm_lex_state_t state, char const * caller_name, int line_number) {
     fprintf(stderr, "Caller: %s:%d\nPrevious: ", caller_name, line_number);
     debug_state(parser);
@@ -2678,8 +2548,10 @@ pm_break_node_create(pm_parser_t *parser, const pm_token_t *keyword, pm_argument
 // There are certain flags that we want to use internally but don't want to
 // expose because they are not relevant beyond parsing. Therefore we'll define
 // them here and not define them in config.yml/a header file.
-static const pm_node_flags_t PM_CALL_NODE_FLAGS_COMPARISON = 0x10;
-static const pm_node_flags_t PM_CALL_NODE_FLAGS_INDEX = 0x20;
+static const pm_node_flags_t PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY = 0x1;
+static const pm_node_flags_t PM_CALL_NODE_FLAGS_IMPLICIT_ARRAY = 0x10;
+static const pm_node_flags_t PM_CALL_NODE_FLAGS_COMPARISON = 0x20;
+static const pm_node_flags_t PM_CALL_NODE_FLAGS_INDEX = 0x40;
 
 /**
  * Allocate and initialize a new CallNode node. This sets everything to NULL or
@@ -3541,6 +3413,20 @@ pm_class_variable_read_node_create(pm_parser_t *parser, const pm_token_t *token)
 }
 
 /**
+ * True if the given node is an implicit array node on a write, as in:
+ *
+ *     a = *b
+ *     a = 1, 2, 3
+ */
+static inline pm_node_flags_t
+pm_implicit_array_write_flags(const pm_node_t *node, pm_node_flags_t flags) {
+    if (PM_NODE_TYPE_P(node, PM_ARRAY_NODE) && ((const pm_array_node_t *) node)->opening_loc.start == NULL) {
+        return flags;
+    }
+    return 0;
+}
+
+/**
  * Initialize a new ClassVariableWriteNode node from a ClassVariableRead node.
  */
 static pm_class_variable_write_node_t *
@@ -3550,6 +3436,7 @@ pm_class_variable_write_node_create(pm_parser_t *parser, pm_class_variable_read_
     *node = (pm_class_variable_write_node_t) {
         {
             .type = PM_CLASS_VARIABLE_WRITE_NODE,
+            .flags = pm_implicit_array_write_flags(value, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY),
             .location = {
                 .start = read_node->base.location.start,
                 .end = value->location.end
@@ -3676,6 +3563,7 @@ pm_constant_path_write_node_create(pm_parser_t *parser, pm_constant_path_node_t 
     *node = (pm_constant_path_write_node_t) {
         {
             .type = PM_CONSTANT_PATH_WRITE_NODE,
+            .flags = pm_implicit_array_write_flags(value, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY),
             .location = {
                 .start = target->base.location.start,
                 .end = value->location.end
@@ -3793,6 +3681,7 @@ pm_constant_write_node_create(pm_parser_t *parser, pm_constant_read_node_t *targ
     *node = (pm_constant_write_node_t) {
         {
             .type = PM_CONSTANT_WRITE_NODE,
+            .flags = pm_implicit_array_write_flags(value, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY),
             .location = {
                 .start = target->base.location.start,
                 .end = value->location.end
@@ -4691,6 +4580,7 @@ pm_global_variable_write_node_create(pm_parser_t *parser, pm_node_t *target, con
     *node = (pm_global_variable_write_node_t) {
         {
             .type = PM_GLOBAL_VARIABLE_WRITE_NODE,
+            .flags = pm_implicit_array_write_flags(value, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY),
             .location = {
                 .start = target->location.start,
                 .end = value->location.end
@@ -5190,6 +5080,7 @@ pm_instance_variable_write_node_create(pm_parser_t *parser, pm_instance_variable
     *node = (pm_instance_variable_write_node_t) {
         {
             .type = PM_INSTANCE_VARIABLE_WRITE_NODE,
+            .flags = pm_implicit_array_write_flags(value, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY),
             .location = {
                 .start = read_node->base.location.start,
                 .end = value->location.end
@@ -5828,6 +5719,7 @@ pm_local_variable_write_node_create(pm_parser_t *parser, pm_constant_id_t name, 
     *node = (pm_local_variable_write_node_t) {
         {
             .type = PM_LOCAL_VARIABLE_WRITE_NODE,
+            .flags = pm_implicit_array_write_flags(value, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY),
             .location = {
                 .start = name_loc->start,
                 .end = value->location.end
@@ -6071,6 +5963,7 @@ pm_multi_write_node_create(pm_parser_t *parser, pm_multi_target_node_t *target, 
     *node = (pm_multi_write_node_t) {
         {
             .type = PM_MULTI_WRITE_NODE,
+            .flags = pm_implicit_array_write_flags(value, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY),
             .location = {
                 .start = target->base.location.start,
                 .end = value->location.end
@@ -8391,7 +8284,7 @@ parser_lex_magic_comment(pm_parser_t *parser, bool semantic_token_seen) {
 
         // We only want to attempt to compare against encoding comments if it's
         // the first line in the file (or the second in the case of a shebang).
-        if (parser->current.start == parser->encoding_comment_start) {
+        if (parser->current.start == parser->encoding_comment_start && !parser->encoding_locked) {
             if (
                 (key_length == 8 && pm_strncasecmp(key_source, (const uint8_t *) "encoding", 8) == 0) ||
                 (key_length == 6 && pm_strncasecmp(key_source, (const uint8_t *) "coding", 6) == 0)
@@ -8492,6 +8385,8 @@ context_terminator(pm_context_t context, pm_token_t *token) {
         case PM_CONTEXT_MODULE_ENSURE:
         case PM_CONTEXT_SCLASS_ENSURE:
             return token->type == PM_TOKEN_KEYWORD_END;
+        case PM_CONTEXT_LOOP_PREDICATE:
+            return token->type == PM_TOKEN_KEYWORD_DO || token->type == PM_TOKEN_KEYWORD_THEN;
         case PM_CONTEXT_FOR_INDEX:
             return token->type == PM_TOKEN_KEYWORD_IN;
         case PM_CONTEXT_CASE_WHEN:
@@ -8664,6 +8559,7 @@ context_human(pm_context_t context) {
         case PM_CONTEXT_IF: return "if statement";
         case PM_CONTEXT_LAMBDA_BRACES: return "'{'..'}' lambda block";
         case PM_CONTEXT_LAMBDA_DO_END: return "'do'..'end' lambda block";
+        case PM_CONTEXT_LOOP_PREDICATE: return "loop predicate";
         case PM_CONTEXT_MAIN: return "top level context";
         case PM_CONTEXT_MODULE: return "module definition";
         case PM_CONTEXT_PARENS: return "parentheses";
@@ -10565,7 +10461,9 @@ parser_lex(pm_parser_t *parser) {
                         // pass and we're at the start of the file, then we need
                         // to do another pass to potentially find other patterns
                         // for encoding comments.
-                        if (length >= 10) parser_lex_magic_comment_encoding(parser);
+                        if (length >= 10 && !parser->encoding_locked) {
+                            parser_lex_magic_comment_encoding(parser);
+                        }
                     }
 
                     lexed_comment = true;
@@ -13188,9 +13086,14 @@ parse_target_implicit_parameter(pm_parser_t *parser, pm_node_t *node) {
 
 /**
  * Convert the given node into a valid target node.
+ *
+ * @param multiple Whether or not this target is part of a larger set of
+ *   targets. If it is, then the &. operator is not allowed.
+ * @param splat Whether or not this target is a child of a splat target. If it
+ *   is, then fewer patterns are allowed.
  */
 static pm_node_t *
-parse_target(pm_parser_t *parser, pm_node_t *target, bool multiple) {
+parse_target(pm_parser_t *parser, pm_node_t *target, bool multiple, bool splat_parent) {
     switch (PM_NODE_TYPE(target)) {
         case PM_MISSING_NODE:
             return target;
@@ -13265,12 +13168,18 @@ parse_target(pm_parser_t *parser, pm_node_t *target, bool multiple) {
             target->type = PM_INSTANCE_VARIABLE_TARGET_NODE;
             return target;
         case PM_MULTI_TARGET_NODE:
+            if (splat_parent) {
+                // Multi target is not accepted in all positions. If this is one
+                // of them, then we need to add an error.
+                pm_parser_err_node(parser, target, PM_ERR_WRITE_TARGET_UNEXPECTED);
+            }
+
             return target;
         case PM_SPLAT_NODE: {
             pm_splat_node_t *splat = (pm_splat_node_t *) target;
 
             if (splat->expression != NULL) {
-                splat->expression = parse_target(parser, splat->expression, multiple);
+                splat->expression = parse_target(parser, splat->expression, multiple, true);
             }
 
             return (pm_node_t *) splat;
@@ -13340,9 +13249,10 @@ parse_target(pm_parser_t *parser, pm_node_t *target, bool multiple) {
  */
 static pm_node_t *
 parse_target_validate(pm_parser_t *parser, pm_node_t *target, bool multiple) {
-    pm_node_t *result = parse_target(parser, target, multiple);
+    pm_node_t *result = parse_target(parser, target, multiple, false);
 
-    // Ensure that we have one of an =, an 'in' in for indexes, and a ')' in parens after the targets.
+    // Ensure that we have one of an =, an 'in' in for indexes, and a ')' in
+    // parens after the targets.
     if (
         !match1(parser, PM_TOKEN_EQUAL) &&
         !(context_p(parser, PM_CONTEXT_FOR_INDEX) && match1(parser, PM_TOKEN_KEYWORD_IN)) &&
@@ -13513,7 +13423,8 @@ parse_write(pm_parser_t *parser, pm_node_t *target, pm_token_t *operator, pm_nod
                     call->base.location.end = arguments->base.location.end;
 
                     parse_write_name(parser, &call->name);
-                    pm_node_flag_set((pm_node_t *) call, PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE);
+                    pm_node_flag_set((pm_node_t *) call, PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE | pm_implicit_array_write_flags(value, PM_CALL_NODE_FLAGS_IMPLICIT_ARRAY));
+
                     return (pm_node_t *) call;
                 }
             }
@@ -13531,7 +13442,8 @@ parse_write(pm_parser_t *parser, pm_node_t *target, pm_token_t *operator, pm_nod
 
                 // Replace the name with "[]=".
                 call->name = pm_parser_constant_id_constant(parser, "[]=", 3);
-                pm_node_flag_set((pm_node_t *) call, PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE);
+                pm_node_flag_set((pm_node_t *) call, PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE | pm_implicit_array_write_flags(value, PM_CALL_NODE_FLAGS_IMPLICIT_ARRAY));
+
                 return target;
             }
 
@@ -13593,7 +13505,7 @@ parse_targets(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t b
     bool has_rest = PM_NODE_TYPE_P(first_target, PM_SPLAT_NODE);
 
     pm_multi_target_node_t *result = pm_multi_target_node_create(parser);
-    pm_multi_target_node_targets_append(parser, result, parse_target(parser, first_target, true));
+    pm_multi_target_node_targets_append(parser, result, parse_target(parser, first_target, true, false));
 
     while (accept1(parser, PM_TOKEN_COMMA)) {
         if (accept1(parser, PM_TOKEN_USTAR)) {
@@ -13609,7 +13521,7 @@ parse_targets(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t b
 
             if (token_begins_expression_p(parser->current.type)) {
                 name = parse_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR);
-                name = parse_target(parser, name, true);
+                name = parse_target(parser, name, true, true);
             }
 
             pm_node_t *splat = (pm_node_t *) pm_splat_node_create(parser, &star_operator, name);
@@ -13617,7 +13529,7 @@ parse_targets(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t b
             has_rest = true;
         } else if (token_begins_expression_p(parser->current.type)) {
             pm_node_t *target = parse_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_COMMA);
-            target = parse_target(parser, target, true);
+            target = parse_target(parser, target, true, false);
 
             pm_multi_target_node_targets_append(parser, result, target);
         } else if (!match1(parser, PM_TOKEN_EOF)) {
@@ -14382,7 +14294,7 @@ parse_parameters(
                     context_push(parser, PM_CONTEXT_DEFAULT_PARAMS);
 
                     pm_constant_id_t name_id = pm_parser_constant_id_token(parser, &name);
-                    uint32_t reads = pm_locals_reads(&parser->current_scope->locals, name_id);
+                    uint32_t reads = parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 ? pm_locals_reads(&parser->current_scope->locals, name_id) : 0;
 
                     pm_node_t *value = parse_value_expression(parser, binding_power, false, PM_ERR_PARAMETER_NO_DEFAULT);
                     pm_optional_parameter_node_t *param = pm_optional_parameter_node_create(parser, &name, &operator, value);
@@ -14395,7 +14307,7 @@ parse_parameters(
                     // If the value of the parameter increased the number of
                     // reads of that parameter, then we need to warn that we
                     // have a circular definition.
-                    if (pm_locals_reads(&parser->current_scope->locals, name_id) != reads) {
+                    if ((parser->version == PM_OPTIONS_VERSION_CRUBY_3_3) && (pm_locals_reads(&parser->current_scope->locals, name_id) != reads)) {
                         PM_PARSER_ERR_TOKEN_FORMAT_CONTENT(parser, name, PM_ERR_PARAMETER_CIRCULAR);
                     }
 
@@ -14474,10 +14386,10 @@ parse_parameters(
                             context_push(parser, PM_CONTEXT_DEFAULT_PARAMS);
 
                             pm_constant_id_t name_id = pm_parser_constant_id_token(parser, &local);
-                            uint32_t reads = pm_locals_reads(&parser->current_scope->locals, name_id);
+                            uint32_t reads = parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 ? pm_locals_reads(&parser->current_scope->locals, name_id) : 0;
                             pm_node_t *value = parse_value_expression(parser, binding_power, false, PM_ERR_PARAMETER_NO_DEFAULT_KW);
 
-                            if (pm_locals_reads(&parser->current_scope->locals, name_id) != reads) {
+                            if (parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 && (pm_locals_reads(&parser->current_scope->locals, name_id) != reads)) {
                                 PM_PARSER_ERR_TOKEN_FORMAT_CONTENT(parser, local, PM_ERR_PARAMETER_CIRCULAR);
                             }
 
@@ -14649,7 +14561,7 @@ parse_rescues(pm_parser_t *parser, pm_begin_node_t *parent_node, pm_rescues_type
                 pm_rescue_node_operator_set(rescue, &parser->previous);
 
                 pm_node_t *reference = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_RESCUE_VARIABLE);
-                reference = parse_target(parser, reference, false);
+                reference = parse_target(parser, reference, false, false);
 
                 pm_rescue_node_reference_set(rescue, reference);
                 break;
@@ -14679,7 +14591,7 @@ parse_rescues(pm_parser_t *parser, pm_begin_node_t *parent_node, pm_rescues_type
                             pm_rescue_node_operator_set(rescue, &parser->previous);
 
                             pm_node_t *reference = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_RESCUE_VARIABLE);
-                            reference = parse_target(parser, reference, false);
+                            reference = parse_target(parser, reference, false, false);
 
                             pm_rescue_node_reference_set(rescue, reference);
                             break;
@@ -15158,6 +15070,7 @@ parse_block_exit(pm_parser_t *parser, pm_node_t *node, const char *type) {
             case PM_CONTEXT_LAMBDA_ELSE:
             case PM_CONTEXT_LAMBDA_ENSURE:
             case PM_CONTEXT_LAMBDA_RESCUE:
+            case PM_CONTEXT_LOOP_PREDICATE:
             case PM_CONTEXT_POSTEXE:
             case PM_CONTEXT_UNTIL:
             case PM_CONTEXT_WHILE:
@@ -17306,6 +17219,7 @@ parse_retry(pm_parser_t *parser, const pm_node_t *node) {
             case PM_CONTEXT_IF:
             case PM_CONTEXT_LAMBDA_BRACES:
             case PM_CONTEXT_LAMBDA_DO_END:
+            case PM_CONTEXT_LOOP_PREDICATE:
             case PM_CONTEXT_PARENS:
             case PM_CONTEXT_POSTEXE:
             case PM_CONTEXT_PREDICATE:
@@ -17384,6 +17298,7 @@ parse_yield(pm_parser_t *parser, const pm_node_t *node) {
             case PM_CONTEXT_LAMBDA_ELSE:
             case PM_CONTEXT_LAMBDA_ENSURE:
             case PM_CONTEXT_LAMBDA_RESCUE:
+            case PM_CONTEXT_LOOP_PREDICATE:
             case PM_CONTEXT_PARENS:
             case PM_CONTEXT_POSTEXE:
             case PM_CONTEXT_PREDICATE:
@@ -17822,6 +17737,15 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
 
             pm_node_t *right = parse_expression(parser, pm_binding_powers[operator.type].left, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+
+            // Unary .. and ... are special because these are non-associative
+            // operators that can also be unary operators. In this case we need
+            // to explicitly reject code that has a .. or ... that follows this
+            // expression.
+            if (match2(parser, PM_TOKEN_DOT_DOT, PM_TOKEN_DOT_DOT_DOT)) {
+                pm_parser_err_current(parser, PM_ERR_UNEXPECTED_RANGE_OPERATOR);
+            }
+
             return (pm_node_t *) pm_range_node_create(parser, NULL, &operator, right);
         }
         case PM_TOKEN_FLOAT:
@@ -18489,7 +18413,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (accept1(parser, PM_TOKEN_LESS_LESS)) {
                 pm_token_t operator = parser->previous;
-                pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_NOT, true, PM_ERR_EXPECT_EXPRESSION_AFTER_LESS_LESS);
+                pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_EXPECT_EXPRESSION_AFTER_LESS_LESS);
 
                 pm_parser_scope_push(parser, true);
                 accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
@@ -18945,7 +18869,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             if (match1(parser, PM_TOKEN_COMMA)) {
                 index = parse_targets(parser, index, PM_BINDING_POWER_INDEX);
             } else {
-                index = parse_target(parser, index, false);
+                index = parse_target(parser, index, false, false);
             }
 
             context_pop(parser);
@@ -19134,12 +19058,15 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
             return (pm_node_t *) pm_true_node_create(parser, &parser->previous);
         case PM_TOKEN_KEYWORD_UNTIL: {
+            context_push(parser, PM_CONTEXT_LOOP_PREDICATE);
             pm_do_loop_stack_push(parser, true);
+
             parser_lex(parser);
             pm_token_t keyword = parser->previous;
-
             pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_CONDITIONAL_UNTIL_PREDICATE);
+
             pm_do_loop_stack_pop(parser);
+            context_pop(parser);
 
             expect3(parser, PM_TOKEN_KEYWORD_DO_LOOP, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON, PM_ERR_CONDITIONAL_UNTIL_PREDICATE);
             pm_statements_node_t *statements = NULL;
@@ -19155,12 +19082,15 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             return (pm_node_t *) pm_until_node_create(parser, &keyword, &parser->previous, predicate, statements, 0);
         }
         case PM_TOKEN_KEYWORD_WHILE: {
+            context_push(parser, PM_CONTEXT_LOOP_PREDICATE);
             pm_do_loop_stack_push(parser, true);
+
             parser_lex(parser);
             pm_token_t keyword = parser->previous;
-
             pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_CONDITIONAL_WHILE_PREDICATE);
+
             pm_do_loop_stack_pop(parser);
+            context_pop(parser);
 
             expect3(parser, PM_TOKEN_KEYWORD_DO_LOOP, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON, PM_ERR_CONDITIONAL_WHILE_PREDICATE);
             pm_statements_node_t *statements = NULL;
@@ -20007,10 +19937,15 @@ parse_assignment_value_local(pm_parser_t *parser, const pm_node_t *node) {
  */
 static pm_node_t *
 parse_assignment_values(pm_parser_t *parser, pm_binding_power_t previous_binding_power, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id) {
-    pm_node_t *value = parse_starred_expression(parser, binding_power, previous_binding_power == PM_BINDING_POWER_ASSIGNMENT ? accepts_command_call : previous_binding_power < PM_BINDING_POWER_MATCH, diag_id);
-    parse_assignment_value_local(parser, value);
+    bool permitted = true;
+    if (previous_binding_power != PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_USTAR)) permitted = false;
 
+    pm_node_t *value = parse_starred_expression(parser, binding_power, previous_binding_power == PM_BINDING_POWER_ASSIGNMENT ? accepts_command_call : previous_binding_power < PM_BINDING_POWER_MATCH, diag_id);
+    if (!permitted) pm_parser_err_node(parser, value, PM_ERR_UNEXPECTED_MULTI_WRITE);
+
+    parse_assignment_value_local(parser, value);
     bool single_value = true;
+
     if (previous_binding_power == PM_BINDING_POWER_STATEMENT && (PM_NODE_TYPE_P(value, PM_SPLAT_NODE) || match1(parser, PM_TOKEN_COMMA))) {
         single_value = false;
 
@@ -20224,6 +20159,11 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CASE_WRITABLE: {
                     parser_lex(parser);
                     pm_node_t *value = parse_assignment_values(parser, previous_binding_power, PM_NODE_TYPE_P(node, PM_MULTI_TARGET_NODE) ? PM_BINDING_POWER_MULTI_ASSIGNMENT + 1 : binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_EQUAL);
+
+                    if (PM_NODE_TYPE_P(node, PM_MULTI_TARGET_NODE) && previous_binding_power != PM_BINDING_POWER_STATEMENT) {
+                        pm_parser_err_node(parser, node, PM_ERR_UNEXPECTED_MULTI_WRITE);
+                    }
+
                     return parse_write(parser, node, &token, value);
                 }
                 case PM_SPLAT_NODE: {
@@ -21048,19 +20988,11 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
         case PM_POST_EXECUTION_NODE:
         case PM_ALIAS_GLOBAL_VARIABLE_NODE:
         case PM_ALIAS_METHOD_NODE:
+        case PM_MULTI_WRITE_NODE:
         case PM_UNDEF_NODE:
             // These expressions are statements, and cannot be followed by
             // operators (except modifiers).
             if (pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_MODIFIER) {
-                return node;
-            }
-            break;
-        case PM_RANGE_NODE:
-            // Range operators are non-associative, so that it does not
-            // associate with other range operators (i.e. `..1..` should be
-            // rejected). For this reason, we check such a case for unary ranges
-            // here, and if so, it returns the node immediately.
-            if ((((pm_range_node_t *) node)->left == NULL) && pm_binding_powers[parser->current.type].left >= PM_BINDING_POWER_RANGE) {
                 return node;
             }
             break;
@@ -21077,6 +21009,31 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
         current_binding_powers.binary
      ) {
         node = parse_expression_infix(parser, node, binding_power, current_binding_powers.right, accepts_command_call);
+
+        switch (PM_NODE_TYPE(node)) {
+            case PM_CLASS_VARIABLE_WRITE_NODE:
+            case PM_CONSTANT_PATH_WRITE_NODE:
+            case PM_CONSTANT_WRITE_NODE:
+            case PM_GLOBAL_VARIABLE_WRITE_NODE:
+            case PM_INSTANCE_VARIABLE_WRITE_NODE:
+            case PM_LOCAL_VARIABLE_WRITE_NODE:
+                // These expressions are statements, by virtue of the right-hand
+                // side of their write being an implicit array.
+                if (PM_NODE_FLAG_P(node, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY) && pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_MODIFIER) {
+                    return node;
+                }
+                break;
+            case PM_CALL_NODE:
+                // These expressions are also statements, by virtue of the
+                // right-hand side of the expression (i.e., the last argument to
+                // the call node) being an implicit array.
+                if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_IMPLICIT_ARRAY) && pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_MODIFIER) {
+                    return node;
+                }
+                break;
+            default:
+                break;
+        }
 
         if (current_binding_powers.nonassoc) {
             bool endless_range_p = PM_NODE_TYPE_P(node, PM_RANGE_NODE) && ((pm_range_node_t *) node)->right == NULL;
@@ -21345,6 +21302,7 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
         .parsing_eval = false,
         .command_start = true,
         .recovering = false,
+        .encoding_locked = false,
         .encoding_changed = false,
         .pattern_matching_newlines = false,
         .in_keyword_arg = false,
@@ -21391,6 +21349,9 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
             const uint8_t *encoding_source = pm_string_source(&options->encoding);
             parser_lex_magic_comment_encoding_value(parser, encoding_source, encoding_source + encoding_length);
         }
+
+        // encoding_locked option
+        parser->encoding_locked = options->encoding_locked;
 
         // frozen_string_literal option
         parser->frozen_string_literal = options->frozen_string_literal;
