@@ -232,7 +232,9 @@ class TestSetTraceFunc < Test::Unit::TestCase
                  events.shift)
     assert_equal(["line", 5, :meth_return, self.class],
                  events.shift)
-    assert_equal(["return", 7, :meth_return, self.class],
+    assert_equal(["line", 6, :meth_return, self.class],
+                 events.shift)
+    assert_equal(["return", 6, :meth_return, self.class],
                  events.shift)
     assert_equal(["line", 10, :test_return, self.class],
                  events.shift)
@@ -271,7 +273,7 @@ class TestSetTraceFunc < Test::Unit::TestCase
                  events.shift)
     assert_equal(["line", 6, :meth_return2, self.class],
                  events.shift)
-    assert_equal(["return", 7, :meth_return2, self.class],
+    assert_equal(["return", 6, :meth_return2, self.class],
                  events.shift)
     assert_equal(["line", 9, :test_return2, self.class],
                  events.shift)
@@ -678,10 +680,8 @@ CODE
      #
      [:c_return, 1, "xyzzy", TracePoint,  :trace,           TracePoint,  nil,  nil],
      [:line,     4, 'xyzzy', self.class,  method,           self,        :outer, :nothing],
-     [:c_call,   4, 'xyzzy', Integer,     :times,           1,           nil, nil],
      [:line,     4, 'xyzzy', self.class,  method,           self,        nil,    :nothing],
      [:line,     5, 'xyzzy', self.class,  method,           self,        :inner, :nothing],
-     [:c_return, 4, "xyzzy", Integer,     :times,           1,           nil, nil],
      [:line,     7, 'xyzzy', self.class,  method,           self,        :outer, :nothing],
      [:c_call,   7, "xyzzy", Class,       :inherited,       Object,      nil, nil],
      [:c_return, 7, "xyzzy", Class,       :inherited,       Object,      nil, nil],
@@ -1067,10 +1067,12 @@ CODE
     # pp events
     # expected_events =
     [[:b_call, :test_tracepoint_block, TestSetTraceFunc, TestSetTraceFunc, nil],
-     [:c_call, :map, Array, Array, nil],
+     [:call, :map, Array, Array, nil],
      [:b_call, :test_tracepoint_block, TestSetTraceFunc, TestSetTraceFunc, nil],
      [:b_return, :test_tracepoint_block, TestSetTraceFunc, TestSetTraceFunc, 3],
-     [:c_return, :map, Array, Array, [3]],
+     [:c_call, :<<, Array, Array, nil],
+     [:c_return, :<<, Array, Array, [3]],
+     [:return, :map, Array, Array, [3]],
      [:call, :method_for_test_tracepoint_block, TestSetTraceFunc, TestSetTraceFunc, nil],
      [:b_call, :test_tracepoint_block, TestSetTraceFunc, TestSetTraceFunc, nil],
      [:b_return, :test_tracepoint_block, TestSetTraceFunc, TestSetTraceFunc, 4],
@@ -1384,8 +1386,9 @@ CODE
     }
     assert_equal([
       :b_call,
-      :c_call,
+      :call,
       :b_call,
+      :c_call,
       :call,
       :b_call,
     ], events)
@@ -1407,6 +1410,7 @@ CODE
     assert_equal([
       :b_return,
       :c_return,
+      :return,
       :b_return,
       :return,
       :b_return

@@ -489,7 +489,6 @@ AC_CACHE_CHECK([for $AR flags], [rb_cv_arflags], [
 	[rb_cv_arflags=rcD], [rb_cv_arflags=rcu])
 ])
 AC_SUBST(ARFLAGS, ["$rb_cv_arflags "])
-AC_SUBST(ASFLAGS)
 
 AS_CASE(["$target_os"],
 [cygwin*|msys*|mingw*], [
@@ -982,9 +981,17 @@ AC_ARG_WITH(opt-dir,
 	[OPT_DIR="${OPT_DIR:+$OPT_DIR$PATH_SEPARATOR}$withval"], [])
 
 AS_IF([test "x$OPT_DIR" != x], [
+    save_IFS="$IFS" IFS="$PATH_SEPARATOR" val= PWD=
+    for dir in $OPT_DIR; do
+        test -z "$dir" && continue
+        dir=`eval $CHDIR '"$dir"' && pwd` || continue
+        val="${val:+$val$PATH_SEPARATOR}$dir"
+    done
+    IFS="$save_IFS" OPT_DIR="$val"
+    unset PWD
+    unset save_IFS
     val=`IFS="$PATH_SEPARATOR"
         for dir in $OPT_DIR; do
-            test -z "$dir" && continue
             echo x ${LIBPATHFLAG} ${RPATHFLAG} |
             sed "s/^x *//;s${IFS}"'%1\\$-s'"${IFS}${dir}/lib${IFS}g;s${IFS}%s${IFS}${dir}/lib${IFS}g"
         done | tr '\012' ' ' | sed 's/ *$//'`
@@ -999,58 +1006,6 @@ AC_SUBST(incflags, "$INCFLAGS")
 test -z "${ac_env_CFLAGS_set}" -a -n "${cflags+set}" && eval CFLAGS="\"$cflags $ARCH_FLAG\""
 test -z "${ac_env_CXXFLAGS_set}" -a -n "${cxxflags+set}" && eval CXXFLAGS="\"$cxxflags $ARCH_FLAG\""
 
-# The lines above expand out the $cflags/$optflags/$debugflags/$hardenflags variables into the
-# CFLAGS variable. So, at this point, we have a $CFLAGS var with the actual compiler flags we're
-# going to use.
-# That means this is the right time to check what branch protection flags are going to be in use
-# and define appropriate macros for use in Context.S based on this
-AS_CASE(["$target_cpu"], [aarch64], [
-    AC_CACHE_CHECK([whether __ARM_FEATURE_BTI_DEFAULT is defined],
-        rb_cv_aarch64_bti_enabled,
-        AC_COMPILE_IFELSE(
-            [AC_LANG_PROGRAM([[
-                @%:@ifndef __ARM_FEATURE_BTI_DEFAULT
-                @%:@error "__ARM_FEATURE_BTI_DEFAULT not defined"
-                @%:@endif
-            ]])],
-        [rb_cv_aarch64_bti_enabled=yes],
-        [rb_cv_aarch64_bti_enabled=no])
-    )
-    AS_IF([test "$rb_cv_aarch64_bti_enabled" = yes],
-          AC_DEFINE(RUBY_AARCH64_BTI_ENABLED, 1))
-    AC_CACHE_CHECK([whether __ARM_FEATURE_PAC_DEFAULT is defined],
-        rb_cv_aarch64_pac_enabled,
-        AC_COMPILE_IFELSE(
-            [AC_LANG_PROGRAM([[
-                @%:@ifndef __ARM_FEATURE_PAC_DEFAULT
-                @%:@error "__ARM_FEATURE_PAC_DEFAULT not defined"
-                @%:@endif
-            ]])],
-        [rb_cv_aarch64_pac_enabled=yes],
-        [rb_cv_aarch64_pac_enabled=no])
-    )
-    AS_IF([test "$rb_cv_aarch64_pac_enabled" = yes],
-          AC_DEFINE(RUBY_AARCH64_PAC_ENABLED, 1))
-    # Context.S will only ever sign its return address with the A-key; it doesn't support
-    # the B-key at the moment.
-    AS_IF([test "$rb_cv_aarch64_pac_enabled" = yes], [
-        AC_CACHE_CHECK([whether __ARM_FEATURE_PAC_DEFAULT specifies the b-key bit 0x02],
-            rb_cv_aarch64_pac_b_key,
-            AC_COMPILE_IFELSE(
-                [AC_LANG_PROGRAM([[
-                    @%:@ifdef __ARM_FEATURE_PAC_DEFAULT
-                    @%:@if __ARM_FEATURE_PAC_DEFAULT & 0x02
-                    @%:@error "__ARM_FEATURE_PAC_DEFAULT specifies B key"
-                    @%:@endif
-                    @%:@endif
-                ]])],
-            [rb_cv_aarch64_pac_b_key=no],
-            [rb_cv_aarch64_pac_b_key=yes])
-        )
-        AS_IF([test "$rb_cv_aarch64_pac_b_key" = yes],
-            AC_MSG_ERROR(-mbranch-protection flag specified b-key but Ruby's Context.S does not support this yet.))
-    ])
-])
 
 AC_CACHE_CHECK([whether compiler has statement and declarations in expressions],
   rb_cv_have_stmt_and_decl_in_expr,
@@ -1432,6 +1387,7 @@ AC_CHECK_HEADERS(utime.h)
 AC_CHECK_HEADERS(sys/epoll.h)
 AC_CHECK_HEADERS(sys/event.h)
 AC_CHECK_HEADERS(stdckdint.h)
+AC_CHECK_HEADERS(stdatomic.h)
 
 AS_CASE("$target_cpu", [x64|x86_64|i[3-6]86*], [
   AC_CHECK_HEADERS(x86intrin.h)
@@ -2113,6 +2069,7 @@ AC_CHECK_FUNCS(_longjmp)		# used for AC_ARG_WITH(setjmp-type)
 test x$ac_cv_func__longjmp = xno && ac_cv_func__setjmp=no
 AC_CHECK_FUNCS(arc4random_buf)
 AC_CHECK_FUNCS(atan2l atan2f)
+AC_CHECK_DECLS(atomic_signal_fence, [], [], [#include <stdatomic.h>])
 AC_CHECK_FUNCS(chmod)
 AC_CHECK_FUNCS(chown)
 AC_CHECK_FUNCS(chroot)
@@ -3493,7 +3450,7 @@ done
 
 BTESTRUBY='$(MINIRUBY)'
 AS_IF([test x"$cross_compiling" = xyes], [
-  test x"$MINIRUBY" = x && MINIRUBY="${RUBY-$BASERUBY} -I`$CHDIR .; pwd` "-r'$(arch)-fake'
+  test x"$MINIRUBY" = x && MINIRUBY="${RUBY-$BASERUBY} -I${ac_abs_builddir-.} "-r'$(arch)-fake'
   XRUBY_LIBDIR=`${RUBY-$BASERUBY} -rrbconfig -e ['puts RbConfig::CONFIG["libdir"]']`
   XRUBY_RUBYLIBDIR=`${RUBY-$BASERUBY} -rrbconfig -e ['puts RbConfig::CONFIG["rubylibdir"]']`
   XRUBY_RUBYHDRDIR=`${RUBY-$BASERUBY} -rrbconfig -e ['puts RbConfig::CONFIG["rubyhdrdir"]']`
@@ -3823,7 +3780,7 @@ AC_ARG_ENABLE(gcov,
        AS_HELP_STRING([--enable-gcov], [enable coverage measurement by gcov]),
        [gcov=yes])
 AS_IF([test x"$gcov" = xyes], [
-    CFLAGS="$CFLAGS -coverage"
+    CFLAGS="$CFLAGS -coverage -fprofile-update=atomic"
     LDFLAGS="$LDFLAGS -coverage"
 ])
 
@@ -4060,7 +4017,9 @@ AC_CACHE_CHECK([for prefix of external symbols], rb_cv_symbol_prefix, [
 SYMBOL_PREFIX="$rb_cv_symbol_prefix"
 test "x$SYMBOL_PREFIX" = xNONE && SYMBOL_PREFIX=''
 
-AS_IF([test x"$enable_shared" = xyes], [
+AS_IF([test x"$SOEXT" = xdll], [
+    # DLL on Windows is managed by win32/mkexports.rb
+], [test x"$enable_shared" = xyes], [
     AC_CACHE_CHECK([for default symbols in empty shared library], rb_cv_symbols_in_emptylib, [
         save_CC="$CC"
         eval CC=\"`printf "%s" "${DLDSHARED}" | sed ['s/\$(CC)/${CC}/']`\"
@@ -4739,7 +4698,7 @@ config_summary "target OS"           "$target_os"
 config_summary "compiler"            "$CC"
 config_summary "with thread"         "$THREAD_MODEL"
 config_summary "with coroutine"      "$coroutine_type"
-config_summary "with shared GC"      "$with_shared_gc"
+config_summary "with shared GC"      "$shared_gc_summary"
 config_summary "enable shared libs"  "$ENABLE_SHARED"
 config_summary "dynamic library ext" "$DLEXT"
 config_summary "CFLAGS"              "$cflags"

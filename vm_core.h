@@ -105,15 +105,6 @@ extern int ruby_assert_critical_section_entered;
 #include "vm_opts.h"
 
 #include "ruby/thread_native.h"
-
-#if USE_SHARED_GC
-typedef struct gc_function_map {
-    void *(*objspace_alloc)(void);
-} rb_gc_function_map_t;
-
-#define rb_gc_functions (&GET_VM()->gc_functions_map)
-#endif
-
 /*
  * implementation selector of get_insn_info algorithm
  *   0: linear search
@@ -617,10 +608,9 @@ typedef struct rb_at_exit_list {
     struct rb_at_exit_list *next;
 } rb_at_exit_list;
 
-struct rb_objspace;
-struct rb_objspace *rb_objspace_alloc(void);
-void rb_objspace_free(struct rb_objspace *);
-void rb_objspace_call_finalizer(struct rb_objspace *);
+void *rb_objspace_alloc(void);
+void rb_objspace_free(void *objspace);
+void rb_objspace_call_finalizer(void);
 
 typedef struct rb_hook_list_struct {
     struct rb_event_hook_struct *hooks;
@@ -761,9 +751,6 @@ typedef struct rb_vm_struct {
     int coverage_mode;
 
     struct rb_objspace *objspace;
-#if USE_SHARED_GC
-    rb_gc_function_map_t gc_functions_map;
-#endif
 
     rb_at_exit_list *at_exit;
 
@@ -1214,7 +1201,7 @@ rb_iseq_t *rb_iseq_new         (const VALUE ast_value, VALUE name, VALUE path, V
 rb_iseq_t *rb_iseq_new_top     (const VALUE ast_value, VALUE name, VALUE path, VALUE realpath,                   const rb_iseq_t *parent);
 rb_iseq_t *rb_iseq_new_main    (const VALUE ast_value,             VALUE path, VALUE realpath,                   const rb_iseq_t *parent, int opt);
 rb_iseq_t *rb_iseq_new_eval    (const VALUE ast_value, VALUE name, VALUE path, VALUE realpath, int first_lineno, const rb_iseq_t *parent, int isolated_depth);
-rb_iseq_t *rb_iseq_new_with_opt(const VALUE ast_value, VALUE name, VALUE path, VALUE realpath, int first_lineno, const rb_iseq_t *parent, int isolated_depth,
+rb_iseq_t *rb_iseq_new_with_opt(      VALUE ast_value, VALUE name, VALUE path, VALUE realpath, int first_lineno, const rb_iseq_t *parent, int isolated_depth,
                                 enum rb_iseq_type, const rb_compile_option_t*,
                                 VALUE script_lines);
 

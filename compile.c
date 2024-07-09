@@ -1439,14 +1439,14 @@ new_callinfo(rb_iseq_t *iseq, ID mid, int argc, unsigned int flag, struct rb_cal
 {
     VM_ASSERT(argc >= 0);
 
-    if (!(flag & (VM_CALL_ARGS_SPLAT | VM_CALL_ARGS_BLOCKARG | VM_CALL_KW_SPLAT | VM_CALL_FORWARDING)) &&
-        kw_arg == NULL && !has_blockiseq) {
-        flag |= VM_CALL_ARGS_SIMPLE;
-    }
-
     if (kw_arg) {
         flag |= VM_CALL_KWARG;
         argc += kw_arg->keyword_len;
+    }
+
+    if (!(flag & (VM_CALL_ARGS_SPLAT | VM_CALL_ARGS_BLOCKARG | VM_CALL_KWARG | VM_CALL_KW_SPLAT | VM_CALL_FORWARDING))
+        && !has_blockiseq) {
+        flag |= VM_CALL_ARGS_SIMPLE;
     }
 
     ISEQ_BODY(iseq)->ci_size++;
@@ -4840,7 +4840,7 @@ static_literal_value(const NODE *node, rb_iseq_t *iseq)
         if (ISEQ_COMPILE_DATA(iseq)->option->debug_frozen_string_literal || RTEST(ruby_debug)) {
             VALUE debug_info = rb_ary_new_from_args(2, rb_iseq_path(iseq), INT2FIX((int)nd_line(node)));
             VALUE lit = rb_str_dup(get_string_value(node));
-            rb_ivar_set(lit, id_debug_created_info, rb_obj_freeze(debug_info));
+            rb_ivar_set(lit, id_debug_created_info, rb_ary_freeze(debug_info));
             return rb_str_freeze(lit);
         }
         else {
@@ -5859,17 +5859,22 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
         expr_type = DEFINED_FALSE;
         break;
 
+      case NODE_HASH:
       case NODE_LIST:{
-        const NODE *vals = node;
+        const NODE *vals = (nd_type(node) == NODE_HASH) ? RNODE_HASH(node)->nd_head : node;
 
-        do {
-            defined_expr0(iseq, ret, RNODE_LIST(vals)->nd_head, lfinish, Qfalse, false);
+        if (vals) {
+            do {
+                if (RNODE_LIST(vals)->nd_head) {
+                    defined_expr0(iseq, ret, RNODE_LIST(vals)->nd_head, lfinish, Qfalse, false);
 
-            if (!lfinish[1]) {
-                lfinish[1] = NEW_LABEL(line);
-            }
-            ADD_INSNL(ret, line_node, branchunless, lfinish[1]);
-        } while ((vals = RNODE_LIST(vals)->nd_next) != NULL);
+                    if (!lfinish[1]) {
+                        lfinish[1] = NEW_LABEL(line);
+                    }
+                    ADD_INSNL(ret, line_node, branchunless, lfinish[1]);
+                }
+            } while ((vals = RNODE_LIST(vals)->nd_next) != NULL);
+        }
       }
         /* fall through */
       case NODE_STR:
@@ -5886,6 +5891,15 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
       case NODE_AND:
       case NODE_OR:
       default:
+        expr_type = DEFINED_EXPR;
+        break;
+
+      case NODE_SPLAT:
+        defined_expr0(iseq, ret, RNODE_LIST(node)->nd_head, lfinish, Qfalse, false);
+        if (!lfinish[1]) {
+            lfinish[1] = NEW_LABEL(line);
+        }
+        ADD_INSNL(ret, line_node, branchunless, lfinish[1]);
         expr_type = DEFINED_EXPR;
         break;
 
@@ -10738,7 +10752,7 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const no
                 if (ISEQ_COMPILE_DATA(iseq)->option->debug_frozen_string_literal || RTEST(ruby_debug)) {
                     VALUE debug_info = rb_ary_new_from_args(2, rb_iseq_path(iseq), INT2FIX(line));
                     lit = rb_str_dup(lit);
-                    rb_ivar_set(lit, id_debug_created_info, rb_obj_freeze(debug_info));
+                    rb_ivar_set(lit, id_debug_created_info, rb_ary_freeze(debug_info));
                     lit = rb_str_freeze(lit);
                 }
                 ADD_INSN1(ret, node, putobject, lit);
@@ -11307,7 +11321,7 @@ rb_insns_name_array(void)
     for (i = 0; i < VM_INSTRUCTION_SIZE; i++) {
         rb_ary_push(ary, rb_fstring_cstr(insn_name(i)));
     }
-    return rb_obj_freeze(ary);
+    return rb_ary_freeze(ary);
 }
 
 static LABEL *
@@ -13695,7 +13709,7 @@ ibf_load_object_array(const struct ibf_load *load, const struct ibf_object_heade
         rb_ary_push(ary, ibf_load_object(load, index));
     }
 
-    if (header->frozen) rb_obj_freeze(ary);
+    if (header->frozen) rb_ary_freeze(ary);
 
     return ary;
 }

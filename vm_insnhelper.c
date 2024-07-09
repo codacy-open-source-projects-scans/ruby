@@ -12,6 +12,10 @@
 
 #include <math.h>
 
+#ifdef HAVE_STDATOMIC_H
+  #include <stdatomic.h>
+#endif
+
 #include "constant.h"
 #include "debug_counter.h"
 #include "internal.h"
@@ -415,6 +419,14 @@ vm_push_frame(rb_execution_context_t *ec,
         .jit_return = NULL
     };
 
+    /* Ensure the initialization of `*cfp` above never gets reordered with the update of `ec->cfp` below.
+    This is a no-op in all cases we've looked at (https://godbolt.org/z/3oxd1446K), but should guarantee it for all
+    future/untested compilers/platforms. */
+
+    #ifdef HAVE_DECL_ATOMIC_SIGNAL_FENCE
+    atomic_signal_fence(memory_order_seq_cst);
+    #endif
+
     ec->cfp = cfp;
 
     if (VMDEBUG == 2) {
@@ -428,7 +440,6 @@ rb_vm_pop_frame_no_int(rb_execution_context_t *ec)
 {
     rb_control_frame_t *cfp = ec->cfp;
 
-    if (VM_CHECK_MODE >= 4) rb_gc_verify_internal_consistency();
     if (VMDEBUG == 2)       SDR();
 
     ec->cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp);
@@ -440,7 +451,6 @@ vm_pop_frame(rb_execution_context_t *ec, rb_control_frame_t *cfp, const VALUE *e
 {
     VALUE flags = ep[VM_ENV_DATA_INDEX_FLAGS];
 
-    if (VM_CHECK_MODE >= 4) rb_gc_verify_internal_consistency();
     if (VMDEBUG == 2)       SDR();
 
     RUBY_VM_CHECK_INTS(ec);
@@ -3069,6 +3079,9 @@ vm_callee_setup_arg(rb_execution_context_t *ec, struct rb_calling_info *calling,
     const struct rb_callinfo *ci = calling->cd->ci;
     const struct rb_callcache *cc = calling->cc;
 
+    VM_ASSERT((vm_ci_argc(ci), 1));
+    VM_ASSERT(vm_cc_cme(cc) != NULL);
+
     if (UNLIKELY(!ISEQ_BODY(iseq)->param.flags.use_block &&
                  calling->block_handler != VM_BLOCK_HANDLER_NONE &&
                  !(vm_ci_flag(calling->cd->ci) & VM_CALL_SUPER))) {
@@ -3904,7 +3917,7 @@ vm_call_cfunc(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb
     const struct rb_callinfo *ci = calling->cd->ci;
     RB_DEBUG_COUNTER_INC(ccf_cfunc);
 
-    if (IS_ARGS_SPLAT(ci)) {
+    if (IS_ARGS_SPLAT(ci) && !(vm_ci_flag(ci) & VM_CALL_FORWARDING)) {
         if (!IS_ARGS_KW_SPLAT(ci) && vm_ci_argc(ci) == 1) {
             // f(*a)
             CC_SET_FASTPATH(calling->cc, vm_call_cfunc_only_splat, TRUE);
@@ -4235,10 +4248,23 @@ vm_call_symbol(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
         }
     }
 
-    calling->cd = &(struct rb_call_data) {
-        .ci = &VM_CI_ON_STACK(mid, flags, argc, vm_ci_kwarg(ci)),
-        .cc = NULL,
+    struct rb_forwarding_call_data new_fcd = {
+        .cd = {
+            .ci = &VM_CI_ON_STACK(mid, flags, argc, vm_ci_kwarg(ci)),
+            .cc = NULL,
+        },
+        .caller_ci = NULL,
     };
+
+    if (!(vm_ci_flag(ci) & VM_CALL_FORWARDING)) {
+        calling->cd = &new_fcd.cd;
+    }
+    else {
+        const struct rb_callinfo *caller_ci = ((struct rb_forwarding_call_data *)calling->cd)->caller_ci;
+        VM_ASSERT((vm_ci_argc(caller_ci), 1));
+        new_fcd.caller_ci = caller_ci;
+        calling->cd = (struct rb_call_data *)&new_fcd;
+    }
     calling->cc = &VM_CC_ON_STACK(klass,
                                   vm_call_general,
                                   { .method_missing_reason = missing_reason },
@@ -4347,10 +4373,10 @@ vm_call_opt_send(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct
     const struct rb_callinfo *ci = calling->cd->ci;
     int flags = vm_ci_flag(ci);
 
-    if (UNLIKELY(!(flags & VM_CALL_ARGS_SIMPLE) &&
+    if (UNLIKELY((flags & VM_CALL_FORWARDING) || (!(flags & VM_CALL_ARGS_SIMPLE) &&
         ((calling->argc == 1 && (flags & (VM_CALL_ARGS_SPLAT | VM_CALL_KW_SPLAT))) ||
          (calling->argc == 2 && (flags & VM_CALL_ARGS_SPLAT) && (flags & VM_CALL_KW_SPLAT)) ||
-         ((flags & VM_CALL_KWARG) && (vm_ci_kwarg(ci)->keyword_len == calling->argc))))) {
+         ((flags & VM_CALL_KWARG) && (vm_ci_kwarg(ci)->keyword_len == calling->argc)))))) {
         CC_SET_FASTPATH(calling->cc, vm_call_opt_send_complex, TRUE);
         return vm_call_opt_send_complex(ec, reg_cfp, calling);
     }
@@ -4381,10 +4407,25 @@ vm_call_method_missing_body(rb_execution_context_t *ec, rb_control_frame_t *reg_
     INC_SP(1);
 
     ec->method_missing_reason = reason;
-    calling->cd = &(struct rb_call_data) {
-        .ci = &VM_CI_ON_STACK(idMethodMissing, flag, argc, vm_ci_kwarg(orig_ci)),
-        .cc = NULL,
+
+    struct rb_forwarding_call_data new_fcd = {
+        .cd = {
+            .ci = &VM_CI_ON_STACK(idMethodMissing, flag, argc, vm_ci_kwarg(orig_ci)),
+            .cc = NULL,
+        },
+        .caller_ci = NULL,
     };
+
+    if (!(flag & VM_CALL_FORWARDING)) {
+        calling->cd = &new_fcd.cd;
+    }
+    else {
+        const struct rb_callinfo *caller_ci = ((struct rb_forwarding_call_data *)calling->cd)->caller_ci;
+        VM_ASSERT((vm_ci_argc(caller_ci), 1));
+        new_fcd.caller_ci = caller_ci;
+        calling->cd = (struct rb_call_data *)&new_fcd;
+    }
+
     calling->cc = &VM_CC_ON_STACK(Qundef, vm_call_general, {{ 0 }},
                                   rb_callable_method_entry_without_refinements(CLASS_OF(calling->recv), idMethodMissing, NULL));
     return vm_call_method(ec, reg_cfp, calling);
