@@ -660,8 +660,8 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
         let stack_val = jit.peek_at_stack(ctx, i as isize);
         let val_type = Type::from(stack_val);
 
-        match learned_mapping.get_kind() {
-            TempMappingKind::MapToSelf => {
+        match learned_mapping {
+            TempMapping::MapToSelf => {
                 if self_val != stack_val {
                     panic!(
                         "verify_ctx: stack value was mapped to self, but values did not match!\n  stack: {}\n  self: {}",
@@ -670,8 +670,7 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
                     );
                 }
             }
-            TempMappingKind::MapToLocal => {
-                let local_idx: u8 = learned_mapping.get_local_idx();
+            TempMapping::MapToLocal(local_idx) => {
                 let local_val = jit.peek_at_local(local_idx.into());
                 if local_val != stack_val {
                     panic!(
@@ -682,7 +681,7 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
                     );
                 }
             }
-            TempMappingKind::MapToStack => {}
+            TempMapping::MapToStack(_) => {}
         }
 
         // If the actual type differs from the learned type
@@ -1998,6 +1997,46 @@ fn guard_object_is_hash(
     if Type::THash.diff(object_type) != TypeDiff::Incompatible {
         asm.ctx.upgrade_opnd_type(object_opnd, Type::THash);
     }
+}
+
+fn guard_object_is_fixnum(
+    jit: &mut JITState,
+    asm: &mut Assembler,
+    object: Opnd,
+    object_opnd: YARVOpnd
+) {
+    let object_type = asm.ctx.get_opnd_type(object_opnd);
+    if object_type.is_heap() {
+        asm_comment!(asm, "arg is heap object");
+        asm.jmp(Target::side_exit(Counter::guard_send_not_fixnum));
+        return;
+    }
+
+    if object_type != Type::Fixnum && object_type.is_specific() {
+        asm_comment!(asm, "arg is not fixnum");
+        asm.jmp(Target::side_exit(Counter::guard_send_not_fixnum));
+        return;
+    }
+
+    assert!(!object_type.is_heap());
+    assert!(object_type == Type::Fixnum || object_type.is_unknown());
+
+    // If not fixnums at run-time, fall back
+    if object_type != Type::Fixnum {
+        asm_comment!(asm, "guard object fixnum");
+        asm.test(object, Opnd::UImm(RUBY_FIXNUM_FLAG as u64));
+
+        jit_chain_guard(
+            JCC_JZ,
+            jit,
+            asm,
+            SEND_MAX_DEPTH,
+            Counter::guard_send_not_fixnum,
+        );
+    }
+
+    // Set the stack type in the context.
+    asm.ctx.upgrade_opnd_type(object.into(), Type::Fixnum);
 }
 
 fn guard_object_is_string(
@@ -4157,47 +4196,56 @@ fn gen_opt_newarray_send(
     jit: &mut JITState,
     asm: &mut Assembler,
 ) -> Option<CodegenStatus> {
-    let method = jit.get_arg(1).as_u64();
+    let method = jit.get_arg(1).as_u32();
 
-    if method == ID!(min) {
+    if method == VM_OPT_NEWARRAY_SEND_MIN {
         gen_opt_newarray_min(jit, asm)
-    } else if method == ID!(max) {
+    } else if method == VM_OPT_NEWARRAY_SEND_MAX {
         gen_opt_newarray_max(jit, asm)
-    } else if method == ID!(hash) {
+    } else if method == VM_OPT_NEWARRAY_SEND_HASH {
         gen_opt_newarray_hash(jit, asm)
-    } else if method == ID!(pack) {
-        gen_opt_newarray_pack(jit, asm)
+    } else if method == VM_OPT_NEWARRAY_SEND_PACK {
+        gen_opt_newarray_pack_buffer(jit, asm, 1, None)
+    } else if method == VM_OPT_NEWARRAY_SEND_PACK_BUFFER {
+        gen_opt_newarray_pack_buffer(jit, asm, 2, Some(1))
     } else {
         None
     }
 }
 
-fn gen_opt_newarray_pack(
+fn gen_opt_newarray_pack_buffer(
     jit: &mut JITState,
     asm: &mut Assembler,
+    fmt_offset: u32,
+    buffer: Option<u32>,
 ) -> Option<CodegenStatus> {
-    // num == 4 ( for this code )
+    asm_comment!(asm, "opt_newarray_send pack");
+
     let num = jit.get_arg(0).as_u32();
 
     // Save the PC and SP because we may call #pack
     jit_prepare_non_leaf_call(jit, asm);
 
     extern "C" {
-        fn rb_vm_opt_newarray_pack(ec: EcPtr, num: u32, elts: *const VALUE, fmt: VALUE) -> VALUE;
+        fn rb_vm_opt_newarray_pack_buffer(ec: EcPtr, num: u32, elts: *const VALUE, fmt: VALUE, buffer: VALUE) -> VALUE;
     }
 
     let values_opnd = asm.ctx.sp_opnd(-(num as i32));
     let values_ptr = asm.lea(values_opnd);
 
-    let fmt_string = asm.ctx.sp_opnd(-1);
+    let fmt_string = asm.ctx.sp_opnd(-(fmt_offset as i32));
 
     let val_opnd = asm.ccall(
-        rb_vm_opt_newarray_pack as *const u8,
+        rb_vm_opt_newarray_pack_buffer as *const u8,
         vec![
             EC,
-            (num - 1).into(),
+            (num - fmt_offset).into(),
             values_ptr,
-            fmt_string
+            fmt_string,
+            match buffer {
+                None => Qundef.into(),
+                Some(i) => asm.ctx.sp_opnd(-(i as i32)),
+            },
         ],
     );
 
@@ -5762,10 +5810,9 @@ fn jit_rb_str_empty_p(
     return true;
 }
 
-// Codegen for rb_str_concat() -- *not* String#concat
-// Frequently strings are concatenated using "out_str << next_str".
-// This is common in Erb and similar templating languages.
-fn jit_rb_str_concat(
+// Codegen for rb_str_concat() with an integer argument -- *not* String#concat
+// Using strings as a byte buffer often includes appending byte values to the end of the string.
+fn jit_rb_str_concat_codepoint(
     jit: &mut JITState,
     asm: &mut Assembler,
     _ci: *const rb_callinfo,
@@ -5774,11 +5821,48 @@ fn jit_rb_str_concat(
     _argc: i32,
     _known_recv_class: Option<VALUE>,
 ) -> bool {
+    asm_comment!(asm, "String#<< with codepoint argument");
+
+    // Either of the string concatenation functions we call will reallocate the string to grow its
+    // capacity if necessary. In extremely rare cases (i.e., string exceeds `LONG_MAX` bytes),
+    // either of the called functions will raise an exception.
+    jit_prepare_non_leaf_call(jit, asm);
+
+    let codepoint = asm.stack_opnd(0);
+    let recv = asm.stack_opnd(1);
+
+    guard_object_is_fixnum(jit, asm, codepoint, StackOpnd(0));
+
+    asm.ccall(rb_yjit_str_concat_codepoint as *const u8, vec![recv, codepoint]);
+
+    // The receiver is the return value, so we only need to pop the codepoint argument off the stack.
+    // We can reuse the receiver slot in the stack as the return value.
+    asm.stack_pop(1);
+
+    true
+}
+
+// Codegen for rb_str_concat() -- *not* String#concat
+// Frequently strings are concatenated using "out_str << next_str".
+// This is common in Erb and similar templating languages.
+fn jit_rb_str_concat(
+    jit: &mut JITState,
+    asm: &mut Assembler,
+    ci: *const rb_callinfo,
+    cme: *const rb_callable_method_entry_t,
+    block: Option<BlockHandler>,
+    argc: i32,
+    known_recv_class: Option<VALUE>,
+) -> bool {
     // The << operator can accept integer codepoints for characters
     // as the argument. We only specially optimise string arguments.
     // If the peeked-at compile time argument is something other than
     // a string, assume it won't be a string later either.
     let comptime_arg = jit.peek_at_stack(&asm.ctx, 0);
+    if unsafe { RB_TYPE_P(comptime_arg, RUBY_T_FIXNUM) } {
+        return jit_rb_str_concat_codepoint(jit, asm, ci, cme, block, argc, known_recv_class);
+    }
+
     if ! unsafe { RB_TYPE_P(comptime_arg, RUBY_T_STRING) } {
         return false;
     }
@@ -5790,7 +5874,14 @@ fn jit_rb_str_concat(
     // rb_str_buf_append may raise Encoding::CompatibilityError, but we accept compromised
     // backtraces on this method since the interpreter does the same thing on opt_ltlt.
     jit_prepare_non_leaf_call(jit, asm);
-    asm.spill_regs(); // For ccall. Unconditionally spill them for RegMappings consistency.
+
+    // Explicitly spill temps before making any C calls. `ccall` will spill temps, but it does a
+    // check to only spill if it thinks it's necessary. That logic can't see through the runtime
+    // branching occurring in the code generated for this function. Consequently, the branch for
+    // the first `ccall` will spill registers but the second one will not. At run time, we may
+    // jump over that spill code when executing the second branch, leading situations that are
+    // quite hard to debug. If we spill up front we avoid diverging behavior.
+    asm.spill_regs();
 
     let concat_arg = asm.stack_pop(1);
     let recv = asm.stack_pop(1);
@@ -7978,7 +8069,7 @@ fn gen_iseq_kw_call(
         asm.ctx.dealloc_reg(stack_kwrest.reg_opnd());
         asm.mov(stack_kwrest, kwrest);
         if stack_kwrest_idx >= 0 {
-            asm.ctx.set_opnd_mapping(stack_kwrest.into(), TempMapping::map_to_stack(kwrest_type));
+            asm.ctx.set_opnd_mapping(stack_kwrest.into(), TempMapping::MapToStack(kwrest_type));
         }
 
         Some(kwrest_type)
@@ -8048,7 +8139,7 @@ fn gen_iseq_kw_call(
             let default_param = asm.stack_opnd(kwargs_stack_base - kwarg_idx as i32);
             let param_type = Type::from(default_value);
             asm.mov(default_param, default_value.into());
-            asm.ctx.set_opnd_mapping(default_param.into(), TempMapping::map_to_stack(param_type));
+            asm.ctx.set_opnd_mapping(default_param.into(), TempMapping::MapToStack(param_type));
         }
     }
 
@@ -10212,7 +10303,7 @@ pub fn yjit_reg_method_codegen_fns() {
 }
 
 // Register a specialized codegen function for a particular method. Note that
-// the if the function returns true, the code it generates runs without a
+// if the function returns true, the code it generates runs without a
 // control frame and without interrupt checks. To avoid creating observable
 // behavior changes, the codegen function should only target simple code paths
 // that do not allocate and do not make method calls.

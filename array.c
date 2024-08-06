@@ -1016,14 +1016,17 @@ rb_to_array(VALUE ary)
  *  call-seq:
  *    Array.try_convert(object) -> object, new_array, or nil
  *
- *  If +object+ is an +Array+ object, returns +object+.
+ *  Attempts to convert the given +object+ to an +Array+ object:
  *
- *  Otherwise if +object+ responds to <tt>:to_ary</tt>,
- *  calls <tt>object.to_ary</tt> and returns the result.
+ *  - If +object+ is an +Array+ object, returns +object+.
+ *  - Otherwise if +object+ responds to <tt>:to_ary</tt>.
+ *    calls <tt>object.to_ary</tt>:
  *
- *  Returns +nil+ if +object+ does not respond to <tt>:to_ary</tt>
+ *    - If the return value is an +Array+ or +nil+, returns that value.
+ *    - Otherwise, raises TypeError.
  *
- *  Raises an exception unless <tt>object.to_ary</tt> returns an +Array+ object.
+ *  - Otherwise returns +nil+.
+ *
  */
 
 static VALUE
@@ -1060,48 +1063,49 @@ rb_ary_s_new(int argc, VALUE *argv, VALUE klass)
  *  call-seq:
  *    Array.new -> new_empty_array
  *    Array.new(array) -> new_array
- *    Array.new(size) -> new_array
- *    Array.new(size, default_value) -> new_array
- *    Array.new(size) {|index| ... } -> new_array
+ *    Array.new(size, default_value = nil) -> new_array
+ *    Array.new(size = 0) {|index| ... } -> new_array
  *
- *  Returns a new +Array+.
+ *  Returns a new array.
  *
- *  With no block and no arguments, returns a new empty +Array+ object.
+ *  With no block and no argument given, returns a new empty array:
  *
- *  With no block and a single +Array+ argument +array+,
- *  returns a new +Array+ formed from +array+:
+ *    Array.new # => []
  *
- *    a = Array.new([:foo, 'bar', 2])
- *    a.class # => Array
- *    a # => [:foo, "bar", 2]
+ *  With no block and array argument given, returns a new array with the same elements:
  *
- *  With no block and a single Integer argument +size+,
- *  returns a new +Array+ of the given size
- *  whose elements are all +nil+:
+ *    Array.new([:foo, 'bar', 2]) # => [:foo, "bar", 2]
  *
- *    a = Array.new(3)
- *    a # => [nil, nil, nil]
+ *  With no block and integer argument given, returns a new array containing
+ *  that many instances of the given +default_value+:
  *
- *  With no block and arguments +size+ and +default_value+,
- *  returns an +Array+ of the given size;
- *  each element is that same +default_value+:
+ *    Array.new(0)    # => []
+ *    Array.new(3)    # => [nil, nil, nil]
+ *    Array.new(2, 3) # => [3, 3]
  *
- *    a = Array.new(3, 'x')
- *    a # => ['x', 'x', 'x']
+ *  With a block given, returns an array of the given +size+;
+ *  calls the block with each +index+ in the range <tt>(0...size)</tt>;
+ *  the element at that +index+ in the returned array is the blocks return value:
  *
- *  With a block and argument +size+,
- *  returns an +Array+ of the given size;
- *  the block is called with each successive integer +index+;
- *  the element for that +index+ is the return value from the block:
+ *    Array.new(3)  {|index| "Element #{index}" } # => ["Element 0", "Element 1", "Element 2"]
  *
- *    a = Array.new(3) {|index| "Element #{index}" }
- *    a # => ["Element 0", "Element 1", "Element 2"]
+ *  A common pitfall for new Rubyists is providing an expression as +default_value+:
  *
- *  Raises ArgumentError if +size+ is negative.
+ *    array = Array.new(2, {})
+ *    array # => [{}, {}]
+ *    array[0][:a] = 1
+ *    array # => [{a: 1}, {a: 1}], as array[0] and array[1] are same object
  *
- *  With a block and no argument,
- *  or a single argument +0+,
- *  ignores the block and returns a new empty +Array+.
+ *  If you want the elements of the array to be distinct, you should pass a block:
+ *
+ *    array = Array.new(2) { {} }
+ *    array # => [{}, {}]
+ *    array[0][:a] = 1
+ *    array # => [{a: 1}, {}], as array[0] and array[1] are different objects
+ *
+ *  Raises TypeError if the first argument is not either an array
+ *  or an {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects]).
+ *  Raises ArgumentError if the first argument is a negative integer.
  */
 
 static VALUE
@@ -3630,6 +3634,41 @@ rb_ary_sort_by_bang(VALUE ary)
     return ary;
 }
 
+
+/*
+ *  call-seq:
+ *    array.map {|element| ... } -> new_array
+ *    array.map -> new_enumerator
+ *
+ *  Calls the block, if given, with each element of +self+;
+ *  returns a new +Array+ whose elements are the return values from the block:
+ *
+ *    a = [:foo, 'bar', 2]
+ *    a1 = a.map {|element| element.class }
+ *    a1 # => [Symbol, String, Integer]
+ *
+ *  Returns a new Enumerator if no block given:
+ *    a = [:foo, 'bar', 2]
+ *    a1 = a.map
+ *    a1 # => #<Enumerator: [:foo, "bar", 2]:map>
+ *
+ */
+
+static VALUE
+rb_ary_collect(VALUE ary)
+{
+    long i;
+    VALUE collect;
+
+    RETURN_SIZED_ENUMERATOR(ary, 0, 0, ary_enum_length);
+    collect = rb_ary_new2(RARRAY_LEN(ary));
+    for (i = 0; i < RARRAY_LEN(ary); i++) {
+        rb_ary_push(collect, rb_yield(RARRAY_AREF(ary, i)));
+    }
+    return collect;
+}
+
+
 /*
  *  call-seq:
  *    array.map! {|element| ... } -> self
@@ -3771,6 +3810,42 @@ rb_ary_values_at(int argc, VALUE *argv, VALUE ary)
     return result;
 }
 
+
+/*
+ *  call-seq:
+ *    array.select {|element| ... } -> new_array
+ *    array.select -> new_enumerator
+ *
+ *  Calls the block, if given, with each element of +self+;
+ *  returns a new +Array+ containing those elements of +self+
+ *  for which the block returns a truthy value:
+ *
+ *    a = [:foo, 'bar', 2, :bam]
+ *    a1 = a.select {|element| element.to_s.start_with?('b') }
+ *    a1 # => ["bar", :bam]
+ *
+ *  Returns a new Enumerator if no block given:
+ *
+ *    a = [:foo, 'bar', 2, :bam]
+ *    a.select # => #<Enumerator: [:foo, "bar", 2, :bam]:select>
+ *
+ */
+
+static VALUE
+rb_ary_select(VALUE ary)
+{
+    VALUE result;
+    long i;
+
+    RETURN_SIZED_ENUMERATOR(ary, 0, 0, ary_enum_length);
+    result = rb_ary_new2(RARRAY_LEN(ary));
+    for (i = 0; i < RARRAY_LEN(ary); i++) {
+        if (RTEST(rb_yield(RARRAY_AREF(ary, i)))) {
+            rb_ary_push(result, rb_ary_elt(ary, i));
+        }
+    }
+    return result;
+}
 
 struct select_bang_arg {
     VALUE ary;
@@ -5430,20 +5505,30 @@ rb_ary_difference_multi(int argc, VALUE *argv, VALUE ary)
 
 /*
  *  call-seq:
- *    array & other_array -> new_array
+ *    self & other_array -> new_array
  *
- *  Returns a new +Array+ containing each element found in both +array+ and +Array+ +other_array+;
- *  duplicates are omitted; items are compared using <tt>eql?</tt>
- *  (items must also implement +hash+ correctly):
+ *  Returns a new +Array+ object containing the _intersection_ of +self+ and +other_array+;
+ *  that is, containing those elements found in both +self+ and +other_array+:
  *
  *    [0, 1, 2, 3] & [1, 2] # => [1, 2]
- *    [0, 1, 0, 1] & [0, 1] # => [0, 1]
  *
- *  Preserves order from +array+:
+ *  Omits duplicates:
+ *
+ *    [0, 1, 1, 0] & [0, 1] # => [0, 1]
+ *
+ *  Preserves order from +self+:
  *
  *    [0, 1, 2] & [3, 2, 1, 0] # => [0, 1, 2]
  *
- *  Related: Array#intersection.
+ *  Identifies common elements using method <tt>#eql?</tt>
+ *  (as defined in each element of +self+).
+ *
+ *  Related:
+ *
+ *  - Array#intersection: intersection of +self+ and multiple other arrays.
+ *  - Array#|: union of +self+ and one other array.
+ *  - Array#union: union of +self+ and multiple other arrays.
+ *
  */
 
 
@@ -6623,12 +6708,6 @@ ary_sample(rb_execution_context_t *ec, VALUE ary, VALUE randgen, VALUE nv, VALUE
     ARY_SET_LEN(result, n);
 
     return result;
-}
-
-static VALUE
-ary_sized_alloc(rb_execution_context_t *ec, VALUE self)
-{
-    return rb_ary_new2(RARRAY_LEN(self));
 }
 
 static VALUE
@@ -8633,9 +8712,13 @@ Init_Array(void)
     rb_define_method(rb_cArray, "sort", rb_ary_sort, 0);
     rb_define_method(rb_cArray, "sort!", rb_ary_sort_bang, 0);
     rb_define_method(rb_cArray, "sort_by!", rb_ary_sort_by_bang, 0);
+    rb_define_method(rb_cArray, "collect", rb_ary_collect, 0);
     rb_define_method(rb_cArray, "collect!", rb_ary_collect_bang, 0);
+    rb_define_method(rb_cArray, "map", rb_ary_collect, 0);
     rb_define_method(rb_cArray, "map!", rb_ary_collect_bang, 0);
+    rb_define_method(rb_cArray, "select", rb_ary_select, 0);
     rb_define_method(rb_cArray, "select!", rb_ary_select_bang, 0);
+    rb_define_method(rb_cArray, "filter", rb_ary_select, 0);
     rb_define_method(rb_cArray, "filter!", rb_ary_select_bang, 0);
     rb_define_method(rb_cArray, "keep_if", rb_ary_keep_if, 0);
     rb_define_method(rb_cArray, "values_at", rb_ary_values_at, -1);
