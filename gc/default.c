@@ -248,11 +248,6 @@ int ruby_rgengc_debug;
 # define RGENGC_CHECK_MODE  0
 #endif
 
-#ifndef GC_ASSERT
-// Note: using RUBY_ASSERT_WHEN() extend a macro in expr (info by nobu).
-# define GC_ASSERT(expr) RUBY_ASSERT_MESG_WHEN(RGENGC_CHECK_MODE > 0, expr, #expr)
-#endif
-
 /* RGENGC_PROFILE
  * 0: disable RGenGC profiling
  * 1: enable profiling for basic information
@@ -865,16 +860,16 @@ RVALUE_AGE_SET(VALUE obj, int age)
 #if 0
 #define dont_gc_on()          (fprintf(stderr, "dont_gc_on@%s:%d\n",      __FILE__, __LINE__), objspace->flags.dont_gc = 1)
 #define dont_gc_off()         (fprintf(stderr, "dont_gc_off@%s:%d\n",     __FILE__, __LINE__), objspace->flags.dont_gc = 0)
-#define dont_gc_set(b)        (fprintf(stderr, "dont_gc_set(%d)@%s:%d\n", __FILE__, __LINE__), (int)b), objspace->flags.dont_gc = (b))
+#define dont_gc_set(b)        (fprintf(stderr, "dont_gc_set(%d)@%s:%d\n", __FILE__, __LINE__), objspace->flags.dont_gc = (int)(b))
 #define dont_gc_val()         (objspace->flags.dont_gc)
 #else
 #define dont_gc_on()          (objspace->flags.dont_gc = 1)
 #define dont_gc_off()         (objspace->flags.dont_gc = 0)
-#define dont_gc_set(b)        (((int)b), objspace->flags.dont_gc = (b))
+#define dont_gc_set(b)        (objspace->flags.dont_gc = (int)(b))
 #define dont_gc_val()         (objspace->flags.dont_gc)
 #endif
 
-#define gc_config_full_mark_set(b) (((int)b), objspace->gc_config.full_mark = (b))
+#define gc_config_full_mark_set(b) (objspace->gc_config.full_mark = (int)(b))
 #define gc_config_full_mark_val    (objspace->gc_config.full_mark)
 
 #ifndef DURING_GC_COULD_MALLOC_REGION_START
@@ -1688,8 +1683,10 @@ rb_gc_impl_object_id(void *objspace_ptr, VALUE obj)
     rb_objspace_t *objspace = objspace_ptr;
 
     unsigned int lev = rb_gc_vm_lock();
-    if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
+    st_data_t val;
+    if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &val)) {
         GC_ASSERT(FL_TEST(obj, FL_SEEN_OBJ_ID));
+        id = (VALUE)val;
     }
     else {
         GC_ASSERT(!FL_TEST(obj, FL_SEEN_OBJ_ID));
@@ -3049,6 +3046,19 @@ rb_gc_impl_copy_finalizer(void *objspace_ptr, VALUE dest, VALUE obj)
 }
 
 static VALUE
+get_object_id_in_finalizer(rb_objspace_t *objspace, VALUE obj)
+{
+    if (FL_TEST(obj, FL_SEEN_OBJ_ID)) {
+        return rb_gc_impl_object_id(objspace, obj);
+    }
+    else {
+        VALUE id = ULL2NUM(objspace->next_object_id);
+        objspace->next_object_id += OBJ_ID_INCREMENT;
+        return id;
+    }
+}
+
+static VALUE
 get_final(long i, void *data)
 {
     VALUE table = (VALUE)data;
@@ -3068,7 +3078,7 @@ run_final(rb_objspace_t *objspace, VALUE zombie)
         FL_UNSET(zombie, FL_FINALIZE);
         st_data_t table;
         if (st_delete(finalizer_table, &key, &table)) {
-            rb_gc_run_obj_finalizer(rb_gc_impl_object_id(objspace, zombie), RARRAY_LEN(table), get_final, (void *)table);
+            rb_gc_run_obj_finalizer(get_object_id_in_finalizer(objspace, zombie), RARRAY_LEN(table), get_final, (void *)table);
         }
         else {
             rb_bug("FL_FINALIZE flag is set, but finalizers are not found");
@@ -3185,24 +3195,6 @@ gc_abort(void *objspace_ptr)
     gc_mode_set(objspace, gc_mode_none);
 }
 
-struct force_finalize_list {
-    VALUE obj;
-    VALUE table;
-    struct force_finalize_list *next;
-};
-
-static int
-force_chain_object(st_data_t key, st_data_t val, st_data_t arg)
-{
-    struct force_finalize_list **prev = (struct force_finalize_list **)arg;
-    struct force_finalize_list *curr = ALLOC(struct force_finalize_list);
-    curr->obj = key;
-    curr->table = val;
-    curr->next = *prev;
-    *prev = curr;
-    return ST_CONTINUE;
-}
-
 void
 rb_gc_impl_shutdown_free_objects(void *objspace_ptr)
 {
@@ -3225,6 +3217,23 @@ rb_gc_impl_shutdown_free_objects(void *objspace_ptr)
     }
 }
 
+static int
+rb_gc_impl_shutdown_call_finalizer_i(st_data_t key, st_data_t val, st_data_t data)
+{
+    rb_objspace_t *objspace = (rb_objspace_t *)data;
+    VALUE obj = (VALUE)key;
+    VALUE table = (VALUE)val;
+
+    GC_ASSERT(RB_FL_TEST(obj, FL_FINALIZE));
+    GC_ASSERT(RB_BUILTIN_TYPE(val) == T_ARRAY);
+
+    rb_gc_run_obj_finalizer(rb_gc_impl_object_id(objspace, obj), RARRAY_LEN(table), get_final, (void *)table);
+
+    FL_UNSET(obj, FL_FINALIZE);
+
+    return ST_DELETE;
+}
+
 void
 rb_gc_impl_shutdown_call_finalizer(void *objspace_ptr)
 {
@@ -3233,27 +3242,19 @@ rb_gc_impl_shutdown_call_finalizer(void *objspace_ptr)
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
 #endif
-    if (RUBY_ATOMIC_EXCHANGE(finalizing, 1)) return;
 
     /* prohibit incremental GC */
     objspace->flags.dont_incremental = 1;
 
-    /* force to run finalizer */
+    if (RUBY_ATOMIC_EXCHANGE(finalizing, 1)) {
+        /* Abort incremental marking and lazy sweeping to speed up shutdown. */
+        gc_abort(objspace);
+        dont_gc_on();
+        return;
+    }
+
     while (finalizer_table->num_entries) {
-        struct force_finalize_list *list = 0;
-        st_foreach(finalizer_table, force_chain_object, (st_data_t)&list);
-        while (list) {
-            struct force_finalize_list *curr = list;
-
-            st_data_t obj = (st_data_t)curr->obj;
-            st_delete(finalizer_table, &obj, 0);
-            FL_UNSET(curr->obj, FL_FINALIZE);
-
-            rb_gc_run_obj_finalizer(rb_gc_impl_object_id(objspace, curr->obj), RARRAY_LEN(curr->table), get_final, (void *)curr->table);
-
-            list = curr->next;
-            xfree(curr);
-        }
+        st_foreach(finalizer_table, rb_gc_impl_shutdown_call_finalizer_i, (st_data_t)objspace);
     }
 
     /* run finalizers */
@@ -4166,7 +4167,7 @@ gc_sweep_rest(rb_objspace_t *objspace)
 static void
 gc_sweep_continue(rb_objspace_t *objspace, rb_size_pool_t *sweep_size_pool, rb_heap_t *heap)
 {
-    GC_ASSERT(dont_gc_val() == FALSE);
+    GC_ASSERT(dont_gc_val() == FALSE || objspace->profile.latest_gc_info & GPR_FLAG_METHOD);
     if (!GC_ENABLE_LAZY_SWEEP) return;
 
     gc_sweeping_enter(objspace);
@@ -4807,6 +4808,35 @@ rb_gc_impl_remove_weak(void *objspace_ptr, VALUE parent_obj, VALUE *ptr)
     }
 }
 
+static int
+pin_value(st_data_t key, st_data_t value, st_data_t data)
+{
+    rb_gc_impl_mark_and_pin((void *)data, (VALUE)value);
+
+    return ST_CONTINUE;
+}
+
+static void
+mark_roots(rb_objspace_t *objspace, const char **categoryp)
+{
+#define MARK_CHECKPOINT(category) do { \
+    if (categoryp) *categoryp = category; \
+} while (0)
+
+    MARK_CHECKPOINT("objspace");
+    objspace->rgengc.parent_object = Qfalse;
+
+    if (finalizer_table != NULL) {
+        st_foreach(finalizer_table, pin_value, (st_data_t)objspace);
+    }
+
+    st_foreach(objspace->obj_to_id_tbl, gc_mark_tbl_no_pin_i, (st_data_t)objspace);
+
+    if (stress_to_class) rb_gc_mark(stress_to_class);
+
+    rb_gc_mark_roots(objspace, categoryp);
+}
+
 static inline void
 gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
 {
@@ -5031,7 +5061,7 @@ objspace_allrefs(rb_objspace_t *objspace)
     /* traverse root objects */
     PUSH_MARK_FUNC_DATA(&mfd);
     GET_RACTOR()->mfd = &mfd;
-    rb_gc_mark_roots(objspace, &data.category);
+    mark_roots(objspace, &data.category);
     POP_MARK_FUNC_DATA();
 
     /* traverse rest objects reachable from root objects */
@@ -5592,7 +5622,7 @@ gc_marks_finish(rb_objspace_t *objspace)
                    mark_stack_size(&objspace->mark_stack));
         }
 
-        rb_gc_mark_roots(objspace, NULL);
+        mark_roots(objspace, NULL);
         while (gc_mark_stacked_objects_incremental(objspace, INT_MAX) == false);
 
 #if RGENGC_CHECK_MODE >= 2
@@ -5940,7 +5970,7 @@ gc_marks_step(rb_objspace_t *objspace, size_t slots)
 static bool
 gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
 {
-    GC_ASSERT(dont_gc_val() == FALSE);
+    GC_ASSERT(dont_gc_val() == FALSE || objspace->profile.latest_gc_info & GPR_FLAG_METHOD);
     bool marking_finished = true;
 
     gc_marking_enter(objspace);
@@ -6013,7 +6043,7 @@ gc_marks_start(rb_objspace_t *objspace, int full_mark)
         }
     }
 
-    rb_gc_mark_roots(objspace, NULL);
+    mark_roots(objspace, NULL);
 
     gc_report(1, objspace, "gc_marks_start: (%s) end, stack in %"PRIdSIZE"\n",
               full_mark ? "full" : "minor", mark_stack_size(&objspace->mark_stack));
@@ -8000,7 +8030,7 @@ gc_config_set_key(st_data_t key, st_data_t value, st_data_t data)
     rb_objspace_t *objspace = (rb_objspace_t *)data;
     if (rb_sym2id(key) == rb_intern("rgengc_allow_full_mark")) {
         gc_rest(objspace);
-        gc_config_full_mark_set(RBOOL(value));
+        gc_config_full_mark_set(RTEST(value));
     }
     return ST_CONTINUE;
 }
@@ -9538,14 +9568,6 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
     free(objspace);
 }
 
-static int
-pin_value(st_data_t key, st_data_t value, st_data_t data)
-{
-    rb_gc_impl_mark_and_pin((void *)data, (VALUE)value);
-
-    return ST_CONTINUE;
-}
-
 void rb_gc_impl_mark(void *objspace_ptr, VALUE obj);
 
 #if MALLOC_ALLOCATED_SIZE
@@ -9579,22 +9601,6 @@ gc_malloc_allocations(VALUE self)
     return UINT2NUM(rb_objspace.malloc_params.allocations);
 }
 #endif
-
-void
-rb_gc_impl_objspace_mark(void *objspace_ptr)
-{
-    rb_objspace_t *objspace = objspace_ptr;
-
-    objspace->rgengc.parent_object = Qfalse;
-
-    if (finalizer_table != NULL) {
-        st_foreach(finalizer_table, pin_value, (st_data_t)objspace);
-    }
-
-    st_foreach(objspace->obj_to_id_tbl, gc_mark_tbl_no_pin_i, (st_data_t)objspace);
-
-    if (stress_to_class) rb_gc_mark(stress_to_class);
-}
 
 void *
 rb_gc_impl_objspace_alloc(void)

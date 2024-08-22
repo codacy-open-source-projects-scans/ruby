@@ -9,6 +9,10 @@
 /* vim: ft=css et sw=2 ts=2 sts=2 */
 /* Base Green is: #6C8C22 */
 
+:root {
+  --sidebar-width: 300px;
+}
+
 .hide { display: none !important; }
 
 * { padding: 0; margin: 0; }
@@ -20,7 +24,9 @@ body {
 
   /* Layout */
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  min-height: 100vh;
+  margin: 0;
 }
 
 body > :last-child {
@@ -205,25 +211,33 @@ nav {
   border-right: 1px solid #ccc;
   position: fixed;
   top: 0;
+  bottom: 0;
   overflow: auto;
   z-index: 10;
 
   /* Layout */
-  width: 300px;
+  width: var(--sidebar-width);
   min-height: 100vh;
   background: white;
+
+  display: flex;
+  flex-direction: column;
 }
 
-@media (min-width: 1024px) {
-  nav {
-    min-height: unset;
-    height: calc(100vh - 100px); /* reduce the footer height */
-  }
+nav[hidden] {
+  display: none;
+}
+
+nav footer {
+  padding: 1em;
+  border-top: 1px solid #ccc;
 }
 
 main {
+  flex: 1;
   display: block;
-  margin: 3em 1em 1em;
+  margin: 3em auto 1em;
+  padding: 0 1em; /* Add padding to keep space between main content and sidebar/right side of the screen */
   min-width: 340px;
   font-size: 16px;
   width: 100%;
@@ -232,8 +246,7 @@ main {
 
 @media (min-width: 1024px) {
   main {
-    margin-left: auto;
-    margin-right: auto;
+    margin-left: var(--sidebar-width);
   }
 }
 
@@ -268,7 +281,7 @@ nav .nav-section {
   margin-top: 2em;
   border-top: 2px solid #aaa;
   font-size: 90%;
-  overflow: hidden;
+  flex: 1;
 }
 
 nav h2 {
