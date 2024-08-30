@@ -1247,7 +1247,6 @@ typedef struct rb_parser_config_struct {
     rb_encoding *(*enc_from_index)(int idx);
     int (*enc_isspace)(OnigCodePoint c, rb_encoding *enc);
     rb_encoding *(*usascii_encoding)(void);
-    int enc_coderange_broken;
     int (*enc_mbminlen)(rb_encoding *enc);
     bool (*enc_isascii)(OnigCodePoint c, rb_encoding *enc);
     OnigCodePoint (*enc_mbc_to_codepoint)(const char *p, const char *e, rb_encoding *enc);
@@ -1325,9 +1324,6 @@ void rb_ruby_parser_free(void *ptr);
 rb_parser_t *rb_ruby_parser_allocate(const rb_parser_config_t *config);
 rb_parser_t *rb_ruby_parser_new(const rb_parser_config_t *config);
 #endif
-
-long rb_parser_string_length(rb_parser_string_t *str);
-char *rb_parser_string_pointer(rb_parser_string_t *str);
 
 RUBY_SYMBOL_EXPORT_END
 

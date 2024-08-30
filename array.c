@@ -1038,6 +1038,8 @@ rb_to_array(VALUE ary)
  *  if not, raises TypeError.
  *
  *  Otherwise returns +nil+.
+ *
+ *  Related: see {Methods for Creating an Array}[rdoc-ref:Array@Methods+for+Creating+an+Array].
  */
 
 static VALUE
@@ -1117,6 +1119,8 @@ rb_ary_s_new(int argc, VALUE *argv, VALUE klass)
  *  Raises TypeError if the first argument is not either an array
  *  or an {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects]).
  *  Raises ArgumentError if the first argument is a negative integer.
+ *
+ *  Related: see {Methods for Creating an Array}[rdoc-ref:Array@Methods+for+Creating+an+Array].
  */
 
 static VALUE
@@ -1180,6 +1184,7 @@ rb_ary_initialize(int argc, VALUE *argv, VALUE ary)
  *   Array[]                # => []
  *   Array.[](1, 'a', /^A/) # => [1, "a", /^A/]
  *
+ * Related: see {Methods for Creating an Array}[rdoc-ref:Array@Methods+for+Creating+an+Array].
  */
 
 static VALUE
@@ -1368,6 +1373,7 @@ ary_take_first_or_last(int argc, const VALUE *argv, VALUE ary, enum ary_take_pos
  *
  *    [:foo, 'bar', 2] << [3, 4] # => [:foo, "bar", 2, [3, 4]]
  *
+ *  Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
  */
 
 VALUE
@@ -2479,6 +2485,7 @@ ary_aset_by_rb_ary_splice(VALUE ary, long beg, long len, VALUE val)
  *    a[1..5] = 'foo' # => "foo"
  *    a # => [:foo, "foo"]
  *
+ *  Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
  */
 
 static VALUE
@@ -3700,21 +3707,19 @@ rb_ary_collect(VALUE ary)
 
 /*
  *  call-seq:
- *    array.map! {|element| ... } -> self
- *    array.map! -> new_enumerator
+ *    collect! {|element| ... } -> new_array
+ *    collect! -> new_enumerator
+ *    map! {|element| ... } -> new_array
+ *    map! -> new_enumerator
  *
- *  Calls the block, if given, with each element;
- *  replaces the element with the block's return value:
+ *  With a block given, calls the block with each element of +self+
+ *  and replaces the element with the block's return value;
+ *  returns +self+:
  *
  *    a = [:foo, 'bar', 2]
  *    a.map! { |element| element.class } # => [Symbol, String, Integer]
  *
- *  Returns a new Enumerator if no block given:
- *
- *    a = [:foo, 'bar', 2]
- *    a1 = a.map!
- *    a1 # => #<Enumerator: [:foo, "bar", 2]:map!>
- *
+ *  With no block given, returns a new Enumerator.
  */
 
 static VALUE
@@ -3997,37 +4002,39 @@ ary_resize_smaller(VALUE ary, long len)
 
 /*
  *  call-seq:
- *    array.delete(obj) -> deleted_object
- *    array.delete(obj) {|nosuch| ... } -> deleted_object or block_return
+ *    delete(object) -> last_deleted_object
+ *    delete(object) {|element| ... } -> last_deleted_object or block_return
  *
  *  Removes zero or more elements from +self+.
  *
- *  When no block is given,
- *  removes from +self+ each element +ele+ such that <tt>ele == obj</tt>;
+ *  With no block given,
+ *  removes from +self+ each element +ele+ such that <tt>ele == object</tt>;
  *  returns the last deleted element:
  *
- *    s1 = 'bar'; s2 = 'bar'
- *    a = [:foo, s1, 2, s2]
- *    a.delete('bar') # => "bar"
- *    a # => [:foo, 2]
+ *    a = [0, 1, 2, 2.0]
+ *    a.delete(2) # => 2.0
+ *    a           # => [0, 1]
  *
- *  Returns +nil+ if no elements removed.
+ *  Returns +nil+ if no elements removed:
  *
- *  When a block is given,
- *  removes from +self+ each element +ele+ such that <tt>ele == obj</tt>.
+ *    a.delete(2) # => nil
+ *
+ *  With a block given,
+ *  removes from +self+ each element +ele+ such that <tt>ele == object</tt>.
  *
  *  If any such elements are found, ignores the block
  *  and returns the last deleted element:
  *
- *    s1 = 'bar'; s2 = 'bar'
- *    a = [:foo, s1, 2, s2]
- *    deleted_obj = a.delete('bar') {|obj| fail 'Cannot happen' }
- *    a # => [:foo, 2]
+ *    a = [0, 1, 2, 2.0]
+ *    a.delete(2) {|element| fail 'Cannot happen' } # => 2.0
+ *    a                                             # => [0, 1]
  *
- *  If no such elements are found, returns the block's return value:
+ *  If no such element is found, returns the block's return value:
  *
- *    a = [:foo, 'bar', 2]
- *    a.delete(:nosuch) {|obj| "#{obj} not found" } # => "nosuch not found"
+ *    a.delete(2) {|element| "Element #{element} not found." }
+ *    # => "Element 2 not found."
+ *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
  *
  */
 
@@ -4109,9 +4116,10 @@ rb_ary_delete_at(VALUE ary, long pos)
 
 /*
  *  call-seq:
- *    array.delete_at(index) -> deleted_object or nil
+ *    delete_at(index) -> deleted_object or nil
  *
- *  Deletes an element from +self+, per the given Integer +index+.
+ *  Deletes the element of +self+ at the given +index+, which must be an
+ *  {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects].
  *
  *  When +index+ is non-negative, deletes the element at offset +index+:
  *
@@ -4119,15 +4127,18 @@ rb_ary_delete_at(VALUE ary, long pos)
  *    a.delete_at(1) # => "bar"
  *    a # => [:foo, 2]
  *
- *  If index is too large, returns +nil+.
- *
  *  When +index+ is negative, counts backward from the end of the array:
  *
  *    a = [:foo, 'bar', 2]
  *    a.delete_at(-2) # => "bar"
  *    a # => [:foo, 2]
  *
- *  If +index+ is too small (far from zero), returns nil.
+ *  When +index+ is out of range, returns +nil+.
+ *
+ *    a = [:foo, 'bar', 2]
+ *    a.delete_at(3)  # => nil
+ *    a.delete_at(-4) # => nil
+ *
  */
 
 static VALUE
@@ -4372,20 +4383,17 @@ rb_ary_reject(VALUE ary)
 
 /*
  *  call-seq:
- *    array.delete_if {|element| ... } -> self
- *    array.delete_if -> Enumerator
+ *    delete_if {|element| ... } -> self
+ *    delete_if -> new_numerator
  *
- *  Removes each element in +self+ for which the block returns a truthy value;
+ *  With a block given, calls the block with each element of +self+;
+ *  removes the element if the block returns a truthy value;
  *  returns +self+:
  *
  *    a = [:foo, 'bar', 2, 'bat']
  *    a.delete_if {|element| element.to_s.start_with?('b') } # => [:foo, 2]
  *
- *  Returns a new Enumerator if no block given:
- *
- *    a = [:foo, 'bar', 2]
- *    a.delete_if # => #<Enumerator: [:foo, "bar", 2]:delete_if>
- *
+ *  With no block given, returns a new Enumerator.
  */
 
 static VALUE
@@ -4655,11 +4663,9 @@ rb_ary_clear(VALUE ary)
 {
     rb_ary_modify_check(ary);
     if (ARY_SHARED_P(ary)) {
-        if (!ARY_EMBED_P(ary)) {
-            rb_ary_unshare(ary);
-            FL_SET_EMBED(ary);
-            ARY_SET_EMBED_LEN(ary, 0);
-        }
+        rb_ary_unshare(ary);
+        FL_SET_EMBED(ary);
+        ARY_SET_EMBED_LEN(ary, 0);
     }
     else {
         ARY_SET_LEN(ary, 0);
@@ -4941,7 +4947,7 @@ rb_ary_fill(int argc, VALUE *argv, VALUE ary)
  *    a = [0, 1] + [2, 3]
  *    a # => [0, 1, 2, 3]
  *
- *  Related: Array#concat, Array#*.
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 VALUE
@@ -4975,12 +4981,14 @@ ary_append(VALUE x, VALUE y)
 
 /*
  *  call-seq:
- *    array.concat(*other_arrays) -> self
+ *    concat(*other_arrays) -> self
  *
- *  Adds to +array+ all elements from each +Array+ in +other_arrays+; returns +self+:
+ *  Adds to +self+ all elements from each array in +other_arrays+; returns +self+:
  *
  *    a = [0, 1]
- *    a.concat([2, 3], [4, 5]) # => [0, 1, 2, 3, 4, 5]
+ *    a.concat(['two', 'three'], [:four, :five], a)
+ *    # => [0, 1, "two", "three", :four, :five, 0, 1]
+ *
  */
 
 static VALUE
@@ -5187,6 +5195,8 @@ recursive_equal(VALUE ary1, VALUE ary2, int recur)
  *
  *  This method is different from method Array#eql?,
  *  which compares elements using <tt>Object#eql?</tt>.
+ *
+ *  Related: see {Methods for Comparing}[rdoc-ref:Array@Methods+for+Comparing].
  */
 
 static VALUE
@@ -5376,6 +5386,7 @@ recursive_cmp(VALUE ary1, VALUE ary2, int recur)
  *    [0, 1, 2] <=> [0, 1, 2, 0]  # => -1
  *    [0, 1, 2] <=> [0, 1, 2, 3]  # => -1
  *
+ *  Related: see {Methods for Comparing}[rdoc-ref:Array@Methods+for+Comparing].
  */
 
 VALUE
@@ -5458,7 +5469,7 @@ ary_make_hash_by(VALUE ary)
  *  Element are compared using method <tt>#eql?</tt>
  *  (as defined in each element of +self+).
  *
- *  Related: Array#difference.
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 VALUE
@@ -5564,12 +5575,7 @@ rb_ary_difference_multi(int argc, VALUE *argv, VALUE ary)
  *  Identifies common elements using method <tt>#eql?</tt>
  *  (as defined in each element of +self+).
  *
- *  Related:
- *
- *  - Array#intersection: intersection of +self+ and multiple other arrays.
- *  - Array#|: union of +self+ and one other array.
- *  - Array#union: union of +self+ and multiple other arrays.
- *
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 
@@ -6231,7 +6237,7 @@ rb_ary_uniq_bang(VALUE ary)
     }
     rb_ary_modify_check(ary);
     ARY_SET_LEN(ary, 0);
-    if (ARY_SHARED_P(ary) && !ARY_EMBED_P(ary)) {
+    if (ARY_SHARED_P(ary)) {
         rb_ary_unshare(ary);
         FL_SET_EMBED(ary);
     }
@@ -6287,11 +6293,17 @@ rb_ary_uniq(VALUE ary)
 
 /*
  *  call-seq:
- *    array.compact! -> self or nil
+ *    compact! -> self or nil
  *
- *  Removes all +nil+ elements from +self+.
+ *  Removes all +nil+ elements from +self+;
+ *  Returns +self+ if any elements are removed, +nil+ otherwise:
  *
- *  Returns +self+ if any elements removed, otherwise +nil+.
+ *    a = [nil, 0, nil, false, nil, '', nil, [], nil, {}]
+ *    a.compact! # => [0, false, "", [], {}]
+ *    a          # => [0, false, "", [], {}]
+ *    a.compact! # => nil
+ *
+ *  Related: Array#compact.
  */
 
 static VALUE
@@ -6319,12 +6331,15 @@ rb_ary_compact_bang(VALUE ary)
 
 /*
  *  call-seq:
- *    array.compact -> new_array
+ *    compact -> new_array
  *
- *  Returns a new +Array+ containing all non-+nil+ elements from +self+:
+ *  Returns a new array containing only the non-+nil+ elements from +self+;
+ *  element order is preserved:
  *
- *    a = [nil, 0, nil, 1, nil, 2, nil]
- *    a.compact # => [0, 1, 2]
+ *    a = [nil, 0, nil, false, nil, '', nil, [], nil, {}]
+ *    a.compact # => [0, false, "", [], {}]
+ *
+ *  Related: Array#compact!.
  */
 
 static VALUE
@@ -6337,29 +6352,27 @@ rb_ary_compact(VALUE ary)
 
 /*
  *  call-seq:
- *    array.count -> an_integer
- *    array.count(obj) -> an_integer
- *    array.count {|element| ... } -> an_integer
+ *    count -> integer
+ *    count(object) -> integer
+ *    count {|element| ... } -> integer
  *
  *  Returns a count of specified elements.
  *
  *  With no argument and no block, returns the count of all elements:
  *
- *    [0, 1, 2].count # => 3
- *    [].count # => 0
+ *    [0, :one, 'two', 3, 3.0].count # => 5
  *
- *  With argument +obj+, returns the count of elements <tt>==</tt> to +obj+:
+ *  With argument +object+ given, returns the count of elements <tt>==</tt> to +object+:
  *
- *    [0, 1, 2, 0.0].count(0) # => 2
- *    [0, 1, 2].count(3) # => 0
+ *    [0, :one, 'two', 3, 3.0].count(3) # => 2
  *
  *  With no argument and a block given, calls the block with each element;
  *  returns the count of elements for which the block returns a truthy value:
  *
  *    [0, 1, 2, 3].count {|element| element > 1} # => 2
  *
- *  With argument +obj+ and a block given, issues a warning, ignores the block,
- *  and returns the count of elements <tt>==</tt> to +obj+.
+ *  With argument +object+ and a block given, issues a warning, ignores the block,
+ *  and returns the count of elements <tt>==</tt> to +object+.
  */
 
 static VALUE
@@ -6775,13 +6788,16 @@ rb_ary_cycle_size(VALUE self, VALUE args, VALUE eobj)
 
 /*
  *  call-seq:
- *    array.cycle {|element| ... } -> nil
- *    array.cycle(count) {|element| ... } -> nil
- *    array.cycle -> new_enumerator
- *    array.cycle(count) -> new_enumerator
+ *    cycle(count = nil) {|element| ... } -> nil
+ *    cycle(count = nil) -> new_enumerator
  *
- *  When called with positive Integer argument +count+ and a block,
- *  calls the block with each element, then does so again,
+ *  With a block given, may call the block, depending on the value of argument +count+;
+ *  +count+ must be an
+ *  {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects],
+ *  or +nil+.
+ *
+ *  If +count+ is positive,
+ *  calls the block with each element, then does so repeatedly,
  *  until it has done so +count+ times; returns +nil+:
  *
  *    output = []
@@ -6790,21 +6806,16 @@ rb_ary_cycle_size(VALUE self, VALUE args, VALUE eobj)
  *
  *  If +count+ is zero or negative, does not call the block:
  *
- *    [0, 1].cycle(0) {|element| fail 'Cannot happen' } # => nil
+ *    [0, 1].cycle(0) {|element| fail 'Cannot happen' }  # => nil
  *    [0, 1].cycle(-1) {|element| fail 'Cannot happen' } # => nil
  *
- *  When a block is given, and argument is omitted or +nil+, cycles forever:
+ *  If +count+ is +nil+, cycles forever:
  *
  *    # Prints 0 and 1 forever.
  *    [0, 1].cycle {|element| puts element }
  *    [0, 1].cycle(nil) {|element| puts element }
  *
- *  When no block is given, returns a new Enumerator:
- *
- *    [0, 1].cycle(2) # => #<Enumerator: [0, 1]:cycle(2)>
- *    [0, 1].cycle # => # => #<Enumerator: [0, 1]:cycle>
- *    [0, 1].cycle.first(5) # => [0, 1, 0, 1, 0]
- *
+ *  With no block given, returns a new Enumerator.
  */
 static VALUE
 rb_ary_cycle(int argc, VALUE *argv, VALUE ary)
@@ -7096,56 +7107,45 @@ rb_ary_combination_size(VALUE ary, VALUE args, VALUE eobj)
 
 /*
  *  call-seq:
- *    array.combination(n) {|element| ... } -> self
- *    array.combination(n) -> new_enumerator
+ *    combination(n) {|element| ... } -> self
+ *    combination(n) -> new_enumerator
  *
- *  Calls the block, if given, with combinations of elements of +self+;
- *  returns +self+. The order of combinations is indeterminate.
+ *  When a block and a positive
+ *  {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects]
+ *  argument +n+ (<tt>0 < n <= self.size</tt>)
+ *  are given, calls the block with all +n+-tuple combinations of +self+;
+ *  returns +self+:
  *
- *  When a block and an in-range positive Integer argument +n+ (<tt>0 < n <= self.size</tt>)
- *  are given, calls the block with all +n+-tuple combinations of +self+.
- *
- *  Example:
- *
- *    a = [0, 1, 2]
- *    a.combination(2) {|combination| p combination }
+ *    a = %w[a b c]                                   # => ["a", "b", "c"]
+ *    a.combination(2) {|combination| p combination } # => ["a", "b", "c"]
  *
  *  Output:
  *
- *    [0, 1]
- *    [0, 2]
- *    [1, 2]
+ *    ["a", "b"]
+ *    ["a", "c"]
+ *    ["b", "c"]
  *
- *  Another example:
+ *  The order of the yielded combinations is not guaranteed.
  *
- *    a = [0, 1, 2]
- *    a.combination(3) {|combination| p combination }
+ *  When +n+ is zero, calls the block once with a new empty array:
  *
- *  Output:
- *
- *    [0, 1, 2]
- *
- *  When +n+ is zero, calls the block once with a new empty +Array+:
- *
- *    a = [0, 1, 2]
- *    a1 = a.combination(0) {|combination| p combination }
+ *    a.combination(0) {|combination| p combination }
+ *    [].combination(0) {|combination| p combination }
  *
  *  Output:
  *
  *    []
+ *    []
  *
- *  When +n+ is out of range (negative or larger than <tt>self.size</tt>),
+ *  When +n+ is negative or larger than +self.size+ and +self+ is non-empty,
  *  does not call the block:
  *
- *    a = [0, 1, 2]
- *    a.combination(-1) {|combination| fail 'Cannot happen' }
- *    a.combination(4) {|combination| fail 'Cannot happen' }
+ *    a.combination(-1) {|combination| fail 'Cannot happen' } # => ["a", "b", "c"]
+ *    a.combination(4)  {|combination| fail 'Cannot happen' } # => ["a", "b", "c"]
  *
- *  Returns a new Enumerator if no block given:
+ *  With no block given, returns a new Enumerator.
  *
- *    a = [0, 1, 2]
- *    a.combination(2) # => #<Enumerator: [0, 1, 2]:combination(2)>
- *
+ *  Related: Array#permutation.
  */
 
 static VALUE
@@ -7771,7 +7771,7 @@ rb_ary_drop_while(VALUE ary)
  *  <b>Special case</b>: returns +false+ if +self+ is empty
  *  (regardless of any given argument or block).
  *
- *  Related: Array#all?, Array#none?, Array#one?.
+ *  Related: see {Methods for Querying}[rdoc-ref:Array@Methods+for+Querying].
  */
 
 static VALUE
@@ -7838,7 +7838,7 @@ rb_ary_any_p(int argc, VALUE *argv, VALUE ary)
  *  <b>Special case</b>: returns +true+ if +self+ is empty
  *  (regardless of any given argument or block).
  *
- *  Related: Array#any?, Array#none?, Array#one?.
+ *  Related: see {Methods for Querying}[rdoc-ref:Array@Methods+for+Querying].
  */
 
 static VALUE
@@ -8547,6 +8547,8 @@ rb_ary_deconstruct(VALUE ary)
  *  - ::new: Returns a new array.
  *  - ::try_convert: Returns a new array created from a given object.
  *
+ *  See also {Creating Arrays}[rdoc-ref:Array@Creating+Arrays].
+ *
  *  === Methods for Querying
  *
  *  - #length, #size: Returns the count of elements.
@@ -8563,7 +8565,7 @@ rb_ary_deconstruct(VALUE ary)
  *
  *  === Methods for Comparing
  *
- *  - #<=>: Returns -1, 0, or 1 * as +self+ is less than, equal to, or
+ *  - #<=>: Returns -1, 0, or 1, as +self+ is less than, equal to, or
  *    greater than a given object.
  *  - #==: Returns whether each element in +self+ is <tt>==</tt> to the corresponding element
  *    in a given object.
@@ -8615,7 +8617,8 @@ rb_ary_deconstruct(VALUE ary)
  *  These methods add, replace, or reorder elements in +self+.
  *
  *  - #[]=: Assigns specified elements with a given object.
- *  - #push, #append, #<<: Appends trailing elements.
+ *  - #<<: Appends an element.
+ *  - #push (and its alias #append): Appends elements.
  *  - #unshift, #prepend: Prepends leading elements.
  *  - #insert: Inserts given objects at a given offset; does not replace elements.
  *  - #concat: Appends all elements from given arrays.
@@ -8699,7 +8702,6 @@ rb_ary_deconstruct(VALUE ary)
  *    - With string argument +field_separator+, a new string that is equivalent to
  *      <tt>join(field_separator)</tt>.
  *
- *  - #abbrev: Returns a hash of unambiguous abbreviations for elements.
  *  - #pack: Packs the elements into a binary sequence.
  *  - #sum: Returns a sum of elements according to either <tt>+</tt> or a given block.
  */
