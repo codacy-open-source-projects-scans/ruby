@@ -38,6 +38,7 @@
 #include "ruby_assert.h"
 
 VALUE rb_cArray;
+VALUE rb_cArray_empty_frozen;
 
 /* Flags of RArray
  *
@@ -1878,6 +1879,7 @@ static VALUE rb_ary_aref2(VALUE ary, VALUE b, VALUE e);
  *    # Raises TypeError (no implicit conversion of Symbol into Integer):
  *    a[:foo]
  *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 VALUE
@@ -8576,7 +8578,7 @@ rb_ary_deconstruct(VALUE ary)
  *
  *  These methods do not modify +self+.
  *
- *  - #[]: Returns one or more elements.
+ *  - #[], #slice: Returns consecutive elements as determined by a given argument.
  *  - #fetch: Returns the element at a given offset.
  *  - #first: Returns one or more leading elements.
  *  - #last: Returns one or more trailing elements.
@@ -8598,7 +8600,6 @@ rb_ary_deconstruct(VALUE ary)
  *  - #take: Returns leading elements as determined by a given index.
  *  - #drop_while: Returns trailing elements as determined by a given block.
  *  - #take_while: Returns leading elements as determined by a given block.
- *  - #slice: Returns consecutive elements as determined by a given argument.
  *  - #sort: Returns all elements in an order determined by <tt><=></tt> or a given block.
  *  - #reverse: Returns all elements in reverse order.
  *  - #compact: Returns an array containing all non-+nil+ elements.
@@ -8833,6 +8834,9 @@ Init_Array(void)
     rb_define_method(rb_cArray, "freeze", rb_ary_freeze, 0);
 
     rb_define_method(rb_cArray, "deconstruct", rb_ary_deconstruct, 0);
+
+    rb_cArray_empty_frozen = rb_ary_freeze(rb_ary_new());
+    rb_vm_register_global_object(rb_cArray_empty_frozen);
 }
 
 #include "array.rbinc"

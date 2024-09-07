@@ -103,6 +103,7 @@ static VALUE rb_hash_s_try_convert(VALUE, VALUE);
  *  2. Insert WBs
  */
 
+/* :nodoc: */
 VALUE
 rb_hash_freeze(VALUE hash)
 {
@@ -110,6 +111,7 @@ rb_hash_freeze(VALUE hash)
 }
 
 VALUE rb_cHash;
+VALUE rb_cHash_empty_frozen;
 
 static VALUE envtbl;
 static ID id_hash, id_flatten_bang;
@@ -7019,10 +7021,9 @@ static const rb_data_type_t env_data_type = {
  *  - #empty?: Returns whether there are no entries.
  *  - #eql?: Returns whether a given object is equal to +self+.
  *  - #hash: Returns the integer hash code.
- *  - #has_value?: Returns whether a given object is a value in +self+.
- *  - #include?, #has_key?, #member?, #key?: Returns whether a given object is a key in +self+.
- *  - #length, #size: Returns the count of entries.
- *  - #value?: Returns whether a given object is a value in +self+.
+ *  - #has_value? (aliased as #value?): Returns whether a given object is a value in +self+.
+ *  - #include? (aliased as #has_key?, #member?, #key?): Returns whether a given object is a key in +self+.
+ *  - #size (aliased as #length): Returns the count of entries.
  *
  *  ==== Methods for Comparing
  *
@@ -7049,10 +7050,10 @@ static const rb_data_type_t env_data_type = {
  *
  *  ==== Methods for Assigning
  *
- *  - #[]=, #store: Associates a given key with a given value.
+ *  - #[]= (aliased as #store): Associates a given key with a given value.
  *  - #merge: Returns the hash formed by merging each given hash into a copy of +self+.
- *  - #merge!, #update: Merges each given hash into +self+.
- *  - #replace: Replaces the entire contents of +self+ with the contents of a given hash.
+ *  - #update (aliased as #merge!): Merges each given hash into +self+.
+ *  - #replace (aliased as #initialize_copy): Replaces the entire contents of +self+ with the contents of a given hash.
  *
  *  ==== Methods for Deleting
  *
@@ -7062,7 +7063,7 @@ static const rb_data_type_t env_data_type = {
  *  - #compact!: Removes all +nil+-valued entries from +self+.
  *  - #delete: Removes the entry for a given key.
  *  - #delete_if: Removes entries selected by a given block.
- *  - #filter!, #select!: Keep only those entries selected by a given block.
+ *  - #select! (aliased as #filter!): Keep only those entries selected by a given block.
  *  - #keep_if: Keep only those entries selected by a given block.
  *  - #reject!: Removes entries selected by a given block.
  *  - #shift: Removes and returns the first entry.
@@ -7071,18 +7072,18 @@ static const rb_data_type_t env_data_type = {
  *
  *  - #compact: Returns a copy of +self+ with all +nil+-valued entries removed.
  *  - #except: Returns a copy of +self+ with entries removed for specified keys.
- *  - #filter, #select: Returns a copy of +self+ with only those entries selected by a given block.
+ *  - #select (aliased as #filter): Returns a copy of +self+ with only those entries selected by a given block.
  *  - #reject: Returns a copy of +self+ with entries removed as specified by a given block.
  *  - #slice: Returns a hash containing the entries for given keys.
  *
  *  ==== Methods for Iterating
- *  - #each, #each_pair: Calls a given block with each key-value pair.
+ *  - #each_pair (aliased as #each): Calls a given block with each key-value pair.
  *  - #each_key: Calls a given block with each key.
  *  - #each_value: Calls a given block with each value.
  *
  *  ==== Methods for Converting
  *
- *  - #inspect, #to_s: Returns a new String containing the hash entries.
+ *  - #inspect (aliased as #to_s): Returns a new String containing the hash entries.
  *  - #to_a: Returns a new array of 2-element arrays;
  *    each nested array contains a key-value pair from +self+.
  *  - #to_h: Returns +self+ if a +Hash+;
@@ -7119,6 +7120,7 @@ Init_Hash(void)
     rb_define_singleton_method(rb_cHash, "try_convert", rb_hash_s_try_convert, 1);
     rb_define_method(rb_cHash, "initialize_copy", rb_hash_replace, 1);
     rb_define_method(rb_cHash, "rehash", rb_hash_rehash, 0);
+    rb_define_method(rb_cHash, "freeze", rb_hash_freeze, 0);
 
     rb_define_method(rb_cHash, "to_hash", rb_hash_to_hash, 0);
     rb_define_method(rb_cHash, "to_h", rb_hash_to_h, 0);
@@ -7204,6 +7206,9 @@ Init_Hash(void)
 
     rb_define_singleton_method(rb_cHash, "ruby2_keywords_hash?", rb_hash_s_ruby2_keywords_hash_p, 1);
     rb_define_singleton_method(rb_cHash, "ruby2_keywords_hash", rb_hash_s_ruby2_keywords_hash, 1);
+
+    rb_cHash_empty_frozen = rb_hash_freeze(rb_hash_new());
+    rb_vm_register_global_object(rb_cHash_empty_frozen);
 
     /* Document-class: ENV
      *
