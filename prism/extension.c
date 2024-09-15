@@ -31,6 +31,7 @@ ID rb_id_option_encoding;
 ID rb_id_option_filepath;
 ID rb_id_option_frozen_string_literal;
 ID rb_id_option_line;
+ID rb_id_option_main_script;
 ID rb_id_option_scopes;
 ID rb_id_option_version;
 ID rb_id_source_for;
@@ -179,6 +180,8 @@ build_options_i(VALUE key, VALUE value, VALUE argument) {
 
             pm_options_command_line_set(options, command_line);
         }
+    } else if (key_id == rb_id_option_main_script) {
+        if (!NIL_P(value)) pm_options_main_script_set(options, RTEST(value));
     } else {
         rb_raise(rb_eArgError, "unknown keyword: %" PRIsVALUE, key);
     }
@@ -254,27 +257,41 @@ string_options(int argc, VALUE *argv, pm_string_t *input, pm_options_t *options)
  * Read options for methods that look like (filepath, **options).
  */
 static void
-file_options(int argc, VALUE *argv, pm_string_t *input, pm_options_t *options) {
+file_options(int argc, VALUE *argv, pm_string_t *input, pm_options_t *options, VALUE *encoded_filepath) {
     VALUE filepath;
     VALUE keywords;
     rb_scan_args(argc, argv, "1:", &filepath, &keywords);
 
     Check_Type(filepath, T_STRING);
+    *encoded_filepath = rb_str_encode_ospath(filepath);
+    extract_options(options, *encoded_filepath, keywords);
 
-    extract_options(options, filepath, keywords);
+    const char *source = (const char *) pm_string_source(&options->filepath);
+    pm_string_init_result_t result;
 
-    const char * string_source = (const char *) pm_string_source(&options->filepath);
-
-    if (!pm_string_file_init(input, string_source)) {
-        pm_options_free(options);
+    switch (result = pm_string_file_init(input, source)) {
+        case PM_STRING_INIT_SUCCESS:
+            break;
+        case PM_STRING_INIT_ERROR_GENERIC: {
+            pm_options_free(options);
 
 #ifdef _WIN32
-        int e = rb_w32_map_errno(GetLastError());
+            int e = rb_w32_map_errno(GetLastError());
 #else
-        int e = errno;
+            int e = errno;
 #endif
 
-        rb_syserr_fail(e, string_source);
+            rb_syserr_fail(e, source);
+            break;
+        }
+        case PM_STRING_INIT_ERROR_DIRECTORY:
+            pm_options_free(options);
+            rb_syserr_fail(EISDIR, source);
+            break;
+        default:
+            pm_options_free(options);
+            rb_raise(rb_eRuntimeError, "Unknown error (%d) initializing file: %s", result, source);
+            break;
     }
 }
 
@@ -352,7 +369,8 @@ dump_file(int argc, VALUE *argv, VALUE self) {
     pm_string_t input;
     pm_options_t options = { 0 };
 
-    file_options(argc, argv, &input, &options);
+    VALUE encoded_filepath;
+    file_options(argc, argv, &input, &options, &encoded_filepath);
 
     VALUE value = dump_input(&input, &options);
     pm_string_free(&input);
@@ -685,7 +703,8 @@ lex_file(int argc, VALUE *argv, VALUE self) {
     pm_string_t input;
     pm_options_t options = { 0 };
 
-    file_options(argc, argv, &input, &options);
+    VALUE encoded_filepath;
+    file_options(argc, argv, &input, &options, &encoded_filepath);
 
     VALUE value = parse_lex_input(&input, &options, false);
     pm_string_free(&input);
@@ -737,6 +756,11 @@ parse_input(pm_string_t *input, const pm_options_t *options) {
  *       has been set. This should be a boolean or nil.
  * * `line` - the line number that the parse starts on. This should be an
  *       integer or nil. Note that this is 1-indexed.
+ * * `main_script` - a boolean indicating whether or not the source being parsed
+ *       is the main script being run by the interpreter. This controls whether
+ *       or not shebangs are parsed for additional flags and whether or not the
+ *       parser will attempt to find a matching shebang if the first one does
+ *       not contain the word "ruby".
  * * `scopes` - the locals that are in scope surrounding the code that is being
  *       parsed. This should be an array of arrays of symbols or nil. Scopes are
  *       ordered from the outermost scope to the innermost one.
@@ -782,7 +806,8 @@ parse_file(int argc, VALUE *argv, VALUE self) {
     pm_string_t input;
     pm_options_t options = { 0 };
 
-    file_options(argc, argv, &input, &options);
+    VALUE encoded_filepath;
+    file_options(argc, argv, &input, &options, &encoded_filepath);
 
     VALUE value = parse_input(&input, &options);
     pm_string_free(&input);
@@ -838,7 +863,9 @@ profile_file(int argc, VALUE *argv, VALUE self) {
     pm_string_t input;
     pm_options_t options = { 0 };
 
-    file_options(argc, argv, &input, &options);
+    VALUE encoded_filepath;
+    file_options(argc, argv, &input, &options, &encoded_filepath);
+
     profile_input(&input, &options);
     pm_string_free(&input);
     pm_options_free(&options);
@@ -952,7 +979,8 @@ parse_file_comments(int argc, VALUE *argv, VALUE self) {
     pm_string_t input;
     pm_options_t options = { 0 };
 
-    file_options(argc, argv, &input, &options);
+    VALUE encoded_filepath;
+    file_options(argc, argv, &input, &options, &encoded_filepath);
 
     VALUE value = parse_input_comments(&input, &options);
     pm_string_free(&input);
@@ -1007,7 +1035,8 @@ parse_lex_file(int argc, VALUE *argv, VALUE self) {
     pm_string_t input;
     pm_options_t options = { 0 };
 
-    file_options(argc, argv, &input, &options);
+    VALUE encoded_filepath;
+    file_options(argc, argv, &input, &options, &encoded_filepath);
 
     VALUE value = parse_lex_input(&input, &options, true);
     pm_string_free(&input);
@@ -1077,7 +1106,8 @@ parse_file_success_p(int argc, VALUE *argv, VALUE self) {
     pm_string_t input;
     pm_options_t options = { 0 };
 
-    file_options(argc, argv, &input, &options);
+    VALUE encoded_filepath;
+    file_options(argc, argv, &input, &options, &encoded_filepath);
 
     VALUE result = parse_input_success_p(&input, &options);
     pm_string_free(&input);
@@ -1143,6 +1173,7 @@ Init_prism(void) {
     rb_id_option_filepath = rb_intern_const("filepath");
     rb_id_option_frozen_string_literal = rb_intern_const("frozen_string_literal");
     rb_id_option_line = rb_intern_const("line");
+    rb_id_option_main_script = rb_intern_const("main_script");
     rb_id_option_scopes = rb_intern_const("scopes");
     rb_id_option_version = rb_intern_const("version");
     rb_id_source_for = rb_intern("for");

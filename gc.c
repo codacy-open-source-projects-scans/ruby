@@ -1051,7 +1051,7 @@ rb_data_free(void *objspace, VALUE obj)
 
         if (dfree) {
             if (dfree == RUBY_DEFAULT_FREE) {
-                if (!RTYPEDDATA_EMBEDDED_P(obj)) {
+                if (!RTYPEDDATA_P(obj) || !RTYPEDDATA_EMBEDDED_P(obj)) {
                     xfree(data);
                     RB_DEBUG_COUNTER_INC(obj_data_xfree);
                 }
@@ -2039,14 +2039,16 @@ ruby_stack_check(void)
 #define RB_GC_MARK_OR_TRAVERSE(func, obj_or_ptr, obj, check_obj) do { \
     if (!RB_SPECIAL_CONST_P(obj)) { \
         rb_vm_t *vm = GET_VM(); \
+        void *objspace = vm->gc.objspace; \
         if (LIKELY(vm->gc.mark_func_data == NULL)) { \
-            (func)(vm->gc.objspace, (obj_or_ptr)); \
+            GC_ASSERT(rb_gc_impl_during_gc_p(objspace)); \
+            (func)(objspace, (obj_or_ptr)); \
         } \
         else if (check_obj ? \
-                rb_gc_impl_pointer_to_heap_p(vm->gc.objspace, (const void *)obj) && \
-                    !rb_gc_impl_garbage_object_p(vm->gc.objspace, obj) : \
+                rb_gc_impl_pointer_to_heap_p(objspace, (const void *)obj) && \
+                    !rb_gc_impl_garbage_object_p(objspace, obj) : \
                 true) { \
-            GC_ASSERT(!rb_gc_impl_during_gc_p(vm->gc.objspace)); \
+            GC_ASSERT(!rb_gc_impl_during_gc_p(objspace)); \
             struct gc_mark_func_data_struct *mark_func_data = vm->gc.mark_func_data; \
             vm->gc.mark_func_data = NULL; \
             mark_func_data->mark_func((obj), mark_func_data->data); \
@@ -2100,7 +2102,18 @@ rb_gc_mark_maybe(VALUE obj)
 void
 rb_gc_mark_weak(VALUE *ptr)
 {
-    rb_gc_impl_mark_weak(rb_gc_get_objspace(), ptr);
+    if (RB_SPECIAL_CONST_P(*ptr)) return;
+
+    rb_vm_t *vm = GET_VM();
+    void *objspace = vm->gc.objspace;
+    if (LIKELY(vm->gc.mark_func_data == NULL)) {
+        GC_ASSERT(rb_gc_impl_during_gc_p(objspace));
+
+        rb_gc_impl_mark_weak(objspace, ptr);
+    }
+    else {
+        GC_ASSERT(!rb_gc_impl_during_gc_p(objspace));
+    }
 }
 
 void
@@ -2349,7 +2362,8 @@ rb_gc_mark_machine_context(const rb_execution_context_t *ec)
 
     void *data =
 #ifdef RUBY_ASAN_ENABLED
-        ec;
+        /* gc_mark_machine_stack_location_maybe() uses data as const */
+        (rb_execution_context_t *)ec;
 #else
         NULL;
 #endif

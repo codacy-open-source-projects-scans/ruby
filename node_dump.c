@@ -289,6 +289,9 @@ dump_node(VALUE buf, VALUE indent, int comment, const NODE * node)
         F_NODE(nd_body, RNODE_WHEN, "when body");
         LAST_NODE;
         F_NODE(nd_next, RNODE_WHEN, "next when clause");
+        F_LOC(keyword_loc, RNODE_WHEN);
+        LAST_NODE;
+        F_LOC(then_keyword_loc, RNODE_WHEN);
         return;
 
       case NODE_IN:
@@ -316,8 +319,10 @@ dump_node(VALUE buf, VALUE indent, int comment, const NODE * node)
             A((RNODE_WHILE(node)->nd_state == 1) ? " (while-end)" : " (begin-end-while)");
         }
         F_NODE(nd_cond, RNODE_WHILE, "condition");
-        LAST_NODE;
         F_NODE(nd_body, RNODE_WHILE, "body");
+        F_LOC(keyword_loc, RNODE_WHILE);
+        LAST_NODE;
+        F_LOC(closing_loc, RNODE_WHILE);
         return;
 
       case NODE_ITER:
@@ -347,15 +352,17 @@ dump_node(VALUE buf, VALUE indent, int comment, const NODE * node)
         ANN("break statement");
         ANN("format: break [nd_stts]");
         ANN("example: break 1");
-        LAST_NODE;
         F_NODE(nd_stts, RNODE_BREAK, "value");
+        LAST_NODE;
+        F_LOC(keyword_loc, RNODE_BREAK);
         return;
       case NODE_NEXT:
         ANN("next statement");
         ANN("format: next [nd_stts]");
         ANN("example: next 1");
-        LAST_NODE;
         F_NODE(nd_stts, RNODE_NEXT, "value");
+        LAST_NODE;
+        F_LOC(keyword_loc, RNODE_NEXT);
         return;
       case NODE_RETURN:
         ANN("return statement");
@@ -369,6 +376,7 @@ dump_node(VALUE buf, VALUE indent, int comment, const NODE * node)
         ANN("redo statement");
         ANN("format: redo");
         ANN("example: redo");
+        F_LOC(keyword_loc, RNODE_REDO);
         return;
 
       case NODE_RETRY:
