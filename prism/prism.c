@@ -168,6 +168,7 @@ lex_mode_push_regexp(pm_parser_t *parser, uint8_t incrementor, uint8_t terminato
         breakpoints[index++] = incrementor;
     }
 
+    parser->explicit_encoding = NULL;
     return lex_mode_push(parser, lex_mode);
 }
 
@@ -14431,7 +14432,8 @@ parse_parameters(
     pm_binding_power_t binding_power,
     bool uses_parentheses,
     bool allows_trailing_comma,
-    bool allows_forwarding_parameters
+    bool allows_forwarding_parameters,
+    bool accepts_blocks_in_defaults
 ) {
     pm_parameters_node_t *params = pm_parameters_node_create(parser);
     bool looping = true;
@@ -14549,11 +14551,14 @@ parse_parameters(
                     pm_constant_id_t name_id = pm_parser_constant_id_token(parser, &name);
                     uint32_t reads = parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 ? pm_locals_reads(&parser->current_scope->locals, name_id) : 0;
 
+                    if (accepts_blocks_in_defaults) pm_accepts_block_stack_push(parser, true);
                     pm_node_t *value = parse_value_expression(parser, binding_power, false, PM_ERR_PARAMETER_NO_DEFAULT);
+                    if (accepts_blocks_in_defaults) pm_accepts_block_stack_pop(parser);
+
                     pm_optional_parameter_node_t *param = pm_optional_parameter_node_create(parser, &name, &operator, value);
 
                     if (repeated) {
-                        pm_node_flag_set_repeated_parameter((pm_node_t *)param);
+                        pm_node_flag_set_repeated_parameter((pm_node_t *) param);
                     }
                     pm_parameters_node_optionals_append(params, param);
 
@@ -14640,7 +14645,10 @@ parse_parameters(
 
                             pm_constant_id_t name_id = pm_parser_constant_id_token(parser, &local);
                             uint32_t reads = parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 ? pm_locals_reads(&parser->current_scope->locals, name_id) : 0;
+
+                            if (accepts_blocks_in_defaults) pm_accepts_block_stack_push(parser, true);
                             pm_node_t *value = parse_value_expression(parser, binding_power, false, PM_ERR_PARAMETER_NO_DEFAULT_KW);
+                            if (accepts_blocks_in_defaults) pm_accepts_block_stack_pop(parser);
 
                             if (parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 && (pm_locals_reads(&parser->current_scope->locals, name_id) != reads)) {
                                 PM_PARSER_ERR_TOKEN_FORMAT_CONTENT(parser, local, PM_ERR_PARAMETER_CIRCULAR);
@@ -15114,7 +15122,8 @@ parse_block_parameters(
     pm_parser_t *parser,
     bool allows_trailing_comma,
     const pm_token_t *opening,
-    bool is_lambda_literal
+    bool is_lambda_literal,
+    bool accepts_blocks_in_defaults
 ) {
     pm_parameters_node_t *parameters = NULL;
     if (!match1(parser, PM_TOKEN_SEMICOLON)) {
@@ -15123,7 +15132,8 @@ parse_block_parameters(
             is_lambda_literal ? PM_BINDING_POWER_DEFINED : PM_BINDING_POWER_INDEX,
             false,
             allows_trailing_comma,
-            false
+            false,
+            accepts_blocks_in_defaults
         );
     }
 
@@ -15293,7 +15303,7 @@ parse_block(pm_parser_t *parser) {
             parser->command_start = true;
             parser_lex(parser);
         } else {
-            block_parameters = parse_block_parameters(parser, true, &block_parameters_opening, false);
+            block_parameters = parse_block_parameters(parser, true, &block_parameters_opening, false, true);
             accept1(parser, PM_TOKEN_NEWLINE);
             parser->command_start = true;
             expect1(parser, PM_TOKEN_PIPE, PM_ERR_BLOCK_PARAM_PIPE_TERM);
@@ -15436,7 +15446,6 @@ parse_return(pm_parser_t *parser, pm_node_t *node) {
             case PM_CONTEXT_CASE_IN:
             case PM_CONTEXT_CASE_WHEN:
             case PM_CONTEXT_DEFAULT_PARAMS:
-            case PM_CONTEXT_DEF_PARAMS:
             case PM_CONTEXT_DEFINED:
             case PM_CONTEXT_ELSE:
             case PM_CONTEXT_ELSIF:
@@ -15482,6 +15491,7 @@ parse_return(pm_parser_t *parser, pm_node_t *node) {
             case PM_CONTEXT_BLOCK_RESCUE:
             case PM_CONTEXT_DEF_ELSE:
             case PM_CONTEXT_DEF_ENSURE:
+            case PM_CONTEXT_DEF_PARAMS:
             case PM_CONTEXT_DEF_RESCUE:
             case PM_CONTEXT_DEF:
             case PM_CONTEXT_LAMBDA_BRACES:
@@ -17619,7 +17629,12 @@ pm_parser_err_prefix(pm_parser_t *parser, pm_diagnostic_id_t diag_id) {
  */
 static void
 parse_retry(pm_parser_t *parser, const pm_node_t *node) {
+#define CONTEXT_NONE 0
+#define CONTEXT_THROUGH_ENSURE 1
+#define CONTEXT_THROUGH_ELSE 2
+
     pm_context_node_t *context_node = parser->current_context;
+    int context = CONTEXT_NONE;
 
     while (context_node != NULL) {
         switch (context_node->context) {
@@ -17643,7 +17658,13 @@ parse_retry(pm_parser_t *parser, const pm_node_t *node) {
             case PM_CONTEXT_SCLASS:
                 // These are the bad cases. We're not allowed to have a retry in
                 // these contexts.
-                pm_parser_err_node(parser, node, PM_ERR_INVALID_RETRY_WITHOUT_RESCUE);
+                if (context == CONTEXT_NONE) {
+                    pm_parser_err_node(parser, node, PM_ERR_INVALID_RETRY_WITHOUT_RESCUE);
+                } else if (context == CONTEXT_THROUGH_ENSURE) {
+                    pm_parser_err_node(parser, node, PM_ERR_INVALID_RETRY_AFTER_ENSURE);
+                } else if (context == CONTEXT_THROUGH_ELSE) {
+                    pm_parser_err_node(parser, node, PM_ERR_INVALID_RETRY_AFTER_ELSE);
+                }
                 return;
             case PM_CONTEXT_BEGIN_ELSE:
             case PM_CONTEXT_BLOCK_ELSE:
@@ -17654,8 +17675,8 @@ parse_retry(pm_parser_t *parser, const pm_node_t *node) {
             case PM_CONTEXT_SCLASS_ELSE:
                 // These are also bad cases, but with a more specific error
                 // message indicating the else.
-                pm_parser_err_node(parser, node, PM_ERR_INVALID_RETRY_AFTER_ELSE);
-                return;
+                context = CONTEXT_THROUGH_ELSE;
+                break;
             case PM_CONTEXT_BEGIN_ENSURE:
             case PM_CONTEXT_BLOCK_ENSURE:
             case PM_CONTEXT_CLASS_ENSURE:
@@ -17665,8 +17686,8 @@ parse_retry(pm_parser_t *parser, const pm_node_t *node) {
             case PM_CONTEXT_SCLASS_ENSURE:
                 // These are also bad cases, but with a more specific error
                 // message indicating the ensure.
-                pm_parser_err_node(parser, node, PM_ERR_INVALID_RETRY_AFTER_ENSURE);
-                return;
+                context = CONTEXT_THROUGH_ENSURE;
+                break;
             case PM_CONTEXT_NONE:
                 // This case should never happen.
                 assert(false && "unreachable");
@@ -17700,6 +17721,10 @@ parse_retry(pm_parser_t *parser, const pm_node_t *node) {
 
         context_node = context_node->prev;
     }
+
+#undef CONTEXT_NONE
+#undef CONTEXT_ENSURE
+#undef CONTEXT_ELSE
 }
 
 /**
@@ -18827,12 +18852,12 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             switch (keyword.type) {
                 case PM_TOKEN_KEYWORD_BREAK: {
                     pm_node_t *node = (pm_node_t *) pm_break_node_create(parser, &keyword, arguments.arguments);
-                    if (!parser->parsing_eval) parse_block_exit(parser, node);
+                    if (!parser->partial_script) parse_block_exit(parser, node);
                     return node;
                 }
                 case PM_TOKEN_KEYWORD_NEXT: {
                     pm_node_t *node = (pm_node_t *) pm_next_node_create(parser, &keyword, arguments.arguments);
-                    if (!parser->parsing_eval) parse_block_exit(parser, node);
+                    if (!parser->partial_script) parse_block_exit(parser, node);
                     return node;
                 }
                 case PM_TOKEN_KEYWORD_RETURN: {
@@ -18880,7 +18905,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             }
 
             pm_node_t *node = (pm_node_t *) pm_yield_node_create(parser, &keyword, &arguments.opening_loc, arguments.arguments, &arguments.closing_loc);
-            if (!parser->parsing_eval) parse_yield(parser, node);
+            if (!parser->parsing_eval && !parser->partial_script) parse_yield(parser, node);
 
             return node;
         }
@@ -19151,7 +19176,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     if (match1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
                         params = NULL;
                     } else {
-                        params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, true, false, true);
+                        params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, true, false, true, true);
                     }
 
                     lex_state_set(parser, PM_LEX_STATE_BEG);
@@ -19175,7 +19200,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
                     lparen = not_provided(parser);
                     rparen = not_provided(parser);
-                    params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, false, false, true);
+                    params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, false, false, true, true);
                     break;
                 }
                 default: {
@@ -19549,7 +19574,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
 
             pm_node_t *node = (pm_node_t *) pm_redo_node_create(parser, &parser->previous);
-            if (!parser->parsing_eval) parse_block_exit(parser, node);
+            if (!parser->partial_script) parse_block_exit(parser, node);
 
             return node;
         }
@@ -20278,7 +20303,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     if (match1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
                         block_parameters = pm_block_parameters_node_create(parser, NULL, &opening);
                     } else {
-                        block_parameters = parse_block_parameters(parser, false, &opening, true);
+                        block_parameters = parse_block_parameters(parser, false, &opening, true, true);
                     }
 
                     accept1(parser, PM_TOKEN_NEWLINE);
@@ -20290,7 +20315,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 case PM_CASE_PARAMETER: {
                     pm_accepts_block_stack_push(parser, false);
                     pm_token_t opening = not_provided(parser);
-                    block_parameters = parse_block_parameters(parser, false, &opening, true);
+                    block_parameters = parse_block_parameters(parser, false, &opening, true, false);
                     pm_accepts_block_stack_pop(parser);
                     break;
                 }
@@ -21874,6 +21899,7 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
         .explicit_encoding = NULL,
         .command_line = 0,
         .parsing_eval = false,
+        .partial_script = false,
         .command_start = true,
         .recovering = false,
         .encoding_locked = false,
@@ -21936,6 +21962,9 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
 
         // version option
         parser->version = options->version;
+
+        // partial_script
+        parser->partial_script = options->partial_script;
 
         // scopes option
         parser->parsing_eval = options->scopes_count > 0;

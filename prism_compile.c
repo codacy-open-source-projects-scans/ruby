@@ -646,7 +646,9 @@ pm_interpolated_node_compile(rb_iseq_t *iseq, const pm_node_list_t *parts, const
                         current_string = rb_enc_str_new(NULL, 0, encoding);
                     }
 
-                    PUSH_INSN1(ret, current_location, putobject, rb_fstring(current_string));
+                    current_string = rb_fstring(current_string);
+                    PUSH_INSN1(ret, current_location, putobject, current_string);
+                    RB_GC_GUARD(current_string);
                     PM_COMPILE_NOT_POPPED(part);
 
                     const pm_node_location_t current_location = PM_NODE_START_LOCATION(scope_node->parser, part);
@@ -1536,9 +1538,13 @@ pm_compile_hash_elements(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
 #undef FLUSH_CHUNK
 }
 
+#define SPLATARRAY_FALSE 0
+#define SPLATARRAY_TRUE 1
+#define DUP_SINGLE_KW_SPLAT 2
+
 // This is details. Users should call pm_setup_args() instead.
 static int
-pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *block, int *flags, const bool has_regular_blockarg, struct rb_callinfo_kwarg **kw_arg, VALUE *dup_rest, rb_iseq_t *iseq, LINK_ANCHOR *const ret, pm_scope_node_t *scope_node, const pm_node_location_t *node_location)
+pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *block, int *flags, const bool has_regular_blockarg, struct rb_callinfo_kwarg **kw_arg, int *dup_rest, rb_iseq_t *iseq, LINK_ANCHOR *const ret, pm_scope_node_t *scope_node, const pm_node_location_t *node_location)
 {
     const pm_node_location_t location = *node_location;
 
@@ -1576,9 +1582,18 @@ pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *b
                         // in this case, so mark the method as passing mutable
                         // keyword splat.
                         *flags |= VM_CALL_KW_SPLAT_MUT;
+                        pm_compile_hash_elements(iseq, argument, elements, true, ret, scope_node);
                     }
-
-                    pm_compile_hash_elements(iseq, argument, elements, true, ret, scope_node);
+                    else if (*dup_rest & DUP_SINGLE_KW_SPLAT) {
+                        *flags |= VM_CALL_KW_SPLAT_MUT;
+                        PUSH_INSN1(ret, location, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
+                        PUSH_INSN1(ret, location, newhash, INT2FIX(0));
+                        pm_compile_hash_elements(iseq, argument, elements, true, ret, scope_node);
+                        PUSH_SEND(ret, location, id_core_hash_merge_kwd, INT2FIX(2));
+                    }
+                    else {
+                        pm_compile_hash_elements(iseq, argument, elements, true, ret, scope_node);
+                    }
                 }
                 else {
                     // We need to first figure out if all elements of the
@@ -1684,8 +1699,8 @@ pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *b
                     // foo(a, *b, c)
                     //        ^^
                     if (index + 1 < arguments->size || has_regular_blockarg) {
-                        PUSH_INSN1(ret, location, splatarray, *dup_rest);
-                        if (*dup_rest == Qtrue) *dup_rest = Qfalse;
+                        PUSH_INSN1(ret, location, splatarray, (*dup_rest & SPLATARRAY_TRUE) ? Qtrue : Qfalse);
+                        if (*dup_rest & SPLATARRAY_TRUE) *dup_rest &= ~SPLATARRAY_TRUE;
                     }
                     // If this is the first spalt array seen and it's the last
                     // parameter, we don't want splatarray to dup it.
@@ -1846,7 +1861,7 @@ pm_setup_args_dup_rest_p(const pm_node_t *node)
 static int
 pm_setup_args(const pm_arguments_node_t *arguments_node, const pm_node_t *block, int *flags, struct rb_callinfo_kwarg **kw_arg, rb_iseq_t *iseq, LINK_ANCHOR *const ret, pm_scope_node_t *scope_node, const pm_node_location_t *node_location)
 {
-    VALUE dup_rest = Qtrue;
+    int dup_rest = SPLATARRAY_TRUE;
 
     const pm_node_list_t *arguments;
     size_t arguments_size;
@@ -1863,23 +1878,23 @@ pm_setup_args(const pm_arguments_node_t *arguments_node, const pm_node_t *block,
         // Start by assuming that dup_rest=false, then check each element of the
         // hash to ensure we don't need to flip it back to true (in case one of
         // the elements could potentially mutate the array).
-        dup_rest = Qfalse;
+        dup_rest = SPLATARRAY_FALSE;
 
         const pm_keyword_hash_node_t *keyword_hash = (const pm_keyword_hash_node_t *) arguments->nodes[arguments_size - 1];
         const pm_node_list_t *elements = &keyword_hash->elements;
 
-        for (size_t index = 0; dup_rest == Qfalse && index < elements->size; index++) {
+        for (size_t index = 0; dup_rest == SPLATARRAY_FALSE && index < elements->size; index++) {
             const pm_node_t *element = elements->nodes[index];
 
             switch (PM_NODE_TYPE(element)) {
               case PM_ASSOC_NODE: {
                 const pm_assoc_node_t *assoc = (const pm_assoc_node_t *) element;
-                if (pm_setup_args_dup_rest_p(assoc->key) || pm_setup_args_dup_rest_p(assoc->value)) dup_rest = Qtrue;
+                if (pm_setup_args_dup_rest_p(assoc->key) || pm_setup_args_dup_rest_p(assoc->value)) dup_rest = SPLATARRAY_TRUE;
                 break;
               }
               case PM_ASSOC_SPLAT_NODE: {
                 const pm_assoc_splat_node_t *assoc = (const pm_assoc_splat_node_t *) element;
-                if (assoc->value != NULL && pm_setup_args_dup_rest_p(assoc->value)) dup_rest = Qtrue;
+                if (assoc->value != NULL && pm_setup_args_dup_rest_p(assoc->value)) dup_rest = SPLATARRAY_TRUE;
                 break;
               }
               default:
@@ -1888,7 +1903,7 @@ pm_setup_args(const pm_arguments_node_t *arguments_node, const pm_node_t *block,
         }
     }
 
-    VALUE initial_dup_rest = dup_rest;
+    int initial_dup_rest = dup_rest;
     int argc;
 
     if (block && PM_NODE_TYPE_P(block, PM_BLOCK_ARGUMENT_NODE)) {
@@ -1896,6 +1911,12 @@ pm_setup_args(const pm_arguments_node_t *arguments_node, const pm_node_t *block,
         // since the nature of the expression influences whether splat should
         // duplicate the array.
         bool regular_block_arg = true;
+        const pm_node_t *block_expr = ((const pm_block_argument_node_t *)block)->expression;
+
+        if (block_expr && pm_setup_args_dup_rest_p(block_expr)) {
+            dup_rest = SPLATARRAY_TRUE | DUP_SINGLE_KW_SPLAT;
+            initial_dup_rest = dup_rest;
+        }
 
         DECL_ANCHOR(block_arg);
         INIT_ANCHOR(block_arg);
@@ -3889,6 +3910,12 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
       }
       case PM_CALL_NODE: {
         const pm_call_node_t *cast = ((const pm_call_node_t *) node);
+
+        if (cast->block != NULL && PM_NODE_TYPE_P(cast->block, PM_BLOCK_NODE)) {
+            dtype = DEFINED_EXPR;
+            break;
+        }
+
         ID method_id = pm_constant_id_lookup(scope_node, cast->name);
 
         if (cast->receiver || cast->arguments) {
@@ -6366,10 +6393,7 @@ pm_compile_scope_node(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_nod
             for (int i = 0; i < RARRAY_LEN(default_values); i++) {
                 VALUE dv = RARRAY_AREF(default_values, i);
                 if (dv == complex_mark) dv = Qundef;
-                if (!SPECIAL_CONST_P(dv)) {
-                    RB_OBJ_WRITTEN(iseq, Qundef, dv);
-                }
-                dvs[i] = dv;
+                RB_OBJ_WRITE(iseq, &dvs[i], dv);
             }
 
             keyword->default_values = dvs;
@@ -6699,6 +6723,14 @@ pm_compile_scope_node(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_nod
     }
 
     switch (body->type) {
+      case ISEQ_TYPE_PLAIN: {
+        RUBY_ASSERT(PM_NODE_TYPE_P(scope_node->ast_node, PM_INTERPOLATED_REGULAR_EXPRESSION_NODE));
+
+        const pm_interpolated_regular_expression_node_t *cast = (const pm_interpolated_regular_expression_node_t *) scope_node->ast_node;
+        pm_compile_regexp_dynamic(iseq, (const pm_node_t *) cast, &cast->parts, &location, ret, popped, scope_node);
+
+        break;
+      }
       case ISEQ_TYPE_BLOCK: {
         LABEL *start = ISEQ_COMPILE_DATA(iseq)->start_label = NEW_LABEL(0);
         LABEL *end = ISEQ_COMPILE_DATA(iseq)->end_label = NEW_LABEL(0);
@@ -7242,7 +7274,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                     throw_flag = 0;
                 }
                 else if (ISEQ_BODY(ip)->type == ISEQ_TYPE_EVAL) {
-                    COMPILE_ERROR(iseq, location.line, "Can't escape from eval with break");
+                    COMPILE_ERROR(iseq, location.line, "Invalid break");
                     return;
                 }
                 else {
@@ -8043,6 +8075,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             PUSH_GETLOCAL(ret, location, mult_local.index, mult_local.level);
             PUSH_INSN2(ret, location, invokesuperforward, new_callinfo(iseq, 0, 0, flag, NULL, block != NULL), block);
             if (popped) PUSH_INSN(ret, location, pop);
+            if (cast->block) {
+                ISEQ_COMPILE_DATA(iseq)->current_block = previous_block;
+            }
             return;
         }
 
@@ -8468,7 +8503,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             pm_scope_node_t next_scope_node;
             pm_scope_node_init(node, &next_scope_node, scope_node);
 
-            block_iseq = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, location.line);
+            block_iseq = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_PLAIN, location.line);
             pm_scope_node_destroy(&next_scope_node);
 
             ISEQ_COMPILE_DATA(iseq)->current_block = block_iseq;
@@ -9011,7 +9046,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                     break;
                 }
                 else if (ISEQ_BODY(ip)->type == ISEQ_TYPE_EVAL) {
-                    COMPILE_ERROR(iseq, location.line, "Can't escape from eval with next");
+                    COMPILE_ERROR(iseq, location.line, "Invalid next");
                     return;
                 }
 
@@ -9264,7 +9299,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                     break;
                 }
                 else if (ISEQ_BODY(ip)->type == ISEQ_TYPE_EVAL) {
-                    COMPILE_ERROR(iseq, location.line, "Can't escape from eval with redo");
+                    COMPILE_ERROR(iseq, location.line, "Invalid redo");
                     return;
                 }
 

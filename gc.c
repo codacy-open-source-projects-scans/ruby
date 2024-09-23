@@ -581,7 +581,6 @@ typedef struct gc_function_map {
     void (*ractor_cache_free)(void *objspace_ptr, void *cache);
     void (*set_params)(void *objspace_ptr);
     void (*init)(void);
-    void (*initial_stress_set)(VALUE flag);
     size_t *(*size_pool_sizes)(void *objspace_ptr);
     // Shutdown
     void (*shutdown_free_objects)(void *objspace_ptr);
@@ -634,9 +633,9 @@ typedef struct gc_function_map {
     VALUE (*object_id)(void *objspace_ptr, VALUE obj);
     VALUE (*object_id_to_ref)(void *objspace_ptr, VALUE object_id);
     // Statistics
-    VALUE (*set_measure_total_time)(void *objspace_ptr, VALUE flag);
-    VALUE (*get_measure_total_time)(void *objspace_ptr);
-    VALUE (*get_profile_total_time)(void *objspace_ptr);
+    void (*set_measure_total_time)(void *objspace_ptr, VALUE flag);
+    bool (*get_measure_total_time)(void *objspace_ptr);
+    unsigned long long (*get_total_time)(void *objspace_ptr);
     size_t (*gc_count)(void *objspace_ptr);
     VALUE (*latest_gc_info)(void *objspace_ptr, VALUE key);
     size_t (*stat)(void *objspace_ptr, VALUE hash_or_sym);
@@ -711,7 +710,6 @@ ruby_external_gc_init(void)
     load_external_gc_func(ractor_cache_free);
     load_external_gc_func(set_params);
     load_external_gc_func(init);
-    load_external_gc_func(initial_stress_set);
     load_external_gc_func(size_pool_sizes);
     // Shutdown
     load_external_gc_func(shutdown_free_objects);
@@ -766,7 +764,7 @@ ruby_external_gc_init(void)
     // Statistics
     load_external_gc_func(set_measure_total_time);
     load_external_gc_func(get_measure_total_time);
-    load_external_gc_func(get_profile_total_time);
+    load_external_gc_func(get_total_time);
     load_external_gc_func(gc_count);
     load_external_gc_func(latest_gc_info);
     load_external_gc_func(stat);
@@ -789,7 +787,6 @@ ruby_external_gc_init(void)
 # define rb_gc_impl_ractor_cache_free rb_gc_functions.ractor_cache_free
 # define rb_gc_impl_set_params rb_gc_functions.set_params
 # define rb_gc_impl_init rb_gc_functions.init
-# define rb_gc_impl_initial_stress_set rb_gc_functions.initial_stress_set
 # define rb_gc_impl_size_pool_sizes rb_gc_functions.size_pool_sizes
 // Shutdown
 # define rb_gc_impl_shutdown_free_objects rb_gc_functions.shutdown_free_objects
@@ -844,7 +841,7 @@ ruby_external_gc_init(void)
 // Statistics
 # define rb_gc_impl_set_measure_total_time rb_gc_functions.set_measure_total_time
 # define rb_gc_impl_get_measure_total_time rb_gc_functions.get_measure_total_time
-# define rb_gc_impl_get_profile_total_time rb_gc_functions.get_profile_total_time
+# define rb_gc_impl_get_total_time rb_gc_functions.get_total_time
 # define rb_gc_impl_gc_count rb_gc_functions.gc_count
 # define rb_gc_impl_latest_gc_info rb_gc_functions.latest_gc_info
 # define rb_gc_impl_stat rb_gc_functions.stat
@@ -857,6 +854,8 @@ ruby_external_gc_init(void)
 # define rb_gc_impl_copy_attributes rb_gc_functions.copy_attributes
 #endif
 
+static VALUE initial_stress = Qfalse;
+
 void *
 rb_objspace_alloc(void)
 {
@@ -868,6 +867,7 @@ rb_objspace_alloc(void)
     ruby_current_vm_ptr->gc.objspace = objspace;
 
     rb_gc_impl_objspace_init(objspace);
+    rb_gc_impl_stress_set(objspace, initial_stress);
 
     return objspace;
 }
@@ -3376,19 +3376,6 @@ rb_gc_latest_gc_info(VALUE key)
 }
 
 static VALUE
-gc_latest_gc_info(rb_execution_context_t *ec, VALUE self, VALUE arg)
-{
-    if (NIL_P(arg)) {
-        arg = rb_hash_new();
-    }
-    else if (!SYMBOL_P(arg) && !RB_TYPE_P(arg, T_HASH)) {
-        rb_raise(rb_eTypeError, "non-hash or symbol given");
-    }
-
-    return rb_gc_latest_gc_info(arg);
-}
-
-static VALUE
 gc_stat(rb_execution_context_t *ec, VALUE self, VALUE arg) // arg is (nil || hash || symbol)
 {
     if (NIL_P(arg)) {
@@ -3463,7 +3450,7 @@ gc_stress_set_m(rb_execution_context_t *ec, VALUE self, VALUE flag)
 void
 rb_gc_initial_stress_set(VALUE flag)
 {
-    rb_gc_impl_initial_stress_set(flag);
+    initial_stress = flag;
 }
 
 size_t *
