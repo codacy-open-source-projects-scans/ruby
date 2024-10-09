@@ -89,7 +89,7 @@ class TestResolvDNS < Test::Unit::TestCase
             u = nil
             retry
           end
-          raise
+          omit "Could not find a free port after 10 retries"
         end
 
         # If we get to this point, we have a valid t & u socket
@@ -382,7 +382,7 @@ class TestResolvDNS < Test::Unit::TestCase
       _, server_port, _, server_address = u.addr
       begin
         client_thread = Thread.new {
-          Resolv::DNS.open(:nameserver_port => [[server_address, server_port]], :search => ['bad1.com', 'bad2.com', 'good.com'], ndots: 5) {|dns|
+          Resolv::DNS.open(:nameserver_port => [[server_address, server_port]], :search => ['bad1.com', 'bad2.com', 'good.com'], ndots: 5, use_ipv6: false) {|dns|
             dns.getaddress("example")
           }
         }

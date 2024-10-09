@@ -3557,7 +3557,7 @@ retry:;
 
     if (cconst) {
         typedef VALUE(*builtin_func0)(void *, VALUE);
-        VALUE const_val = (*(builtin_func0)bf->func_ptr)(NULL, Qnil);
+        VALUE const_val = (*(builtin_func0)(uintptr_t)bf->func_ptr)(NULL, Qnil);
         PUSH_INSN1(ret, *node_location, putobject, const_val);
         return COMPILE_OK;
     }
@@ -6797,6 +6797,8 @@ pm_compile_array_node(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_list
                 // Create the temporary array.
                 for (; tmp_array_size; tmp_array_size--)
                     rb_ary_push(tmp_array, pm_static_literal_value(iseq, elements->nodes[index++], scope_node));
+
+                index--; // about to be incremented by for loop
                 OBJ_FREEZE(tmp_array);
 
                 // Emit the optimized code.
