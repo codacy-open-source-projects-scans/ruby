@@ -3403,6 +3403,8 @@ AC_DEFINE_UNQUOTED(DLEXT_MAXLEN, `expr $len + 1`)
 test ".$DLEXT"  = "." || AC_DEFINE_UNQUOTED(DLEXT,  ".$DLEXT")
 AC_SUBST(DLEXT)
 
+AC_DEFINE_UNQUOTED(SOEXT, ".$SOEXT")
+
 : "strip" && {
     AC_MSG_CHECKING([for $STRIP flags])
     AC_LINK_IFELSE([AC_LANG_PROGRAM], [AS_IF(
@@ -4559,6 +4561,17 @@ AS_IF([test x"$enable_rubygems" = xno], [
     USE_RUBYGEMS=yes
 ])
 AC_SUBST(USE_RUBYGEMS)
+
+m4_define(available_parsers, [parse.y, prism])
+with_parser=prism
+AC_ARG_WITH(parser,
+    AS_HELP_STRING([--with-parser=PARSER],
+        [specify default parser; PARSER is one of ]m4_join([, ],available_parsers)))
+AS_CASE([$with_parser],
+m4_foreach(parser, [available_parsers],
+    parser[,][AC_DEFINE_UNQUOTED(RB_DEFAULT_PARSER, RB_DEFAULT_PARSER_[]AS_TR_CPP(parser)),])
+    [AC_MSG_ERROR([Unknown parser: $with_parser])]
+)
 
 arch_hdrdir="${EXTOUT}/include/${arch}/ruby"
 AS_MKDIR_P("${arch_hdrdir}")

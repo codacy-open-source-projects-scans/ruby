@@ -59,6 +59,10 @@ Note: We're only listing outstanding class updates.
 
 ## Stdlib updates
 
+The following default gem is added.
+
+* win32-registry 0.0.1
+
 * Tempfile
 
     * The keyword argument `anonymous: true` is implemented for Tempfile.create.
@@ -68,7 +72,7 @@ Note: We're only listing outstanding class updates.
 
 * win32/sspi.rb
 
-    * This library is now extracted from the Ruby repository to [ruby/win32-sspi].
+    * This library is now extracted from the Ruby repository to [ruby/net-http-sspi].
       [[Feature #20775]]
 
 The following default gems are updated.
@@ -76,7 +80,7 @@ The following default gems are updated.
 * RubyGems 3.6.0.dev
 * bundler 2.6.0.dev
 * erb 4.0.4
-* fiddle 1.1.3.dev
+* fiddle 1.1.4.dev
 * io-console 0.7.2
 * irb 1.14.1
 * json 2.7.2
@@ -103,7 +107,7 @@ The following bundled gems are updated.
 * rexml 3.3.8
 * rss 0.3.1
 * net-ftp 0.3.8
-* net-imap 0.4.16
+* net-imap 0.4.17
 * net-smtp 0.5.0
 * rbs 3.6.1
 * typeprof 0.21.11
@@ -125,14 +129,14 @@ The following bundled gems are promoted from default gems.
 * syslog 0.1.2
 * csv 3.3.0
 
-The following bundled gems are added.
+The following bundled gem is added.
 
 * repl_type_completor 0.1.7
 
 See GitHub releases like [GitHub Releases of Logger] or changelog for
 details of the default gems or bundled gems.
 
-[ruby/win32-sspi]: https://github.com/ruby/win32-sspi
+[ruby/net-http-sspi]: https://github.com/ruby/net-http-sspi
 [GitHub Releases of Logger]: https://github.com/ruby/logger/releases
 
 ## Supported platforms

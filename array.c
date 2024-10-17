@@ -1512,35 +1512,40 @@ rb_ary_shift(VALUE ary)
 
 /*
  *  call-seq:
- *     array.shift -> object or nil
- *     array.shift(n) -> new_array
+ *    shift -> object or nil
+ *    shift(count) -> new_array or nil
  *
- *  Removes and returns leading elements.
+ *  Removes and returns leading elements from +self+.
  *
- *  When no argument is given, removes and returns the first element:
+ *  With no argument, removes and returns one element, if available,
+ *  or +nil+ otherwise:
  *
- *    a = [:foo, 'bar', 2]
- *    a.shift # => :foo
- *    a # => ['bar', 2]
+ *    a = [0, 1, 2, 3]
+ *    a.shift  # => 0
+ *    a        # => [1, 2, 3]
+ *    [].shift # => nil
  *
- *  Returns +nil+ if +self+ is empty.
+ *  With non-negative numeric argument +count+ given,
+ *  removes and returns the first +count+ elements:
  *
- *  When positive Integer argument +n+ is given, removes the first +n+ elements;
- *  returns those elements in a new +Array+:
+ *    a = [0, 1, 2, 3]
+ *    a.shift(2)   # => [0, 1]
+ *    a            # => [2, 3]
+ *    a.shift(1.1) # => [2]
+ *    a            # => [3]
+ *    a.shift(0)   # => []
+ *    a            # => [3]
  *
- *    a = [:foo, 'bar', 2]
- *    a.shift(2) # => [:foo, 'bar']
- *    a # => [2]
+ *  If +count+ is large,
+ *  removes and returns all elements:
  *
- *  If +n+ is as large as or larger than <tt>self.length</tt>,
- *  removes all elements; returns those elements in a new +Array+:
+ *    a = [0, 1, 2, 3]
+ *    a.shift(50) # => [0, 1, 2, 3]
+ *    a           # => []
  *
- *    a = [:foo, 'bar', 2]
- *    a.shift(3) # => [:foo, 'bar', 2]
+ *  If +self+ is empty, returns a new empty array.
  *
- *  If +n+ is zero, returns a new empty +Array+; +self+ is unmodified.
- *
- *  Related: #push, #pop, #unshift.
+ *  Related: see {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
  */
 
 static VALUE
@@ -2129,20 +2134,20 @@ rb_ary_index(int argc, VALUE *argv, VALUE ary)
 
 /*
  *  call-seq:
- *    array.rindex(object) -> integer or nil
- *    array.rindex {|element| ... } -> integer or nil
- *    array.rindex -> new_enumerator
+ *    rindex(object) -> integer or nil
+ *    rindex {|element| ... } -> integer or nil
+ *    rindex -> new_enumerator
  *
  *  Returns the index of the last element for which <tt>object == element</tt>.
  *
- *  When argument +object+ is given but no block, returns the index of the last such element found:
+ *  With argument +object+ given, returns the index of the last such element found:
  *
  *    a = [:foo, 'bar', 2, 'bar']
  *    a.rindex('bar') # => 3
  *
  *  Returns +nil+ if no such object found.
  *
- *  When a block is given but no argument, calls the block with each successive element;
+ *  With a block given, calls the block with each successive element;
  *  returns the index of the last element for which the block returns a truthy value:
  *
  *    a = [:foo, 'bar', 2, 'bar']
@@ -2150,14 +2155,9 @@ rb_ary_index(int argc, VALUE *argv, VALUE ary)
  *
  *  Returns +nil+ if the block never returns a truthy value.
  *
- *  When neither an argument nor a block is given, returns a new Enumerator:
+ *  When neither an argument nor a block is given, returns a new Enumerator.
  *
- *    a = [:foo, 'bar', 2, 'bar']
- *    e = a.rindex
- *    e # => #<Enumerator: [:foo, "bar", 2, "bar"]:rindex>
- *    e.each {|element| element == 'bar' } # => 3
- *
- *  Related: #index.
+ *  Related: see {Methods for Querying}[rdoc-ref:Array@Methods+for+Querying].
  */
 
 static VALUE
@@ -2638,6 +2638,7 @@ rb_ary_each(VALUE ary)
  *
  *    a = [:foo, 'bar', 2]
  *    a.each_index {|index| puts index; a.clear if index > 0 }
+ *    a # => []
  *
  *  Output:
  *
@@ -2663,47 +2664,26 @@ rb_ary_each_index(VALUE ary)
 
 /*
  *  call-seq:
- *    array.reverse_each {|element| ... } -> self
- *    array.reverse_each -> Enumerator
+ *    reverse_each {|element| ... } -> self
+ *    reverse_each -> Enumerator
  *
- *  Iterates backwards over array elements.
- *
- *  When a block given, passes, in reverse order, each element to the block;
+ *  When a block given, iterates backwards over the elements of +self+,
+ *  passing, in reverse order, each element to the block;
  *  returns +self+:
  *
- *    a = [:foo, 'bar', 2]
- *    a.reverse_each {|element|  puts "#{element.class} #{element}" }
- *
- *  Output:
- *
- *    Integer 2
- *    String bar
- *    Symbol foo
+ *    a = []
+ *    [0, 1, 2].reverse_each {|element| a.push(element) }
+ *    a # => [2, 1, 0]
  *
  *  Allows the array to be modified during iteration:
  *
- *    a = [:foo, 'bar', 2]
- *    a.reverse_each {|element| puts element; a.clear if element.to_s.start_with?('b') }
+ *    a = ['a', 'b', 'c']
+ *    a.reverse_each {|element| a.clear if element.start_with?('b') }
+ *    a # => []
  *
- *  Output:
+ *  When no block given, returns a new Enumerator.
  *
- *    2
- *    bar
- *
- *  When no block given, returns a new Enumerator:
- *
- *    a = [:foo, 'bar', 2]
- *    e = a.reverse_each
- *    e # => #<Enumerator: [:foo, "bar", 2]:reverse_each>
- *    a1 = e.each {|element|  puts "#{element.class} #{element}" }
- *
- *  Output:
- *
- *    Integer 2
- *    String bar
- *    Symbol foo
- *
- *  Related: #each, #each_index.
+ *  Related: see {Methods for Iterating}[rdoc-ref:Array@Methods+for+Iterating].
  */
 
 static VALUE
@@ -3123,13 +3103,16 @@ rb_ary_reverse(VALUE ary)
 
 /*
  *  call-seq:
- *    array.reverse! -> self
+ *    reverse! -> self
  *
- *  Reverses +self+ in place:
+ *  Reverses the order of the elements of +self+;
+ *  returns +self+:
  *
- *    a = ['foo', 'bar', 'two']
- *    a.reverse! # => ["two", "bar", "foo"]
+ *    a = [0, 1, 2]
+ *    a.reverse! # => [2, 1, 0]
+ *    a          # => [2, 1, 0]
  *
+ *  Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
  */
 
 static VALUE
@@ -3140,14 +3123,13 @@ rb_ary_reverse_bang(VALUE ary)
 
 /*
  *  call-seq:
- *    array.reverse -> new_array
+ *    reverse -> new_array
  *
- *  Returns a new +Array+ with the elements of +self+ in reverse order:
+ *  Returns a new array containing the elements of +self+ in reverse order:
  *
- *    a = ['foo', 'bar', 'two']
- *    a1 = a.reverse
- *    a1 # => ["two", "bar", "foo"]
+ *    [0, 1, 2].reverse # => [2, 1, 0]
  *
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 static VALUE
@@ -3209,48 +3191,34 @@ rb_ary_rotate(VALUE ary, long cnt)
 
 /*
  *  call-seq:
- *    array.rotate! -> self
- *    array.rotate!(count) -> self
+ *    rotate!(count = 1) -> self
  *
  *  Rotates +self+ in place by moving elements from one end to the other; returns +self+.
  *
- *  When no argument given, rotates the first element to the last position:
- *
- *    a = [:foo, 'bar', 2, 'bar']
- *    a.rotate! # => ["bar", 2, "bar", :foo]
- *
- *  When given a non-negative Integer +count+,
+ *  With non-negative numeric +count+,
  *  rotates +count+ elements from the beginning to the end:
  *
- *    a = [:foo, 'bar', 2]
- *    a.rotate!(2)
- *    a # => [2, :foo, "bar"]
+ *    [0, 1, 2, 3].rotate!(2)   # => [2, 3, 0, 1]
+      [0, 1, 2, 3].rotate!(2.1) # => [2, 3, 0, 1]
  *
  *  If +count+ is large, uses <tt>count % array.size</tt> as the count:
  *
- *    a = [:foo, 'bar', 2]
- *    a.rotate!(20)
- *    a # => [2, :foo, "bar"]
+ *    [0, 1, 2, 3].rotate!(21) # => [1, 2, 3, 0]
  *
- *  If +count+ is zero, returns +self+ unmodified:
+ *  If +count+ is zero, rotates no elements:
  *
- *    a = [:foo, 'bar', 2]
- *    a.rotate!(0)
- *    a # => [:foo, "bar", 2]
+ *    [0, 1, 2, 3].rotate!(0) # => [0, 1, 2, 3]
  *
- *  When given a negative Integer +count+, rotates in the opposite direction,
+ *  With a negative numeric +count+, rotates in the opposite direction,
  *  from end to beginning:
  *
- *    a = [:foo, 'bar', 2]
- *    a.rotate!(-2)
- *    a # => ["bar", 2, :foo]
+ *    [0, 1, 2, 3].rotate!(-1) # => [3, 0, 1, 2]
  *
  *  If +count+ is small (far from zero), uses <tt>count % array.size</tt> as the count:
  *
- *    a = [:foo, 'bar', 2]
- *    a.rotate!(-5)
- *    a # => ["bar", 2, :foo]
+ *    [0, 1, 2, 3].rotate!(-21) # => [3, 0, 1, 2]
  *
+ *  Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
  */
 
 static VALUE
@@ -3263,51 +3231,35 @@ rb_ary_rotate_bang(int argc, VALUE *argv, VALUE ary)
 
 /*
  *  call-seq:
- *    array.rotate -> new_array
- *    array.rotate(count) -> new_array
+ *    rotate(count = 1) -> new_array
  *
- *  Returns a new +Array+ formed from +self+ with elements
+ *  Returns a new array formed from +self+ with elements
  *  rotated from one end to the other.
  *
- *  When no argument given, returns a new +Array+ that is like +self+,
- *  except that the first element has been rotated to the last position:
+ *  With non-negative numeric +count+,
+ *  rotates elements from the beginning to the end:
  *
- *    a = [:foo, 'bar', 2, 'bar']
- *    a1 = a.rotate
- *    a1 # => ["bar", 2, "bar", :foo]
- *
- *  When given a non-negative Integer +count+,
- *  returns a new +Array+ with +count+ elements rotated from the beginning to the end:
- *
- *    a = [:foo, 'bar', 2]
- *    a1 = a.rotate(2)
- *    a1 # => [2, :foo, "bar"]
+ *    [0, 1, 2, 3].rotate(2)   # => [2, 3, 0, 1]
+ *    [0, 1, 2, 3].rotate(2.1) # => [2, 3, 0, 1]
  *
  *  If +count+ is large, uses <tt>count % array.size</tt> as the count:
  *
- *    a = [:foo, 'bar', 2]
- *    a1 = a.rotate(20)
- *    a1 # => [2, :foo, "bar"]
+ *    [0, 1, 2, 3].rotate(22) # => [2, 3, 0, 1]
  *
- *  If +count+ is zero, returns a copy of +self+, unmodified:
+ *  With a +count+ of zero, rotates no elements:
  *
- *    a = [:foo, 'bar', 2]
- *    a1 = a.rotate(0)
- *    a1 # => [:foo, "bar", 2]
+ *    [0, 1, 2, 3].rotate(0) # => [0, 1, 2, 3]
  *
- *  When given a negative Integer +count+, rotates in the opposite direction,
- *  from end to beginning:
+ *  With negative numeric +count+, rotates in the opposite direction,
+ *  from the end to the beginning:
  *
- *    a = [:foo, 'bar', 2]
- *    a1 = a.rotate(-2)
- *    a1 # => ["bar", 2, :foo]
+ *    [0, 1, 2, 3].rotate(-1) # => [3, 0, 1, 2]
  *
  *  If +count+ is small (far from zero), uses <tt>count % array.size</tt> as the count:
  *
- *    a = [:foo, 'bar', 2]
- *    a1 = a.rotate(-5)
- *    a1 # => ["bar", 2, :foo]
+ *    [0, 1, 2, 3].rotate(-21) # => [3, 0, 1, 2]
  *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 static VALUE
@@ -4193,71 +4145,94 @@ ary_slice_bang_by_rb_ary_splice(VALUE ary, long pos, long len)
 
 /*
  *  call-seq:
- *    array.slice!(n) -> object or nil
- *    array.slice!(start, length) -> new_array or nil
- *    array.slice!(range) -> new_array or nil
+ *    slice!(index) -> object or nil
+ *    slice!(start, length) -> new_array or nil
+ *    slice!(range) -> new_array or nil
  *
  *  Removes and returns elements from +self+.
  *
- *  When the only argument is an Integer +n+,
- *  removes and returns the _nth_ element in +self+:
+ *  With numeric argument +index+ given,
+ *  removes and returns the element at offset +index+:
  *
- *    a = [:foo, 'bar', 2]
- *    a.slice!(1) # => "bar"
- *    a # => [:foo, 2]
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(2)   # => "c"
+ *    a             # => ["a", "b", "d"]
+ *    a.slice!(2.1) # => "d"
+ *    a             # => ["a", "b"]
  *
- *  If +n+ is negative, counts backwards from the end of +self+:
+ *  If +index+ is negative, counts backwards from the end of +self+:
  *
- *    a = [:foo, 'bar', 2]
- *    a.slice!(-1) # => 2
- *    a # => [:foo, "bar"]
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(-2) # => "c"
+ *    a            # => ["a", "b", "d"]
  *
- *  If +n+ is out of range, returns +nil+.
+ *  If +index+ is out of range, returns +nil+.
  *
- *  When the only arguments are Integers +start+ and +length+,
- *  removes +length+ elements from +self+ beginning at offset  +start+;
- *  returns the deleted objects in a new +Array+:
+ *  With numeric arguments +start+ and +length+ given,
+ *  removes +length+ elements from +self+ beginning at zero-based offset +start+;
+ *  returns the removed objects in a new array:
  *
- *    a = [:foo, 'bar', 2]
- *    a.slice!(0, 2) # => [:foo, "bar"]
- *    a # => [2]
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(1, 2)     # => ["b", "c"]
+ *    a                  # => ["a", "d"]
+ *    a.slice!(0.1, 1.1) # => ["a"]
+ *    a                  # => ["d"]
+ *
+ *  If +start+ is negative, counts backwards from the end of +self+:
+ *
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(-2, 1) # => ["c"]
+ *    a               # => ["a", "b", "d"]
+ *
+ *  If +start+ is out-of-range, returns +nil+:
+ *
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(5, 1)  # => nil
+ *    a.slice!(-5, 1) # => nil
  *
  *  If <tt>start + length</tt> exceeds the array size,
  *  removes and returns all elements from offset +start+ to the end:
  *
- *    a = [:foo, 'bar', 2]
- *    a.slice!(1, 50) # => ["bar", 2]
- *    a # => [:foo]
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(2, 50) # => ["c", "d"]
+ *    a               # => ["a", "b"]
  *
  *  If <tt>start == a.size</tt> and +length+ is non-negative,
- *  returns a new empty +Array+.
+ *  returns a new empty array.
  *
  *  If +length+ is negative, returns +nil+.
  *
- *  When the only argument is a Range object +range+,
- *  treats <tt>range.min</tt> as +start+ above and <tt>range.size</tt> as +length+ above:
+ *  With Range argument +range+ given,
+ *  treats <tt>range.min</tt> as +start+ (as above)
+ *  and <tt>range.size</tt> as +length+ (as above):
  *
- *    a = [:foo, 'bar', 2]
- *    a.slice!(1..2) # => ["bar", 2]
- *    a # => [:foo]
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(1..2) # => ["b", "c"]
+ *    a              # => ["a", "d"]
  *
- *  If <tt>range.start == a.size</tt>, returns a new empty +Array+.
+ *  If <tt>range.start == a.size</tt>, returns a new empty array:
  *
- *  If <tt>range.start</tt> is larger than the array size, returns +nil+.
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(4..5) # => []
  *
- *  If <tt>range.end</tt> is negative, counts backwards from the end of the array:
+ *  If <tt>range.start</tt> is larger than the array size, returns +nil+:
  *
- *    a = [:foo, 'bar', 2]
- *    a.slice!(0..-2) # => [:foo, "bar"]
- *    a # => [2]
+ *    a = ['a', 'b', 'c', 'd']
+      a.slice!(5..6) # => nil
  *
  *  If <tt>range.start</tt> is negative,
- *  calculates the start index backwards from the end of the array:
+ *  calculates the start index by counting backwards from the end of +self+:
  *
- *    a = [:foo, 'bar', 2]
- *    a.slice!(-2..2) # => ["bar", 2]
- *    a # => [:foo]
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(-2..2) # => ["c"]
  *
+ *  If <tt>range.end</tt> is negative,
+ *  calculates the end index by counting backwards from the end of +self+:
+ *
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.slice!(0..-2) # => ["a", "b", "c"]
+ *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
  */
 
 static VALUE
@@ -7236,68 +7211,41 @@ rb_ary_repeated_permutation_size(VALUE ary, VALUE args, VALUE eobj)
 
 /*
  *  call-seq:
- *    array.repeated_permutation(n) {|permutation| ... } -> self
- *    array.repeated_permutation(n) -> new_enumerator
+ *    repeated_permutation(size) {|permutation| ... } -> self
+ *    repeated_permutation(size) -> new_enumerator
  *
- *  Calls the block with each repeated permutation of length +n+ of the elements of +self+;
- *  each permutation is an +Array+;
+ *  With a block given, calls the block with each repeated permutation of length +size+
+ *  of the elements of +self+;
+ *  each permutation is an array;
  *  returns +self+. The order of the permutations is indeterminate.
  *
- *  When a block and a positive Integer argument +n+ are given, calls the block with each
- *  +n+-tuple repeated permutation of the elements of +self+.
- *  The number of permutations is <tt>self.size**n</tt>.
+ *  If a positive integer argument +size+ is given,
+ *  calls the block with each +size+-tuple repeated permutation of the elements of +self+.
+ *  The number of permutations is <tt>self.size**size</tt>.
  *
- *  +n+ = 1:
+ *  Examples:
  *
- *    a = [0, 1, 2]
- *    a.repeated_permutation(1) {|permutation| p permutation }
+ *  - +size+ is 1:
  *
- *  Output:
+ *      p = []
+ *      [0, 1, 2].repeated_permutation(1) {|permutation| p.push(permutation) }
+ *      p # => [[0], [1], [2]]
  *
- *    [0]
- *    [1]
- *    [2]
+ *  - +size+ is 2:
  *
- *  +n+ = 2:
+ *      p = []
+ *      [0, 1, 2].repeated_permutation(2) {|permutation| p.push(permutation) }
+ *      p # => [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]]
  *
- *    a.repeated_permutation(2) {|permutation| p permutation }
+ *  If +size+ is zero, calls the block once with an empty array.
  *
- *  Output:
+ *  If +size+ is negative, does not call the block:
  *
- *    [0, 0]
- *    [0, 1]
- *    [0, 2]
- *    [1, 0]
- *    [1, 1]
- *    [1, 2]
- *    [2, 0]
- *    [2, 1]
- *    [2, 2]
+ *    [0, 1, 2].repeated_permutation(-1) {|permutation| fail 'Cannot happen' }
  *
- *  If +n+ is zero, calls the block once with an empty +Array+.
+ *  With no block given, returns a new Enumerator.
  *
- *  If +n+ is negative, does not call the block:
- *
- *    a.repeated_permutation(-1) {|permutation| fail 'Cannot happen' }
- *
- *  Returns a new Enumerator if no block given:
- *
- *    a = [0, 1, 2]
- *    a.repeated_permutation(2) # => #<Enumerator: [0, 1, 2]:permutation(2)>
- *
- *  Using Enumerators, it's convenient to show the permutations and counts
- *  for some values of +n+:
- *
- *    e = a.repeated_permutation(0)
- *    e.size # => 1
- *    e.to_a # => [[]]
- *    e = a.repeated_permutation(1)
- *    e.size # => 3
- *    e.to_a # => [[0], [1], [2]]
- *    e = a.repeated_permutation(2)
- *    e.size # => 9
- *    e.to_a # => [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]]
- *
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 static VALUE
 rb_ary_repeated_permutation(VALUE ary, VALUE num)
@@ -7368,65 +7316,41 @@ rb_ary_repeated_combination_size(VALUE ary, VALUE args, VALUE eobj)
 
 /*
  *  call-seq:
- *    array.repeated_combination(n) {|combination| ... } -> self
- *    array.repeated_combination(n) -> new_enumerator
+ *    repeated_combination(size) {|combination| ... } -> self
+ *    repeated_combination(size) -> new_enumerator
  *
- *  Calls the block with each repeated combination of length +n+ of the elements of +self+;
- *  each combination is an +Array+;
+ *  With a block given, calls the block with each repeated combination of length +size+
+ *  of the elements of +self+;
+ *  each combination is an array;
  *  returns +self+. The order of the combinations is indeterminate.
  *
- *  When a block and a positive Integer argument +n+ are given, calls the block with each
- *  +n+-tuple repeated combination of the elements of +self+.
- *  The number of combinations is <tt>(n+1)(n+2)/2</tt>.
+ *  If a positive integer argument +size+ is given,
+ *  calls the block with each +size+-tuple repeated combination of the elements of +self+.
+ *  The number of combinations is <tt>(size+1)(size+2)/2</tt>.
  *
- *  +n+ = 1:
+ *  Examples:
  *
- *    a = [0, 1, 2]
- *    a.repeated_combination(1) {|combination| p combination }
+ *  - +size+ is 1:
  *
- *  Output:
+ *      c = []
+ *      [0, 1, 2].repeated_combination(1) {|combination| c.push(combination) }
+ *      c # => [[0], [1], [2]]
  *
- *    [0]
- *    [1]
- *    [2]
+ *  - +size+ is 2:
  *
- *  +n+ = 2:
+ *      c = []
+ *      [0, 1, 2].repeated_combination(2) {|combination| c.push(combination) }
+ *      c # => [[0, 0], [0, 1], [0, 2], [1, 1], [1, 2], [2, 2]]
  *
- *    a.repeated_combination(2) {|combination| p combination }
+ *  If +size+ is zero, calls the block once with an empty array.
  *
- *  Output:
+ *  If +size+ is negative, does not call the block:
  *
- *    [0, 0]
- *    [0, 1]
- *    [0, 2]
- *    [1, 1]
- *    [1, 2]
- *    [2, 2]
+ *    [0, 1, 2].repeated_combination(-1) {|combination| fail 'Cannot happen' }
  *
- *  If +n+ is zero, calls the block once with an empty +Array+.
+ *  With no block given, returns a new Enumerator.
  *
- *  If +n+ is negative, does not call the block:
- *
- *    a.repeated_combination(-1) {|combination| fail 'Cannot happen' }
- *
- *  Returns a new Enumerator if no block given:
- *
- *    a = [0, 1, 2]
- *    a.repeated_combination(2) # => #<Enumerator: [0, 1, 2]:combination(2)>
- *
- *  Using Enumerators, it's convenient to show the combinations and counts
- *  for some values of +n+:
- *
- *    e = a.repeated_combination(0)
- *    e.size # => 1
- *    e.to_a # => [[]]
- *    e = a.repeated_combination(1)
- *    e.size # => 3
- *    e.to_a # => [[0], [1], [2]]
- *    e = a.repeated_combination(2)
- *    e.size # => 6
- *    e.to_a # => [[0, 0], [0, 1], [0, 2], [1, 1], [1, 2], [2, 2]]
- *
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 static VALUE
@@ -8662,6 +8586,7 @@ rb_ary_deconstruct(VALUE ary)
  *  - #difference: Returns an array containing all elements of +self+ that are not found
  *    in any of the given arrays..
  *  - #product: Returns or yields all combinations of elements from +self+ and given arrays.
+ *  - #reverse: Returns an array containing all elements of +self+ in reverse order.
  *
  *  === Methods for Iterating
  *

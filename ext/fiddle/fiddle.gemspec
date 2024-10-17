@@ -38,6 +38,7 @@ Gem::Specification.new do |spec|
     "lib/fiddle.rb",
     "lib/fiddle/closure.rb",
     "lib/fiddle/cparser.rb",
+    "lib/fiddle/ffi_backend.rb",
     "lib/fiddle/function.rb",
     "lib/fiddle/import.rb",
     "lib/fiddle/pack.rb",

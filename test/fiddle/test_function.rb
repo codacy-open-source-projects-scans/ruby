@@ -16,6 +16,8 @@ module Fiddle
     end
 
     def teardown
+      # We can't use ObjectSpace with JRuby.
+      return if RUBY_ENGINE == "jruby"
       # Ensure freeing all closures.
       # See https://github.com/ruby/fiddle/issues/102#issuecomment-1241763091 .
       not_freed_closures = []
@@ -36,6 +38,13 @@ module Fiddle
     end
 
     def test_need_gvl?
+      if RUBY_ENGINE == "jruby"
+        omit("rb_str_dup() doesn't exist in JRuby")
+      end
+      if RUBY_ENGINE == "truffleruby"
+        omit("rb_str_dup() doesn't work with TruffleRuby")
+      end
+
       libruby = Fiddle.dlopen(nil)
       rb_str_dup = Function.new(libruby['rb_str_dup'],
                                 [:voidp],
@@ -103,6 +112,10 @@ module Fiddle
     end
 
     def test_last_error
+      if ffi_backend?
+        omit("Fiddle.last_error doesn't work with FFI backend")
+      end
+
       func = Function.new(@libc['strcpy'], [TYPE_VOIDP, TYPE_VOIDP], TYPE_VOIDP)
 
       assert_nil Fiddle.last_error
@@ -135,6 +148,10 @@ module Fiddle
     end
 
     def test_strcpy
+      if RUBY_ENGINE == "jruby"
+        omit("Function that returns string doesn't work with JRuby")
+      end
+
       f = Function.new(@libc['strcpy'], [TYPE_VOIDP, TYPE_VOIDP], TYPE_VOIDP)
       buff = +"000"
       str = f.call(buff, "123")
@@ -149,6 +166,10 @@ module Fiddle
     end
 
     def test_function_as_proc
+      if RUBY_ENGINE == "jruby"
+        omit("Function that returns string doesn't work with JRuby")
+      end
+
       f = Function.new(@libc['strcpy'], [TYPE_VOIDP, TYPE_VOIDP], TYPE_VOIDP)
       buff, str = call_proc("123", &f)
       assert_equal("123", buff)
@@ -156,6 +177,10 @@ module Fiddle
     end
 
     def test_function_as_method
+      if RUBY_ENGINE == "jruby"
+        omit("Function that returns string doesn't work with JRuby")
+      end
+
       f = Function.new(@libc['strcpy'], [TYPE_VOIDP, TYPE_VOIDP], TYPE_VOIDP)
       klass = Class.new do
         define_singleton_method(:strcpy, &f)
@@ -194,6 +219,13 @@ module Fiddle
     end
 
     def test_no_memory_leak
+      if RUBY_ENGINE == "jruby"
+        omit("rb_obj_frozen_p() doesn't exist in JRuby")
+      end
+      if RUBY_ENGINE == "truffleruby"
+        omit("memory leak detection is fragile with TruffleRuby")
+      end
+
       if respond_to?(:assert_nothing_leaked_memory)
         rb_obj_frozen_p_symbol = Fiddle.dlopen(nil)["rb_obj_frozen_p"]
         rb_obj_frozen_p = Fiddle::Function.new(rb_obj_frozen_p_symbol,
@@ -225,6 +257,11 @@ module Fiddle
         code = 'begin r.call(a); rescue TypeError; end'
         assert_no_memory_leak(%w[-W0 -rfiddle], "#{prep}\n1000.times{#{code}}", "10_000.times {#{code}}", limit: 1.2)
       end
+    end
+
+    def test_ractor_shareable
+      omit("Need Ractor") unless defined?(Ractor)
+      assert_ractor_shareable(Function.new(@libm['sin'], [TYPE_DOUBLE], TYPE_DOUBLE))
     end
 
     private

@@ -1975,6 +1975,7 @@ eom
     assert_valid_syntax('def nil(...) end')
     assert_valid_syntax('def true(...) end')
     assert_valid_syntax('def false(...) end')
+    assert_valid_syntax('->a=1...{}')
     unexpected = /unexpected \.{3}/
     assert_syntax_error('iter do |...| end', /unexpected/)
     assert_syntax_error('iter {|...|}', /unexpected/)
@@ -2203,6 +2204,20 @@ eom
     assert_syntax_error('def foo(...) super(1, ...) {}; end', /both block arg and actual block/)
   end
 
+  def test_argument_forwarding_with_super_memory_leak
+    assert_no_memory_leak([], "#{<<-'begin;'}", "#{<<-'end;'}", rss: true)
+      code = proc do
+        eval("def foo(...) super(...) {}; end")
+        raise "unreachable"
+      rescue SyntaxError
+      end
+
+      1_000.times(&code)
+    begin;
+      100_000.times(&code)
+    end;
+  end
+
   def test_class_module_Object_ancestors
     assert_separately([], <<-RUBY)
       m = Module.new
@@ -2247,11 +2262,11 @@ eom
     conds.each do |cond|
       code = %Q{
         def my_method
-          var = nil
+          var = "there"
           if #{cond}
-            "here"
+            var = "here"
           end
-          raise
+          raise var
         end
         begin
           my_method
