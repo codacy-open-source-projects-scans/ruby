@@ -9,8 +9,8 @@ class Reline::KeyActor::EmacsTest < Reline::TestCase
     Reline::HISTORY.instance_variable_set(:@config, @config)
     Reline::HISTORY.clear
     @encoding = Reline.core.encoding
-    @line_editor = Reline::LineEditor.new(@config, @encoding)
-    @line_editor.reset(@prompt, encoding: @encoding)
+    @line_editor = Reline::LineEditor.new(@config)
+    @line_editor.reset(@prompt)
   end
 
   def teardown
@@ -906,10 +906,6 @@ class Reline::KeyActor::EmacsTest < Reline::TestCase
     assert_equal('foo', matched)
     matched = nil
     input_keys('_')
-    input_keys("\C-i", false)
-    assert_line_around_cursor('foo_bar', '')
-    assert_equal(Reline::LineEditor::CompletionState::MENU_WITH_PERFECT_MATCH, @line_editor.instance_variable_get(:@completion_state))
-    assert_equal(nil, matched)
     input_keys("\C-i", false)
     assert_line_around_cursor('foo_bar', '')
     assert_equal(Reline::LineEditor::CompletionState::PERFECT_MATCH, @line_editor.instance_variable_get(:@completion_state))
