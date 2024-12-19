@@ -137,14 +137,15 @@
 #endif
 
 /**
- * isinf on Windows is defined as accepting a float, but on POSIX systems it
- * accepts a float, a double, or a long double. We want to mirror this behavior
- * on windows.
+ * isinf on POSIX systems it accepts a float, a double, or a long double.
+ * But mingw didn't provide an isinf macro, only an isinf function that only
+ * accepts floats, so we need to use _finite instead.
  */
-#ifdef _WIN32
-#   include <float.h>
-#   undef isinf
-#   define isinf(x) (sizeof(x) == sizeof(float) ? !_finitef(x) : !_finite(x))
+#ifdef __MINGW64__
+    #include <float.h>
+    #define PRISM_ISINF(x) (!_finite(x))
+#else
+    #define PRISM_ISINF(x) isinf(x)
 #endif
 
 /**

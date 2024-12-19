@@ -38,6 +38,7 @@ module SyncDefaultGems
     irb: 'ruby/irb',
     json: 'ruby/json',
     logger: 'ruby/logger',
+    mmtk: ['ruby/mmtk', "main"],
     open3: "ruby/open3",
     openssl: "ruby/openssl",
     optparse: "ruby/optparse",
@@ -185,19 +186,22 @@ module SyncDefaultGems
     when "irb"
       rm_rf(%w[lib/irb lib/irb.rb test/irb])
       cp_r(Dir.glob("#{upstream}/lib/irb*"), "lib")
+      rm_rf(%w[lib/irb/.document])
       cp_r("#{upstream}/test/irb", "test")
       cp_r("#{upstream}/irb.gemspec", "lib/irb")
       cp_r("#{upstream}/man/irb.1", "man/irb.1")
       cp_r("#{upstream}/doc/irb", "doc")
     when "json"
-      rm_rf(%w[ext/json test/json])
+      rm_rf(%w[ext/json lib/json test/json])
       cp_r("#{upstream}/ext/json/ext", "ext/json")
       cp_r("#{upstream}/test/json", "test/json")
       rm_rf("test/json/lib")
       cp_r("#{upstream}/lib", "ext/json")
       cp_r("#{upstream}/json.gemspec", "ext/json")
-      rm_rf(%w[ext/json/lib/json/ext ext/json/lib/json/pure.rb ext/json/lib/json/pure])
-      `git checkout ext/json/extconf.rb ext/json/parser/prereq.mk ext/json/generator/depend ext/json/parser/depend ext/json/depend`
+      rm_rf(%w[ext/json/lib/json/pure.rb ext/json/lib/json/pure ext/json/lib/json/truffle_ruby/])
+      json_files = Dir.glob("ext/json/lib/json/ext/**/*", File::FNM_DOTMATCH).select { |f| File.file?(f) }
+      rm_rf(json_files - Dir.glob("ext/json/lib/json/ext/**/*.rb") - Dir.glob("ext/json/lib/json/ext/**/depend"))
+      `git checkout ext/json/extconf.rb ext/json/parser/prereq.mk ext/json/generator/depend ext/json/parser/depend ext/json/depend benchmark/`
     when "psych"
       rm_rf(%w[ext/psych test/psych])
       cp_r("#{upstream}/ext/psych", "ext")
@@ -272,9 +276,13 @@ module SyncDefaultGems
     when "strscan"
       rm_rf(%w[ext/strscan test/strscan])
       cp_r("#{upstream}/ext/strscan", "ext")
+      cp_r("#{upstream}/lib", "ext/strscan")
       cp_r("#{upstream}/test/strscan", "test")
       cp_r("#{upstream}/strscan.gemspec", "ext/strscan")
-      cp_r("#{upstream}/doc/strscan", "doc")
+      begin
+        cp_r("#{upstream}/doc/strscan", "doc")
+      rescue Errno::ENOENT
+      end
       rm_rf(%w["ext/strscan/regenc.h ext/strscan/regint.h"])
       `git checkout ext/strscan/depend`
     when "cgi"
@@ -393,7 +401,7 @@ module SyncDefaultGems
       cp_r("#{upstream}/lib/resolv.rb", "lib")
       cp_r("#{upstream}/resolv.gemspec", "lib")
       cp_r("#{upstream}/ext/win32/resolv", "ext/win32")
-      move("ext/win32/resolv/lib/win32/resolv.rb", "ext/win32/lib/win32")
+      move("ext/win32/resolv/lib/resolv.rb", "ext/win32/lib/win32")
       rm_rf("ext/win32/resolv/lib") # Clean up empty directory
       cp_r("#{upstream}/test/resolv", "test")
       `git checkout ext/win32/resolv/depend`
@@ -402,6 +410,9 @@ module SyncDefaultGems
       cp_r("#{upstream}/lib/win32/registry.rb", "ext/win32/lib/win32")
       cp_r("#{upstream}/test/win32/test_registry.rb", "test/win32")
       cp_r("#{upstream}/win32-registry.gemspec", "ext/win32")
+    when "mmtk"
+      rm_rf("gc/mmtk")
+      cp_r("#{upstream}/gc/mmtk", "gc")
     else
       sync_lib gem, upstream
     end
@@ -415,6 +426,7 @@ module SyncDefaultGems
 
   def check_prerelease_version(gem)
     return if gem == "rubygems"
+    return if gem == "mmtk"
 
     gem = gem.downcase
 

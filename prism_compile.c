@@ -867,7 +867,6 @@ pm_compile_logical(rb_iseq_t *iseq, LINK_ANCHOR *const ret, pm_node_t *cond, LAB
     const pm_node_location_t location = PM_NODE_START_LOCATION(scope_node->parser, cond);
 
     DECL_ANCHOR(seq);
-    INIT_ANCHOR(seq);
 
     LABEL *label = NEW_LABEL(location.line);
     if (!then_label) then_label = label;
@@ -1000,7 +999,6 @@ again:
       }
       default: {
         DECL_ANCHOR(cond_seq);
-        INIT_ANCHOR(cond_seq);
         pm_compile_node(iseq, cond, cond_seq, false, scope_node);
 
         if (LIST_INSN_SIZE_ONE(cond_seq)) {
@@ -1040,7 +1038,6 @@ pm_compile_conditional(rb_iseq_t *iseq, const pm_node_location_t *node_location,
     LABEL *end_label = NULL;
 
     DECL_ANCHOR(cond_seq);
-    INIT_ANCHOR(cond_seq);
     pm_compile_branch_condition(iseq, cond_seq, predicate, then_label, else_label, false, scope_node);
     PUSH_SEQ(ret, cond_seq);
 
@@ -1056,7 +1053,6 @@ pm_compile_conditional(rb_iseq_t *iseq, const pm_node_location_t *node_location,
         PUSH_LABEL(ret, then_label);
 
         DECL_ANCHOR(then_seq);
-        INIT_ANCHOR(then_seq);
 
         if (statements != NULL) {
             pm_compile_node(iseq, (const pm_node_t *) statements, then_seq, popped, scope_node);
@@ -1097,7 +1093,6 @@ pm_compile_conditional(rb_iseq_t *iseq, const pm_node_location_t *node_location,
         PUSH_LABEL(ret, else_label);
 
         DECL_ANCHOR(else_seq);
-        INIT_ANCHOR(else_seq);
 
         if (subsequent != NULL) {
             pm_compile_node(iseq, subsequent, else_seq, popped, scope_node);
@@ -1268,11 +1263,17 @@ pm_new_child_iseq(rb_iseq_t *iseq, pm_scope_node_t *node, VALUE name, const rb_i
 {
     debugs("[new_child_iseq]> ---------------------------------------\n");
     int isolated_depth = ISEQ_COMPILE_DATA(iseq)->isolated_depth;
+    int error_state;
     rb_iseq_t *ret_iseq = pm_iseq_new_with_opt(node, name,
             rb_iseq_path(iseq), rb_iseq_realpath(iseq),
             line_no, parent,
             isolated_depth ? isolated_depth + 1 : 0,
-            type, ISEQ_COMPILE_DATA(iseq)->option);
+            type, ISEQ_COMPILE_DATA(iseq)->option, &error_state);
+
+    if (error_state) {
+        RUBY_ASSERT(ret_iseq == NULL);
+        rb_jump_tag(error_state);
+    }
     debugs("[new_child_iseq]< ---------------------------------------\n");
     return ret_iseq;
 }
@@ -1383,7 +1384,6 @@ pm_compile_hash_elements(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
     bool static_literal = false;
 
     DECL_ANCHOR(anchor);
-    INIT_ANCHOR(anchor);
 
     // Convert pushed elements to a hash, and merge if needed.
 #define FLUSH_CHUNK                                                                         \
@@ -1927,7 +1927,6 @@ pm_setup_args(const pm_arguments_node_t *arguments_node, const pm_node_t *block,
         }
 
         DECL_ANCHOR(block_arg);
-        INIT_ANCHOR(block_arg);
         pm_compile_node(iseq, block, block_arg, false, scope_node);
 
         *flags |= VM_CALL_ARGS_BLOCKARG;
@@ -2826,7 +2825,6 @@ pm_compile_pattern(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_node_t
 
         if (has_keys) {
             DECL_ANCHOR(match_values);
-            INIT_ANCHOR(match_values);
 
             for (size_t index = 0; index < cast->elements.size; index++) {
                 const pm_node_t *element = cast->elements.nodes[index];
@@ -2993,7 +2991,7 @@ pm_compile_pattern(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_node_t
         // First, we're going to attempt to match against the left pattern. If
         // that pattern matches, then we'll skip matching the right pattern.
         PUSH_INSN(ret, location, dup);
-        CHECK(pm_compile_pattern(iseq, scope_node, cast->left, ret, matched_left_label, unmatched_left_label, in_single_pattern, true, true, base_index + 1));
+        CHECK(pm_compile_pattern(iseq, scope_node, cast->left, ret, matched_left_label, unmatched_left_label, in_single_pattern, true, use_deconstructed_cache, base_index + 1));
 
         // If we get here, then we matched on the left pattern. In this case we
         // should pop out the duplicate value that we preemptively added to
@@ -3006,7 +3004,7 @@ pm_compile_pattern(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_node_t
         // If we get here, then we didn't match on the left pattern. In this
         // case we attempt to match against the right pattern.
         PUSH_LABEL(ret, unmatched_left_label);
-        CHECK(pm_compile_pattern(iseq, scope_node, cast->right, ret, matched_label, unmatched_label, in_single_pattern, true, true, base_index));
+        CHECK(pm_compile_pattern(iseq, scope_node, cast->right, ret, matched_label, unmatched_label, in_single_pattern, true, use_deconstructed_cache, base_index));
         break;
       }
       case PM_PARENTHESES_NODE:
@@ -3376,7 +3374,7 @@ pm_compile_builtin_attr(rb_iseq_t *iseq, const pm_scope_node_t *scope_node, cons
         }
 
         VALUE symbol = pm_static_literal_value(iseq, argument, scope_node);
-        VALUE string = rb_sym_to_s(symbol);
+        VALUE string = rb_sym2str(symbol);
 
         if (strcmp(RSTRING_PTR(string), "leaf") == 0) {
             ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_LEAF;
@@ -3386,6 +3384,10 @@ pm_compile_builtin_attr(rb_iseq_t *iseq, const pm_scope_node_t *scope_node, cons
         }
         else if (strcmp(RSTRING_PTR(string), "use_block") == 0) {
             iseq_set_use_block(iseq);
+        }
+        else if (strcmp(RSTRING_PTR(string), "c_trace") == 0) {
+            // Let the iseq act like a C method in backtraces
+            ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_C_TRACE;
         }
         else {
             COMPILE_ERROR(iseq, node_location->line, "unknown argument to attr!: %s", RSTRING_PTR(string));
@@ -3475,6 +3477,7 @@ pm_compile_builtin_mandatory_only_method(rb_iseq_t *iseq, pm_scope_node_t *scope
     pm_scope_node_t next_scope_node;
     pm_scope_node_init(&def.base, &next_scope_node, scope_node);
 
+    int error_state;
     ISEQ_BODY(iseq)->mandatory_only_iseq = pm_iseq_new_with_opt(
         &next_scope_node,
         rb_iseq_base_label(iseq),
@@ -3484,8 +3487,14 @@ pm_compile_builtin_mandatory_only_method(rb_iseq_t *iseq, pm_scope_node_t *scope
         NULL,
         0,
         ISEQ_TYPE_METHOD,
-        ISEQ_COMPILE_DATA(iseq)->option
+        ISEQ_COMPILE_DATA(iseq)->option,
+        &error_state
     );
+
+    if (error_state) {
+        RUBY_ASSERT(ISEQ_BODY(iseq)->mandatory_only_iseq == NULL);
+        rb_jump_tag(error_state);
+    }
 
     pm_scope_node_destroy(&next_scope_node);
     return COMPILE_OK;
@@ -3560,7 +3569,6 @@ retry:;
     // fprintf(stderr, "func_name:%s -> %p\n", builtin_func, bf->func_ptr);
 
     DECL_ANCHOR(args_seq);
-    INIT_ANCHOR(args_seq);
 
     int flags = 0;
     struct rb_callinfo_kwarg *keywords = NULL;
@@ -3613,6 +3621,7 @@ pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *c
             const uint8_t *end_cursor = cursors[0];
             end_cursor = (end_cursor == NULL || cursors[1] == NULL) ? cursors[1] : (end_cursor > cursors[1] ? end_cursor : cursors[1]);
             end_cursor = (end_cursor == NULL || cursors[2] == NULL) ? cursors[2] : (end_cursor > cursors[2] ? end_cursor : cursors[2]);
+            if (!end_cursor) end_cursor = call_node->closing_loc.end;
 
             const pm_line_column_t start_location = PM_NODE_START_LINE_COLUMN(scope_node->parser, call_node);
             const pm_line_column_t end_location = pm_newline_list_line_column(&scope_node->parser->newline_list, end_cursor, scope_node->parser->start_line);
@@ -4138,13 +4147,11 @@ pm_add_ensure_iseq(LINK_ANCHOR *const ret, rb_iseq_t *iseq, int is_return, pm_sc
     struct iseq_compile_data_ensure_node_stack *prev_enlp = enlp;
     DECL_ANCHOR(ensure);
 
-    INIT_ANCHOR(ensure);
     while (enlp) {
         if (enlp->erange != NULL) {
             DECL_ANCHOR(ensure_part);
             LABEL *lstart = NEW_LABEL(0);
             LABEL *lend = NEW_LABEL(0);
-            INIT_ANCHOR(ensure_part);
 
             add_ensure_range(iseq, enlp->erange, lstart, lend);
 
@@ -4835,10 +4842,7 @@ pm_compile_for_node_index(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *c
         // owning expression of this target, then retrieve the value, expand it,
         // and then compile the necessary writes.
         DECL_ANCHOR(writes);
-        INIT_ANCHOR(writes);
-
         DECL_ANCHOR(cleanup);
-        INIT_ANCHOR(cleanup);
 
         pm_multi_target_state_t state = { 0 };
         state.position = 1;
@@ -4855,10 +4859,7 @@ pm_compile_for_node_index(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *c
       }
       case PM_MULTI_TARGET_NODE: {
         DECL_ANCHOR(writes);
-        INIT_ANCHOR(writes);
-
         DECL_ANCHOR(cleanup);
-        INIT_ANCHOR(cleanup);
 
         pm_compile_target_node(iseq, node, ret, writes, cleanup, scope_node, NULL);
 
@@ -4976,7 +4977,6 @@ pm_compile_ensure(rb_iseq_t *iseq, const pm_begin_node_t *cast, const pm_node_lo
     struct ensure_range *erange;
 
     DECL_ANCHOR(ensr);
-    INIT_ANCHOR(ensr);
     if (statements != NULL) {
         pm_compile_node(iseq, (const pm_node_t *) statements, ensr, true, scope_node);
     }
@@ -5311,7 +5311,6 @@ pm_compile_shareable_constant_value(rb_iseq_t *iseq, const pm_node_t *node, cons
       }
       default: {
         DECL_ANCHOR(value_seq);
-        INIT_ANCHOR(value_seq);
 
         pm_compile_node(iseq, node, value_seq, false, scope_node);
         if (PM_NODE_TYPE_P(node, PM_INTERPOLATED_STRING_NODE)) {
@@ -7107,13 +7106,11 @@ pm_compile_case_node(rb_iseq_t *iseq, const pm_case_node_t *cast, const pm_node_
     // `when` nodes into. If a match is found, they will need to jump into
     // the body_seq anchor to the correct spot.
     DECL_ANCHOR(cond_seq);
-    INIT_ANCHOR(cond_seq);
 
     // This is the anchor that we will compile the bodies of the various
     // `when` nodes into. We'll make sure that the clauses that are compiled
     // jump into the correct spots within this anchor.
     DECL_ANCHOR(body_seq);
-    INIT_ANCHOR(body_seq);
 
     // This is the label where all of the when clauses will jump to if they
     // have matched and are done executing their bodies.
@@ -7366,13 +7363,11 @@ pm_compile_case_match_node(rb_iseq_t *iseq, const pm_case_match_node_t *node, co
     // `in` nodes into. We'll make sure that the patterns that are compiled
     // jump into the correct spots within this anchor.
     DECL_ANCHOR(body_seq);
-    INIT_ANCHOR(body_seq);
 
     // This is the anchor that we will compile the patterns of the various
     // `in` nodes into. If a match is found, they will need to jump into the
     // body_seq anchor to the correct spot.
     DECL_ANCHOR(cond_seq);
-    INIT_ANCHOR(cond_seq);
 
     // This label is used to indicate the end of the entire node. It is
     // jumped to after the entire stack is cleaned up.
@@ -7542,7 +7537,6 @@ pm_compile_forwarding_super_node(rb_iseq_t *iseq, const pm_forwarding_super_node
     }
 
     DECL_ANCHOR(args);
-    INIT_ANCHOR(args);
 
     struct rb_iseq_constant_body *const body = ISEQ_BODY(iseq);
     const rb_iseq_t *local_iseq = body->local_iseq;
@@ -7761,7 +7755,6 @@ pm_compile_match_write_node(rb_iseq_t *iseq, const pm_match_write_node_t *node, 
     }
 
     DECL_ANCHOR(fail_anchor);
-    INIT_ANCHOR(fail_anchor);
 
     // Otherwise there is more than one local variable target, so we'll need
     // to do some bookkeeping.
@@ -7997,10 +7990,7 @@ pm_compile_rescue_node(rb_iseq_t *iseq, const pm_rescue_node_t *node, const pm_n
     // depending on the kind of write being performed.
     if (node->reference) {
         DECL_ANCHOR(writes);
-        INIT_ANCHOR(writes);
-
         DECL_ANCHOR(cleanup);
-        INIT_ANCHOR(cleanup);
 
         pm_compile_target_node(iseq, node->reference, ret, writes, cleanup, scope_node, NULL);
         PUSH_GETLOCAL(ret, *location, LVAR_ERRINFO, 0);
@@ -8101,7 +8091,6 @@ static inline void
 pm_compile_super_node(rb_iseq_t *iseq, const pm_super_node_t *node, const pm_node_location_t *location, LINK_ANCHOR *const ret, bool popped, pm_scope_node_t *scope_node)
 {
     DECL_ANCHOR(args);
-    INIT_ANCHOR(args);
 
     LABEL *retry_label = NEW_LABEL(location->line);
     LABEL *retry_end_l = NEW_LABEL(location->line);
@@ -8559,10 +8548,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         }
         else {
             DECL_ANCHOR(prefix);
-            INIT_ANCHOR(prefix);
-
             DECL_ANCHOR(body);
-            INIT_ANCHOR(body);
 
             pm_compile_constant_path(iseq, node, prefix, body, popped, scope_node);
             if (LIST_INSN_SIZE_ZERO(prefix)) {
@@ -9485,10 +9471,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         const pm_multi_write_node_t *cast = (const pm_multi_write_node_t *) node;
 
         DECL_ANCHOR(writes);
-        INIT_ANCHOR(writes);
-
         DECL_ANCHOR(cleanup);
-        INIT_ANCHOR(cleanup);
 
         pm_multi_target_state_t state = { 0 };
         state.position = popped ? 0 : 1;
@@ -9608,11 +9591,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         // anchors and then join them in the correct order into the resulting
         // anchor.
         DECL_ANCHOR(inner_pre);
-        INIT_ANCHOR(inner_pre);
         scope_node->pre_execution_anchor = inner_pre;
 
         DECL_ANCHOR(inner_body);
-        INIT_ANCHOR(inner_body);
 
         if (cast->statements != NULL) {
             const pm_node_list_t *body = &cast->statements->body;
@@ -10072,7 +10053,6 @@ VALUE
 pm_iseq_compile_node(rb_iseq_t *iseq, pm_scope_node_t *node)
 {
     DECL_ANCHOR(ret);
-    INIT_ANCHOR(ret);
 
     if (pm_iseq_pre_execution_p(iseq)) {
         // Because these ISEQs can have BEGIN{}, we're going to create two
@@ -10080,14 +10060,12 @@ pm_iseq_compile_node(rb_iseq_t *iseq, pm_scope_node_t *node)
         // on the scope node so that when BEGIN{} is found, its contents will be
         // added to the "pre" anchor.
         DECL_ANCHOR(pre);
-        INIT_ANCHOR(pre);
         node->pre_execution_anchor = pre;
 
         // Now we'll compile the body as normal. We won't compile directly into
         // the "ret" anchor yet because we want to add the "pre" anchor to the
         // beginning of the "ret" anchor first.
         DECL_ANCHOR(body);
-        INIT_ANCHOR(body);
         pm_compile_node(iseq, (const pm_node_t *) node, body, false, node);
 
         // Now we'll join both anchors together so that the content is in the
@@ -10159,7 +10137,8 @@ typedef struct {
     size_t divider_length;
 } pm_parse_error_format_t;
 
-#define PM_COLOR_GRAY "\033[38;5;102m"
+#define PM_COLOR_BOLD "\033[1m"
+#define PM_COLOR_GRAY "\033[2m"
 #define PM_COLOR_RED "\033[1;31m"
 #define PM_COLOR_RESET "\033[m"
 #define PM_ERROR_TRUNCATE 30
@@ -10216,6 +10195,9 @@ pm_parse_errors_format_sort(const pm_parser_t *parser, const pm_list_t *error_li
     return errors;
 }
 
+/* Append a literal string to the buffer. */
+#define pm_buffer_append_literal(buffer, str) pm_buffer_append_string(buffer, str, rb_strlen_lit(str))
+
 static inline void
 pm_parse_errors_format_line(const pm_parser_t *parser, const pm_newline_list_t *newline_list, const char *number_prefix, int32_t line, uint32_t column_start, uint32_t column_end, pm_buffer_t *buffer) {
     int32_t line_delta = line - parser->start_line;
@@ -10261,7 +10243,7 @@ pm_parse_errors_format_line(const pm_parser_t *parser, const pm_newline_list_t *
  * Format the errors on the parser into the given buffer.
  */
 static void
-pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, pm_buffer_t *buffer, bool colorize, bool inline_messages) {
+pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, pm_buffer_t *buffer, int highlight, bool inline_messages) {
     assert(error_list->size != 0);
 
     // First, we're going to sort all of the errors by line number using an
@@ -10287,7 +10269,7 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
     int32_t max_line_number = first_line_number > last_line_number ? first_line_number : last_line_number;
 
     if (max_line_number < 10) {
-        if (colorize) {
+        if (highlight > 0) {
             error_format = (pm_parse_error_format_t) {
                 .number_prefix = PM_COLOR_GRAY "%1" PRIi32 " | " PM_COLOR_RESET,
                 .blank_prefix = PM_COLOR_GRAY "  | " PM_COLOR_RESET,
@@ -10301,7 +10283,7 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
             };
         }
     } else if (max_line_number < 100) {
-        if (colorize) {
+        if (highlight > 0) {
             error_format = (pm_parse_error_format_t) {
                 .number_prefix = PM_COLOR_GRAY "%2" PRIi32 " | " PM_COLOR_RESET,
                 .blank_prefix = PM_COLOR_GRAY "   | " PM_COLOR_RESET,
@@ -10315,7 +10297,7 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
             };
         }
     } else if (max_line_number < 1000) {
-        if (colorize) {
+        if (highlight > 0) {
             error_format = (pm_parse_error_format_t) {
                 .number_prefix = PM_COLOR_GRAY "%3" PRIi32 " | " PM_COLOR_RESET,
                 .blank_prefix = PM_COLOR_GRAY "    | " PM_COLOR_RESET,
@@ -10329,7 +10311,7 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
             };
         }
     } else if (max_line_number < 10000) {
-        if (colorize) {
+        if (highlight > 0) {
             error_format = (pm_parse_error_format_t) {
                 .number_prefix = PM_COLOR_GRAY "%4" PRIi32 " | " PM_COLOR_RESET,
                 .blank_prefix = PM_COLOR_GRAY "     | " PM_COLOR_RESET,
@@ -10343,7 +10325,7 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
             };
         }
     } else {
-        if (colorize) {
+        if (highlight > 0) {
             error_format = (pm_parse_error_format_t) {
                 .number_prefix = PM_COLOR_GRAY "%5" PRIi32 " | " PM_COLOR_RESET,
                 .blank_prefix = PM_COLOR_GRAY "      | " PM_COLOR_RESET,
@@ -10392,10 +10374,12 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
         // If this is the first error or we're on a new line, then we'll display
         // the line that has the error in it.
         if ((index == 0) || (error->line != last_line)) {
-            if (colorize) {
-                pm_buffer_append_string(buffer, PM_COLOR_RED "> " PM_COLOR_RESET, 12);
+            if (highlight > 1) {
+                pm_buffer_append_literal(buffer, PM_COLOR_RED "> " PM_COLOR_RESET);
+            } else if (highlight > 0) {
+                pm_buffer_append_literal(buffer, PM_COLOR_BOLD "> " PM_COLOR_RESET);
             } else {
-                pm_buffer_append_string(buffer, "> ", 2);
+                pm_buffer_append_literal(buffer, "> ");
             }
 
             last_column_start = error->column_start;
@@ -10438,7 +10422,8 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
             column += (char_width == 0 ? 1 : char_width);
         }
 
-        if (colorize) pm_buffer_append_string(buffer, PM_COLOR_RED, 7);
+        if (highlight > 1) pm_buffer_append_literal(buffer, PM_COLOR_RED);
+        else if (highlight > 0) pm_buffer_append_literal(buffer, PM_COLOR_BOLD);
         pm_buffer_append_byte(buffer, '^');
 
         size_t char_width = encoding->char_width(start + column, parser->end - (start + column));
@@ -10451,7 +10436,7 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
             column += (char_width == 0 ? 1 : char_width);
         }
 
-        if (colorize) pm_buffer_append_string(buffer, PM_COLOR_RESET, 3);
+        if (highlight > 0) pm_buffer_append_literal(buffer, PM_COLOR_RESET);
 
         if (inline_messages) {
             pm_buffer_append_byte(buffer, ' ');
@@ -10466,7 +10451,20 @@ pm_parse_errors_format(const pm_parser_t *parser, const pm_list_t *error_list, p
         // Here we determine how many lines of padding to display after the
         // error, depending on where the next error is in source.
         last_line = error->line;
-        int32_t next_line = (index == error_list->size - 1) ? (((int32_t) newline_list->size) + parser->start_line) : errors[index + 1].line;
+        int32_t next_line;
+
+        if (index == error_list->size - 1) {
+            next_line = (((int32_t) newline_list->size) + parser->start_line);
+
+            // If the file ends with a newline, subtract one from our "next_line"
+            // so that we don't output an extra line at the end of the file
+            if ((parser->start + newline_list->offsets[newline_list->size - 1]) == parser->end) {
+                next_line--;
+            }
+        }
+        else {
+            next_line = errors[index + 1].line;
+        }
 
         if (next_line - last_line > 1) {
             pm_buffer_append_string(buffer, "  ", 2);
@@ -10526,6 +10524,12 @@ pm_parse_process_error(const pm_parse_result_t *result)
     pm_buffer_t buffer = { 0 };
     const pm_string_t *filepath = &parser->filepath;
 
+    int highlight = rb_stderr_tty_p();
+    if (highlight) {
+        const char *no_color = getenv("NO_COLOR");
+        highlight = (no_color == NULL || no_color[0] == '\0') ? 2 : 1;
+    }
+
     for (const pm_diagnostic_t *error = head; error != NULL; error = (const pm_diagnostic_t *) error->node.next) {
         switch (error->level) {
           case PM_ERROR_LEVEL_SYNTAX:
@@ -10559,7 +10563,7 @@ pm_parse_process_error(const pm_parse_result_t *result)
                 pm_list_node_t *list_node = (pm_list_node_t *) error;
                 pm_list_t error_list = { .size = 1, .head = list_node, .tail = list_node };
 
-                pm_parse_errors_format(parser, &error_list, &buffer, rb_stderr_tty_p(), false);
+                pm_parse_errors_format(parser, &error_list, &buffer, highlight, false);
             }
 
             VALUE value = rb_exc_new(rb_eArgError, pm_buffer_value(&buffer), pm_buffer_length(&buffer));
@@ -10589,7 +10593,7 @@ pm_parse_process_error(const pm_parse_result_t *result)
     );
 
     if (valid_utf8) {
-        pm_parse_errors_format(parser, &parser->error_list, &buffer, rb_stderr_tty_p(), true);
+        pm_parse_errors_format(parser, &parser->error_list, &buffer, highlight, true);
     }
     else {
         for (const pm_diagnostic_t *error = head; error != NULL; error = (const pm_diagnostic_t *) error->node.next) {
@@ -10862,7 +10866,7 @@ pm_read_file(pm_string_t *string, const char *filepath)
         }
 
         size_t length = (size_t) len;
-        uint8_t *source = xmalloc(length);
+        uint8_t *source = malloc(length);
         memcpy(source, RSTRING_PTR(contents), length);
         *string = (pm_string_t) { .type = PM_STRING_OWNED, .source = source, .length = length };
 
@@ -10882,6 +10886,7 @@ pm_read_file(pm_string_t *string, const char *filepath)
 
     source = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (source == MAP_FAILED) {
+        close(fd);
         return PM_STRING_INIT_ERROR_GENERIC;
     }
 

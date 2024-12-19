@@ -79,13 +79,17 @@ module Gem
     include ::Bundler::MatchMetadata
     include ::Bundler::MatchPlatform
 
-    attr_accessor :remote, :location, :relative_loaded_from
+    attr_accessor :remote, :relative_loaded_from
 
-    remove_method :source
-    attr_writer :source
-    def source
-      (defined?(@source) && @source) || Gem::Source::Installed.new
+    module AllowSettingSource
+      attr_writer :source
+
+      def source
+        (defined?(@source) && @source) || super
+      end
     end
+
+    prepend AllowSettingSource
 
     alias_method :rg_full_gem_path, :full_gem_path
     alias_method :rg_loaded_from,   :loaded_from
@@ -144,6 +148,10 @@ module Gem
           end
         end
       end
+    end
+
+    def insecurely_materialized?
+      false
     end
 
     def groups
@@ -430,6 +438,31 @@ module Gem
             s == this_spec && s.base_dir == this_spec.base_dir
           end
         end
+      end
+    end
+  end
+
+  if Gem.rubygems_version < Gem::Version.new("3.6.0")
+    class Package; end
+    require "rubygems/package/tar_reader"
+    require "rubygems/package/tar_reader/entry"
+
+    module FixFullNameEncoding
+      def full_name
+        super.force_encoding(Encoding::UTF_8)
+      end
+    end
+
+    Package::TarReader::Entry.prepend(FixFullNameEncoding)
+  end
+
+  require "rubygems/uri"
+
+  # Can be removed once RubyGems 3.3.15 support is dropped
+  unless Gem::Uri.respond_to?(:redact)
+    class Uri
+      def self.redact(uri)
+        new(uri).redacted
       end
     end
   end

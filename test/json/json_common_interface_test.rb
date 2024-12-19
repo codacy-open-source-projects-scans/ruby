@@ -1,4 +1,5 @@
-#frozen_string_literal: false
+# frozen_string_literal: true
+
 require_relative 'test_helper'
 require 'stringio'
 require 'tempfile'
@@ -52,11 +53,11 @@ class JSONCommonInterfaceTest < Test::Unit::TestCase
   end
 
   def test_generator
-    assert_match(/::Generator\z/, JSON.generator.name)
+    assert_match(/::(TruffleRuby)?Generator\z/, JSON.generator.name)
   end
 
   def test_state
-    assert_match(/::Generator::State\z/, JSON.state.name)
+    assert_match(/::(TruffleRuby)?Generator::State\z/, JSON.state.name)
   end
 
   def test_create_id
@@ -107,6 +108,25 @@ class JSONCommonInterfaceTest < Test::Unit::TestCase
     tempfile.close!
   end
 
+  def test_load_with_proc
+    visited = []
+    JSON.load('{"foo": [1, 2, 3], "bar": {"baz": "plop"}}', proc { |o| visited << JSON.dump(o) })
+
+    expected = [
+      '"foo"',
+      '1',
+      '2',
+      '3',
+      '[1,2,3]',
+      '"bar"',
+      '"baz"',
+      '"plop"',
+      '{"baz":"plop"}',
+      '{"foo":[1,2,3],"bar":{"baz":"plop"}}',
+    ]
+    assert_equal expected, visited
+  end
+
   def test_load_with_options
     json  = '{ "foo": NaN }'
     assert JSON.load(json, nil, :allow_nan => true)['foo'].nan?
@@ -142,6 +162,17 @@ class JSONCommonInterfaceTest < Test::Unit::TestCase
     assert_equal too_deep, dump(obj, strict: false)
   end
 
+  def test_dump_in_io
+    io = StringIO.new
+    assert_same io, JSON.dump([1], io)
+    assert_equal "[1]", io.string
+
+    big_object = ["a" * 10, "b" * 40, { foo: 1.23 }] * 5000
+    io.rewind
+    assert_same io, JSON.dump(big_object, io)
+    assert_equal JSON.dump(big_object), io.string
+  end
+
   def test_dump_should_modify_defaults
     max_nesting = JSON.dump_default_options[:max_nesting]
     dump([], StringIO.new, 10)
@@ -170,7 +201,28 @@ class JSONCommonInterfaceTest < Test::Unit::TestCase
     test_load_file_with_option_shared(:load_file!)
   end
 
+  def test_load_file_with_bad_default_external_encoding
+    data = { "key" => "€" }
+    temp_file_containing(JSON.dump(data)) do |path|
+      loaded_data = with_external_encoding(Encoding::US_ASCII) do
+        JSON.load_file(path)
+      end
+      assert_equal data, loaded_data
+    end
+  end
+
   private
+
+  def with_external_encoding(encoding)
+    verbose = $VERBOSE
+    $VERBOSE = nil
+    previous_encoding = Encoding.default_external
+    Encoding.default_external = encoding
+    yield
+  ensure
+    Encoding.default_external = previous_encoding
+    $VERBOSE = verbose
+  end
 
   def test_load_shared(method_name)
     temp_file_containing(@json) do |filespec|

@@ -94,7 +94,7 @@ static void getDevice(int*, int*, char [DEVICELEN], int);
 
 static int start_new_session(char *errbuf, size_t errbuf_len);
 static int obtain_ctty(int master, int slave, const char *slavename, char *errbuf, size_t errbuf_len);
-static int drop_privilige(char *errbuf, size_t errbuf_len);
+static int drop_privilege(char *errbuf, size_t errbuf_len);
 
 struct child_info {
     int master, slave;
@@ -117,7 +117,7 @@ chfunc(void *data, char *errbuf, size_t errbuf_len)
     if (obtain_ctty(master, slave, slavename, errbuf, errbuf_len))
         return -1;
 
-    if (drop_privilige(errbuf, errbuf_len))
+    if (drop_privilege(errbuf, errbuf_len))
         return -1;
 
     return rb_exec_async_signal_safe(carg->eargp, errbuf, errbuf_len);
@@ -180,12 +180,12 @@ obtain_ctty(int master, int slave, const char *slavename, char *errbuf, size_t e
     dup2(slave,0);
     dup2(slave,1);
     dup2(slave,2);
-    if (slave < 0 || slave > 2) (void)!close(slave);
+    if (slave > 2) (void)!close(slave);
     return 0;
 }
 
 static int
-drop_privilige(char *errbuf, size_t errbuf_len)
+drop_privilege(char *errbuf, size_t errbuf_len)
 {
 #if defined(HAVE_SETEUID) || defined(HAVE_SETREUID) || defined(HAVE_SETRESUID)
     if (seteuid(getuid())) ERROR_EXIT("seteuid()");

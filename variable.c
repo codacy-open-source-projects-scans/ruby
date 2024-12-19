@@ -453,15 +453,27 @@ struct rb_global_entry {
     bool ractor_local;
 };
 
+static void
+free_global_variable(struct rb_global_variable *var)
+{
+    RUBY_ASSERT(var->counter == 0);
+
+    struct trace_var *trace = var->trace;
+    while (trace) {
+        struct trace_var *next = trace->next;
+        xfree(trace);
+        trace = next;
+    }
+    xfree(var);
+}
+
 static enum rb_id_table_iterator_result
 free_global_entry_i(VALUE val, void *arg)
 {
     struct rb_global_entry *entry = (struct rb_global_entry *)val;
-    if (entry->var->counter == 1) {
-        ruby_xfree(entry->var);
-    }
-    else {
-        entry->var->counter--;
+    entry->var->counter--;
+    if (entry->var->counter == 0) {
+        free_global_variable(entry->var);
     }
     ruby_xfree(entry);
     return ID_TABLE_DELETE;
@@ -1007,13 +1019,7 @@ rb_alias_variable(ID name1, ID name2)
         }
         var->counter--;
         if (var->counter == 0) {
-            struct trace_var *trace = var->trace;
-            while (trace) {
-                struct trace_var *next = trace->next;
-                xfree(trace);
-                trace = next;
-            }
-            xfree(var);
+            free_global_variable(var);
         }
     }
     else {
@@ -1057,6 +1063,12 @@ static inline struct st_table *
 generic_ivtbl_no_ractor_check(VALUE obj)
 {
     return generic_ivtbl(obj, 0, false);
+}
+
+struct st_table *
+rb_generic_ivtbl_get(void)
+{
+    return generic_iv_tbl_;
 }
 
 int
@@ -1814,7 +1826,7 @@ void rb_obj_freeze_inline(VALUE x)
     if (RB_FL_ABLE(x)) {
         RB_FL_SET_RAW(x, RUBY_FL_FREEZE);
         if (TYPE(x) == T_STRING) {
-            RB_FL_UNSET_RAW(x, FL_USER3); // STR_CHILLED
+            RB_FL_UNSET_RAW(x, FL_USER2 | FL_USER3); // STR_CHILLED
         }
 
         rb_shape_t * next_shape = rb_shape_transition_shape_frozen(x);
@@ -2363,7 +2375,7 @@ autoload_table_memsize(const void *ptr)
 static void
 autoload_table_compact(void *ptr)
 {
-    rb_gc_update_tbl_refs((st_table *)ptr);
+    rb_gc_ref_update_table_values_only((st_table *)ptr);
 }
 
 static const rb_data_type_t autoload_table_type = {
@@ -2994,7 +3006,7 @@ rb_autoload_load(VALUE module, ID name)
 
     // At this point, we assume there might be autoloading, so fail if it's ractor:
     if (UNLIKELY(!rb_ractor_main_p())) {
-        rb_raise(rb_eRactorUnsafeError, "require by autoload on non-main Ractor is not supported (%s)", rb_id2name(name));
+        return rb_ractor_autoload_load(module, name);
     }
 
     // This state is stored on the stack and is used during the autoload process.
@@ -3280,6 +3292,7 @@ rb_const_remove(VALUE mod, ID id)
         undefined_constant(mod, ID2SYM(id));
     }
 
+    rb_const_warn_if_deprecated(ce, mod, id);
     rb_clear_constant_cache_for_id(id);
 
     val = ce->value;
@@ -3612,6 +3625,9 @@ const_set(VALUE klass, ID id, VALUE val)
                 }
             }
         }
+    }
+    if (klass == rb_cObject && id == idRuby) {
+        rb_warn_reserved_name_at(3.5, "::Ruby");
     }
 }
 

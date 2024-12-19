@@ -1,10 +1,8 @@
 # frozen_string_literal: true
 
 RSpec.describe "bundle exec" do
-  let(:system_gems_to_install) { %w[myrack-1.0.0 myrack-0.9.1] }
-
   it "works with --gemfile flag" do
-    system_gems(system_gems_to_install, path: default_bundle_path)
+    system_gems(%w[myrack-1.0.0 myrack-0.9.1], path: default_bundle_path)
 
     gemfile "CustomGemfile", <<-G
       source "https://gem.repo1"
@@ -16,7 +14,7 @@ RSpec.describe "bundle exec" do
   end
 
   it "activates the correct gem" do
-    system_gems(system_gems_to_install, path: default_bundle_path)
+    system_gems(%w[myrack-1.0.0 myrack-0.9.1], path: default_bundle_path)
 
     gemfile <<-G
       source "https://gem.repo1"
@@ -28,7 +26,7 @@ RSpec.describe "bundle exec" do
   end
 
   it "works and prints no warnings when HOME is not writable" do
-    system_gems(system_gems_to_install, path: default_bundle_path)
+    system_gems(%w[myrack-1.0.0 myrack-0.9.1], path: default_bundle_path)
 
     gemfile <<-G
       source "https://gem.repo1"
@@ -386,7 +384,7 @@ RSpec.describe "bundle exec" do
   end
 
   it "raises a helpful error when exec'ing to something outside of the bundle" do
-    system_gems(system_gems_to_install, path: default_bundle_path)
+    system_gems(%w[myrack-1.0.0 myrack-0.9.1], path: default_bundle_path)
 
     bundle "config set clean false" # want to keep the myrackup binstub
     install_gemfile <<-G
@@ -725,8 +723,6 @@ RSpec.describe "bundle exec" do
     RUBY
 
     before do
-      system_gems(system_gems_to_install, path: default_bundle_path)
-
       bundled_app(path).open("w") {|f| f << executable }
       bundled_app(path).chmod(0o755)
 
@@ -872,8 +868,10 @@ RSpec.describe "bundle exec" do
       end
     end
 
-    context "when Bundler.setup fails", bundler: "< 3" do
+    context "when Bundler.setup fails" do
       before do
+        system_gems(%w[myrack-1.0.0 myrack-0.9.1], path: default_bundle_path)
+
         gemfile <<-G
           source "https://gem.repo1"
           gem 'myrack', '2'
@@ -883,42 +881,13 @@ RSpec.describe "bundle exec" do
 
       let(:exit_code) { Bundler::GemNotFound.new.status_code }
       let(:expected) { "" }
-      let(:expected_err) { <<-EOS.strip }
-Could not find gem 'myrack (= 2)' in locally installed gems.
+      let(:expected_err) { <<~EOS.strip }
+        Could not find gem 'myrack (= 2)' in locally installed gems.
 
-The source contains the following gems matching 'myrack':
-  * myrack-0.9.1
-  * myrack-1.0.0
-Run `bundle install` to install missing gems.
-      EOS
-
-      it "runs" do
-        skip "https://github.com/rubygems/rubygems/issues/3351" if Gem.win_platform?
-
-        subject
-        expect(exitstatus).to eq(exit_code)
-        expect(err).to eq(expected_err)
-        expect(out).to eq(expected)
-      end
-    end
-
-    context "when Bundler.setup fails", bundler: "3" do
-      before do
-        gemfile <<-G
-          source "https://gem.repo1"
-          gem 'myrack', '2'
-        G
-        ENV["BUNDLER_FORCE_TTY"] = "true"
-      end
-
-      let(:exit_code) { Bundler::GemNotFound.new.status_code }
-      let(:expected) { "" }
-      let(:expected_err) { <<-EOS.strip }
-Could not find gem 'myrack (= 2)' in locally installed gems.
-
-The source contains the following gems matching 'myrack':
-  * myrack-1.0.0
-Run `bundle install` to install missing gems.
+        The source contains the following gems matching 'myrack':
+          * myrack-0.9.1
+          * myrack-1.0.0
+        Run `bundle install` to install missing gems.
       EOS
 
       it "runs" do
@@ -994,23 +963,30 @@ Run `bundle install` to install missing gems.
         puts "__FILE__: #{__FILE__.inspect}"
       RUBY
 
-      let(:expected) { super() + <<-EOS.chomp }
+      context "when the path is absolute" do
+        let(:expected) { super() + <<~EOS.chomp }
 
-$0: #{path.to_s.inspect}
-__FILE__: #{path.to_s.inspect}
-      EOS
+          $0: #{path.to_s.inspect}
+          __FILE__: #{path.to_s.inspect}
+        EOS
 
-      it "runs" do
-        skip "https://github.com/rubygems/rubygems/issues/3351" if Gem.win_platform?
+        it "runs" do
+          skip "https://github.com/rubygems/rubygems/issues/3351" if Gem.win_platform?
 
-        subject
-        expect(exitstatus).to eq(exit_code)
-        expect(err).to eq(expected_err)
-        expect(out).to eq(expected)
+          subject
+          expect(exitstatus).to eq(exit_code)
+          expect(err).to eq(expected_err)
+          expect(out).to eq(expected)
+        end
       end
 
       context "when the path is relative" do
         let(:path) { super().relative_path_from(bundled_app) }
+        let(:expected) { super() + <<~EOS.chomp }
+
+          $0: #{path.to_s.inspect}
+          __FILE__: #{path.to_s.inspect}
+        EOS
 
         it "runs" do
           skip "https://github.com/rubygems/rubygems/issues/3351" if Gem.win_platform?
@@ -1024,8 +1000,20 @@ __FILE__: #{path.to_s.inspect}
 
       context "when the path is relative with a leading ./" do
         let(:path) { Pathname.new("./#{super().relative_path_from(bundled_app)}") }
+        let(:expected) { super() + <<~EOS.chomp }
 
-        pending "relative paths with ./ have absolute __FILE__"
+          $0: #{path.to_s.inspect}
+          __FILE__: #{File.expand_path(path, bundled_app).inspect}
+        EOS
+
+        it "runs" do
+          skip "https://github.com/rubygems/rubygems/issues/3351" if Gem.win_platform?
+
+          subject
+          expect(exitstatus).to eq(exit_code)
+          expect(err).to eq(expected_err)
+          expect(out).to eq(expected)
+        end
       end
     end
 

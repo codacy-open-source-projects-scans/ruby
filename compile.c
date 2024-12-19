@@ -436,12 +436,10 @@ do { \
 #define NO_CHECK(sub) (void)(sub)
 #define BEFORE_RETURN
 
-/* leave name uninitialized so that compiler warn if INIT_ANCHOR is
- * missing */
 #define DECL_ANCHOR(name) \
-    LINK_ANCHOR name[1] = {{{ISEQ_ELEMENT_ANCHOR,},}}
+    LINK_ANCHOR name[1] = {{{ISEQ_ELEMENT_ANCHOR,},&name[0].anchor}}
 #define INIT_ANCHOR(name) \
-    (name->last = &name->anchor)
+    ((name->last = &name->anchor)->next = NULL) /* re-initialize */
 
 static inline VALUE
 freeze_hide_obj(VALUE obj)
@@ -1290,9 +1288,14 @@ static void
 APPEND_LIST(ISEQ_ARG_DECLARE LINK_ANCHOR *const anc1, LINK_ANCHOR *const anc2)
 {
     if (anc2->anchor.next) {
+        /* LINK_ANCHOR must not loop */
+        RUBY_ASSERT(anc2->last != &anc2->anchor);
         anc1->last->next = anc2->anchor.next;
         anc2->anchor.next->prev = anc1->last;
         anc1->last = anc2->last;
+    }
+    else {
+        RUBY_ASSERT(anc2->last == &anc2->anchor);
     }
     verify_list("append", anc1);
 }
@@ -2007,7 +2010,7 @@ iseq_set_use_block(rb_iseq_t *iseq)
 
         rb_vm_t *vm = GET_VM();
 
-        if (!vm->unused_block_warning_strict) {
+        if (!rb_warning_category_enabled_p(RB_WARN_CATEGORY_STRICT_UNUSED_BLOCK)) {
             st_data_t key = (st_data_t)rb_intern_str(body->location.label); // String -> ID
             st_insert(vm->unused_block_warning_table, key, 1);
         }
@@ -4170,7 +4173,86 @@ iseq_specialized_instruction(rb_iseq_t *iseq, INSN *iobj)
                 return COMPILE_OK;
             }
         }
+
+        // Break the "else if" chain since some prior checks abort after sub-ifs.
+        // We already found "newarray".  To match `[...].include?(arg)` we look for
+        // the instruction(s) representing the argument followed by a "send".
+        if ((IS_INSN_ID(niobj, putstring) || IS_INSN_ID(niobj, putchilledstring) ||
+                  IS_INSN_ID(niobj, putobject) ||
+                  IS_INSN_ID(niobj, putself) ||
+                  IS_INSN_ID(niobj, getlocal) ||
+                  IS_INSN_ID(niobj, getinstancevariable)) &&
+                 IS_NEXT_INSN_ID(&niobj->link, send)) {
+
+            LINK_ELEMENT *sendobj = &(niobj->link); // Below we call ->next;
+            const struct rb_callinfo *ci;
+            // Allow any number (0 or more) of simple method calls on the argument
+            // (as in `[...].include?(arg.method1.method2)`.
+            do {
+                sendobj = sendobj->next;
+                ci = (struct rb_callinfo *)OPERAND_AT(sendobj, 0);
+            } while (vm_ci_simple(ci) && vm_ci_argc(ci) == 0 && IS_NEXT_INSN_ID(sendobj, send));
+
+            // If this send is for .include? with one arg we can do our opt.
+            if (vm_ci_simple(ci) && vm_ci_argc(ci) == 1 && vm_ci_mid(ci) == idIncludeP) {
+                VALUE num = iobj->operands[0];
+                INSN *sendins = (INSN *)sendobj;
+                sendins->insn_id = BIN(opt_newarray_send);
+                sendins->operand_size = insn_len(sendins->insn_id) - 1;
+                sendins->operands = compile_data_calloc2(iseq, sendins->operand_size, sizeof(VALUE));
+                sendins->operands[0] = FIXNUM_INC(num, 1);
+                sendins->operands[1] = INT2FIX(VM_OPT_NEWARRAY_SEND_INCLUDE_P);
+                // Remove the original "newarray" insn.
+                ELEM_REMOVE(&iobj->link);
+                return COMPILE_OK;
+            }
+        }
     }
+
+    /*
+     * duparray [...]
+     * some insn for the arg...
+     * send     <calldata!mid:include?, argc:1, ARGS_SIMPLE>, nil
+     * =>
+     * arg insn...
+     * opt_duparray_send [...], :include?, 1
+     */
+    if (IS_INSN_ID(iobj, duparray) && iobj->link.next && IS_INSN(iobj->link.next)) {
+        INSN *niobj = (INSN *)iobj->link.next;
+        if ((IS_INSN_ID(niobj, getlocal) ||
+             IS_INSN_ID(niobj, getinstancevariable) ||
+             IS_INSN_ID(niobj, putself)) &&
+            IS_NEXT_INSN_ID(&niobj->link, send)) {
+
+            LINK_ELEMENT *sendobj = &(niobj->link); // Below we call ->next;
+            const struct rb_callinfo *ci;
+            // Allow any number (0 or more) of simple method calls on the argument
+            // (as in `[...].include?(arg.method1.method2)`.
+            do {
+                sendobj = sendobj->next;
+                ci = (struct rb_callinfo *)OPERAND_AT(sendobj, 0);
+            } while (vm_ci_simple(ci) && vm_ci_argc(ci) == 0 && IS_NEXT_INSN_ID(sendobj, send));
+
+            if (vm_ci_simple(ci) && vm_ci_argc(ci) == 1 && vm_ci_mid(ci) == idIncludeP) {
+                // Move the array arg from duparray to opt_duparray_send.
+                VALUE ary = iobj->operands[0];
+                rb_obj_reveal(ary, rb_cArray);
+
+                INSN *sendins = (INSN *)sendobj;
+                sendins->insn_id = BIN(opt_duparray_send);
+                sendins->operand_size = insn_len(sendins->insn_id) - 1;;
+                sendins->operands = compile_data_calloc2(iseq, sendins->operand_size, sizeof(VALUE));
+                sendins->operands[0] = ary;
+                sendins->operands[1] = rb_id2sym(idIncludeP);
+                sendins->operands[2] = INT2FIX(1);
+
+                // Remove the duparray insn.
+                ELEM_REMOVE(&iobj->link);
+                return COMPILE_OK;
+            }
+        }
+    }
+
 
     if (IS_INSN_ID(iobj, send)) {
         const struct rb_callinfo *ci = (struct rb_callinfo *)OPERAND_AT(iobj, 0);
@@ -8950,7 +9032,7 @@ compile_builtin_attr(rb_iseq_t *iseq, const NODE *node)
 
         if (!SYMBOL_P(symbol)) goto non_symbol_arg;
 
-        string = rb_sym_to_s(symbol);
+        string = rb_sym2str(symbol);
         if (strcmp(RSTRING_PTR(string), "leaf") == 0) {
             ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_LEAF;
         }
@@ -8959,6 +9041,10 @@ compile_builtin_attr(rb_iseq_t *iseq, const NODE *node)
         }
         else if (strcmp(RSTRING_PTR(string), "use_block") == 0) {
             iseq_set_use_block(iseq);
+        }
+        else if (strcmp(RSTRING_PTR(string), "c_trace") == 0) {
+            // Let the iseq act like a C method in backtraces
+            ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_C_TRACE;
         }
         else {
             goto unknown_arg;
@@ -10387,34 +10473,36 @@ compile_shareable_literal_constant(rb_iseq_t *iseq, LINK_ANCHOR *ret, enum rb_pa
             *shareable_literal_p = 0;
             return COMPILE_OK;
         }
+        for (NODE *n = RNODE_HASH(node)->nd_head; n; n = RNODE_LIST(RNODE_LIST(n)->nd_next)->nd_next) {
+            if (!RNODE_LIST(n)->nd_head) {
+                // If the hash node have a keyword splat, fall back to the default case.
+                goto compile_shareable;
+            }
+        }
 
         INIT_ANCHOR(anchor);
         lit = rb_hash_new();
         for (NODE *n = RNODE_HASH(node)->nd_head; n; n = RNODE_LIST(RNODE_LIST(n)->nd_next)->nd_next) {
-            VALUE key_val;
-            VALUE value_val;
+            VALUE key_val = 0;
+            VALUE value_val = 0;
             int shareable_literal_p2;
             NODE *key = RNODE_LIST(n)->nd_head;
             NODE *val = RNODE_LIST(RNODE_LIST(n)->nd_next)->nd_head;
-            if (key) {
-                CHECK(compile_shareable_literal_constant_next(key, anchor, &key_val, &shareable_literal_p2));
-                if (shareable_literal_p2) {
-                    /* noop */
-                }
-                else if (RTEST(lit)) {
-                    rb_hash_clear(lit);
-                    lit = Qfalse;
-                }
+            CHECK(compile_shareable_literal_constant_next(key, anchor, &key_val, &shareable_literal_p2));
+            if (shareable_literal_p2) {
+                /* noop */
             }
-            if (val) {
-                CHECK(compile_shareable_literal_constant_next(val, anchor, &value_val, &shareable_literal_p2));
-                if (shareable_literal_p2) {
-                    /* noop */
-                }
-                else if (RTEST(lit)) {
-                    rb_hash_clear(lit);
-                    lit = Qfalse;
-                }
+            else if (RTEST(lit)) {
+                rb_hash_clear(lit);
+                lit = Qfalse;
+            }
+            CHECK(compile_shareable_literal_constant_next(val, anchor, &value_val, &shareable_literal_p2));
+            if (shareable_literal_p2) {
+                /* noop */
+            }
+            else if (RTEST(lit)) {
+                rb_hash_clear(lit);
+                lit = Qfalse;
             }
             if (RTEST(lit)) {
                 if (!UNDEF_P(key_val) && !UNDEF_P(value_val)) {
@@ -10430,6 +10518,8 @@ compile_shareable_literal_constant(rb_iseq_t *iseq, LINK_ANCHOR *ret, enum rb_pa
       }
 
       default:
+
+      compile_shareable:
         if (shareable == rb_parser_shareable_literal &&
             (SHAREABLE_BARE_EXPRESSION || level > 0)) {
             CHECK(compile_ensure_shareable_node(iseq, ret, dest, node));
@@ -10443,7 +10533,7 @@ compile_shareable_literal_constant(rb_iseq_t *iseq, LINK_ANCHOR *ret, enum rb_pa
         return COMPILE_OK;
     }
 
-    /* Array or Hash */
+    /* Array or Hash that does not have keyword splat */
     if (!lit) {
         if (nd_type(node) == NODE_LIST) {
             ADD_INSN1(anchor, node, newarray, INT2FIX(RNODE_LIST(node)->as.nd_alen));
@@ -14563,7 +14653,7 @@ ibf_load_setup(struct ibf_load *load, VALUE loader_obj, VALUE str)
         str = rb_str_new(RSTRING_PTR(str), RSTRING_LEN(str));
     }
 
-    ibf_load_setup_bytes(load, loader_obj, StringValuePtr(str), RSTRING_LEN(str));
+    ibf_load_setup_bytes(load, loader_obj, RSTRING_PTR(str), RSTRING_LEN(str));
     RB_OBJ_WRITE(loader_obj, &load->str, str);
 }
 

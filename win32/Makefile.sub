@@ -163,6 +163,9 @@ OPTFLAGS = -O2b2xg-
 OPTFLAGS = -O2sy-
 !endif
 !endif
+!if $(MSC_VER) >= 1900
+OPTFLAGS = $(OPTFLAGS) -Zc:inline
+!endif
 !if !defined(incflags)
 incflags =
 !endif
@@ -173,7 +176,7 @@ PLATFORM = mswin32
 !error RT not defined.  Retry from configure pass.
 !endif
 !ifndef NTVER
-NTVER = 0x0600
+NTVER = _WIN32_WINNT_WIN8
 !endif
 !ifdef NTVER
 ARCHDEFS = -D_WIN32_WINNT=$(NTVER) $(ARCHDEFS)
@@ -189,9 +192,6 @@ ruby_version = $(MAJOR).$(MINOR).0
 !endif
 !if defined(ABI_VERSION)
 ruby_version = $(ruby_version)+$(ABI_VERSION)
-!endif
-!if !defined(RUBY_VERSION_NAME)
-RUBY_VERSION_NAME = $(RUBY_BASE_NAME)-$(ruby_version)
 !endif
 RUBY_PROGRAM_VERSION = $(MAJOR).$(MINOR).$(TEENY)
 
@@ -279,7 +279,7 @@ COMPILERFLAG  = -Zm600
 !if $(MSC_VER) >= 1400
 WARNFLAGS = -W2 -wd4100 -wd4127 -wd4210 -wd4214 -wd4255 -wd4574 \
 	    -wd4668 -wd4710 -wd4711 -wd4820 -wd4996 \
-	    -we4028 -we4142 -we4047
+	    -we4028 -we4142 -we4047 -we4013
 !else
 WARNFLAGS = -W2
 !endif
@@ -334,6 +334,9 @@ COROUTINE_OBJ = coroutine/win64/Context.obj
 COROUTINE_SRC = $(COROUTINE_OBJ:.obj=.asm)
 !elseif "$(ARCH)" == "i386"
 COROUTINE_OBJ = coroutine/win32/Context.obj
+COROUTINE_SRC = $(COROUTINE_OBJ:.obj=.asm)
+!elseif "$(ARCH)" == "arm64"
+COROUTINE_OBJ = coroutine/arm64/Context.obj
 COROUTINE_SRC = $(COROUTINE_OBJ:.obj=.asm)
 !else
 !error copy coroutine has been replaced with pthread implementation at 42130a64f02294dc8025af3a51bda518c67ab33d
@@ -664,6 +667,7 @@ $(CONFIG_H): $(MKFILES) $(srcdir)/win32/Makefile.sub $(win_srcdir)/Makefile.sub
 !if defined(ABI_VERSION)
 #define RUBY_ABI_VERSION $(ABI_VERSION)
 !endif
+#define _WIN32_WINNT $(NTVER)
 #define STDC_HEADERS 1
 #define HAVE_SYS_TYPES_H 1
 #define HAVE_SYS_STAT_H 1
@@ -778,6 +782,7 @@ $(CONFIG_H): $(MKFILES) $(srcdir)/win32/Makefile.sub $(win_srcdir)/Makefile.sub
 #define HAVE_STRUCT_TIMEVAL 1
 !if $(MSC_VER) >= 1900
 #define HAVE_STRUCT_TIMESPEC
+#define HAVE_LOCALE_H 1
 !endif
 !if $(MSC_VER) >= 1600
 #define HAVE_INTTYPES_H 1
@@ -1131,6 +1136,11 @@ s,@TEENY@,$(TEENY),;t t
 s,@ruby_version@,$(ruby_version),;t t
 s,@RUBY_PROGRAM_VERSION@,$$(MAJOR).$$(MINOR).$$(TEENY),;t t
 s,@RUBY_API_VERSION@,$$(MAJOR).$$(MINOR),;t t
+!if defined(RUBY_VERSION_NAME)
+s,@RUBY_VERSION_NAME@,$(RUBY_VERSION_NAME),;t t
+!else
+s,@RUBY_VERSION_NAME@,$$(RUBY_BASE_NAME)-$$(ruby_version),;t t
+!endif
 s,@rubylibprefix@,$${prefix}/lib/$${RUBY_BASE_NAME},;t t
 s,@rubyarchdir@,$${rubylibdir}/$${arch},;t t
 s,@rubylibdir@,$${rubylibprefix}/$${ruby_version},;t t
@@ -1140,7 +1150,7 @@ s,@sitelibdir@,$${sitedir}/$${ruby_version},;t t
 s,@vendordir@,$${rubylibprefix}/vendor_ruby,;t t
 s,@vendorarchdir@,$${vendorlibdir}/$${sitearch},;t t
 s,@vendorlibdir@,$${vendordir}/$${ruby_version},;t t
-s,@rubyhdrdir@,$$(includedir)/$${RUBY_BASE_NAME}-$$(ruby_version),;t t
+s,@rubyhdrdir@,$$(includedir)/$$(RUBY_VERSION_NAME),;t t
 s,@sitehdrdir@,$$(rubyhdrdir)/site_ruby,;t t
 s,@vendorhdrdir@,$$(rubyhdrdir)/vendor_ruby,;t t
 s,@rubyarchhdrdir@,$$(rubyhdrdir)/$${arch},;t t
@@ -1288,6 +1298,11 @@ ext/distclean gems/distclean ext/realclean gems/realclean::
 		do $(Q)(del %I & rmdir %~dpI)) || @
 		-$(Q)rmdir $(@D) 2> nul || @
 
+gc/clean gc/distclean gc/realclean::
+	- for /D %G in (gc\*) do (pushd %G && $(MAKE) TARGET_SO_DIR=./ $(@F) & popd) || $(NULLCMD)
+gc/distclean gc/realclean::
+	- for /D %G in (gc\*) do ($(RMDIR) %G) || $(NULLCMD)
+
 clean-enc distclean-enc realclean-enc:
 !if exist($(ENC_MK))
 	$(ECHO) $(@:-enc=ing) encodings
@@ -1316,6 +1331,9 @@ $(ruby_pc): $(RBCONFIG)
 {$(srcdir)/coroutine/win64}.asm{coroutine/win64}.obj:
 	$(ECHO) assembling $(<:\=/)
 	$(Q) $(AS) $(ASFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $(<:\=/)
+{$(srcdir)/coroutine/arm64}.asm{coroutine/arm64}.obj:
+	$(ECHO) assembling $(<:\=/)
+	$(Q) $(AS) $(ASFLAGS) -o $@ $(<:\=/)
 
 {$(srcdir)/prism}.c.obj:
 	$(ECHO) compiling $(<:\=/)

@@ -857,7 +857,7 @@ num_nonzero_p(VALUE num)
  *    Rational(1, 2).to_int # => 0
  *    Rational(2, 1).to_int # => 2
  *    Complex(2, 0).to_int  # => 2
- *    Complex(2, 1)         # Raises RangeError (non-zero imaginary part)
+ *    Complex(2, 1).to_int  # Raises RangeError (non-zero imaginary part)
  *
  */
 
@@ -3592,6 +3592,7 @@ rb_num2ull(VALUE val)
  * - #>>: Returns the value of +self+ after a rightward bit-shift.
  * - #[]: Returns a slice of bits from +self+.
  * - #^: Returns the bitwise EXCLUSIVE OR of +self+ and the given value.
+ * - #|: Returns the bitwise OR of +self+ and the given value.
  * - #ceil: Returns the smallest number greater than or equal to +self+.
  * - #chr: Returns a 1-character string containing the character
  *   represented by the value of +self+.
@@ -3611,7 +3612,6 @@ rb_num2ull(VALUE val)
  * - #to_s (aliased as #inspect): Returns a string containing the place-value
  *   representation of +self+ in the given radix.
  * - #truncate: Returns +self+ truncated to the given precision.
- * - #|: Returns the bitwise OR of +self+ and the given value.
  *
  * === Other
  *

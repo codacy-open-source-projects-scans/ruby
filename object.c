@@ -500,10 +500,12 @@ rb_obj_clone_setup(VALUE obj, VALUE clone, VALUE kwfreeze)
       case Qnil:
         rb_funcall(clone, id_init_clone, 1, obj);
         RBASIC(clone)->flags |= RBASIC(obj)->flags & FL_FREEZE;
-        if (CHILLED_STRING_P(obj)) {
-            STR_CHILL_RAW(clone);
+
+        if (RB_TYPE_P(obj, T_STRING)) {
+            FL_SET_RAW(clone, FL_TEST_RAW(obj, STR_CHILLED));
         }
-        else if (RB_OBJ_FROZEN(obj)) {
+
+        if (RB_OBJ_FROZEN(obj)) {
             rb_shape_t * next_shape = rb_shape_transition_shape_frozen(clone);
             if (!rb_shape_obj_too_complex(clone) && next_shape->type == SHAPE_OBJ_TOO_COMPLEX) {
                 rb_evict_ivars_to_hash(clone);
@@ -1354,6 +1356,10 @@ rb_obj_frozen_p(VALUE obj)
  * - #to_h
  * - #to_r
  * - #to_s
+ *
+ * While +nil+ doesn't have an explicitly defined #to_hash method,
+ * it can be used in <code>**</code> unpacking, not adding any
+ * keyword arguments.
  *
  * Another method provides inspection:
  *
@@ -3821,7 +3827,7 @@ rb_String(VALUE val)
  *
  *    String([0, 1, 2])        # => "[0, 1, 2]"
  *    String(0..5)             # => "0..5"
- *    String({foo: 0, bar: 1}) # => "{:foo=>0, :bar=>1}"
+ *    String({foo: 0, bar: 1}) # => "{foo: 0, bar: 1}"
  *
  *  Raises +TypeError+ if +object+ cannot be converted to a string.
  */

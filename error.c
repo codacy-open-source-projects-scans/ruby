@@ -86,6 +86,7 @@ static ID id_category;
 static ID id_deprecated;
 static ID id_experimental;
 static ID id_performance;
+static ID id_strict_unused_block;
 static VALUE sym_category;
 static VALUE sym_highlight;
 static struct {
@@ -571,6 +572,18 @@ rb_warn_deprecated_to_remove(const char *removal, const char *fmt, const char *s
 
     with_warning_string_from(mesg, 0, fmt, suggest) {
         warn_deprecated(mesg, removal, suggest);
+    }
+}
+
+void
+rb_warn_reserved_name(const char *coming, const char *fmt, ...)
+{
+    if (!deprecation_warning_enabled()) return;
+
+    with_warning_string_from(mesg, 0, fmt, fmt) {
+        rb_str_set_len(mesg, RSTRING_LEN(mesg) - 1);
+        rb_str_catf(mesg, " is reserved for Ruby %s\n", coming);
+        rb_warn_category(mesg, ID2SYM(id_deprecated));
     }
 }
 
@@ -1071,8 +1084,8 @@ die(void)
 }
 
 RBIMPL_ATTR_FORMAT(RBIMPL_PRINTF_FORMAT, 1, 0)
-void
-rb_bug_without_die(const char *fmt, va_list args)
+static void
+rb_bug_without_die_internal(const char *fmt, va_list args)
 {
     const char *file = NULL;
     int line = 0;
@@ -1084,12 +1097,22 @@ rb_bug_without_die(const char *fmt, va_list args)
     report_bug_valist(file, line, fmt, NULL, args);
 }
 
+RBIMPL_ATTR_FORMAT(RBIMPL_PRINTF_FORMAT, 1, 0)
+void
+rb_bug_without_die(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    rb_bug_without_die_internal(fmt, args);
+    va_end(args);
+}
+
 void
 rb_bug(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    rb_bug_without_die(fmt, args);
+    rb_bug_without_die_internal(fmt, args);
     va_end(args);
     die();
 }
@@ -1172,23 +1195,27 @@ void
 rb_assert_failure_detail(const char *file, int line, const char *name, const char *expr,
                          const char *fmt, ...)
 {
-    FILE *out = stderr;
-    fprintf(out, "Assertion Failed: %s:%d:", file, line);
-    if (name) fprintf(out, "%s:", name);
-    fputs(expr, out);
+    rb_pid_t pid = -1;
+    FILE *out = bug_report_file(file, line, &pid);
+    if (out) {
+        fputs("Assertion Failed: ", out);
+        if (name) fprintf(out, "%s:", name);
+        fputs(expr, out);
 
-    if (fmt && *fmt) {
-        va_list args;
-        va_start(args, fmt);
-        fputs(": ", out);
-        vfprintf(out, fmt, args);
-        va_end(args);
+        if (fmt && *fmt) {
+            va_list args;
+            va_start(args, fmt);
+            fputs(": ", out);
+            vfprintf(out, fmt, args);
+            va_end(args);
+        }
+        fprintf(out, "\n%s\n\n", rb_dynamic_description);
+
+        preface_dump(out);
+        rb_vm_bugreport(NULL, out);
+        bug_report_end(out, pid);
     }
-    fprintf(out, "\n%s\n\n", rb_dynamic_description);
 
-    preface_dump(out);
-    rb_vm_bugreport(NULL, out);
-    bug_report_end(out, -1);
     die();
 }
 
@@ -3375,7 +3402,7 @@ syserr_eqq(VALUE self, VALUE exc)
  *
  *  * NoMemoryError
  *  * ScriptError
- *    * {LoadError}[https://docs.ruby-lang.org/en/master/LoadError.html]
+ *    * LoadError
  *    * NotImplementedError
  *    * SyntaxError
  *  * SecurityError
@@ -3584,6 +3611,7 @@ Init_Exception(void)
     id_deprecated = rb_intern_const("deprecated");
     id_experimental = rb_intern_const("experimental");
     id_performance = rb_intern_const("performance");
+    id_strict_unused_block = rb_intern_const("strict_unused_block");
     id_top = rb_intern_const("top");
     id_bottom = rb_intern_const("bottom");
     id_iseq = rb_make_internal_id();
@@ -3596,12 +3624,14 @@ Init_Exception(void)
     st_add_direct(warning_categories.id2enum, id_deprecated, RB_WARN_CATEGORY_DEPRECATED);
     st_add_direct(warning_categories.id2enum, id_experimental, RB_WARN_CATEGORY_EXPERIMENTAL);
     st_add_direct(warning_categories.id2enum, id_performance, RB_WARN_CATEGORY_PERFORMANCE);
+    st_add_direct(warning_categories.id2enum, id_strict_unused_block, RB_WARN_CATEGORY_STRICT_UNUSED_BLOCK);
 
     warning_categories.enum2id = rb_init_identtable();
     st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_NONE, 0);
     st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_DEPRECATED, id_deprecated);
     st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_EXPERIMENTAL, id_experimental);
     st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_PERFORMANCE, id_performance);
+    st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_STRICT_UNUSED_BLOCK, id_strict_unused_block);
 }
 
 void
@@ -3624,12 +3654,13 @@ rb_vraise(VALUE exc, const char *fmt, va_list ap)
 }
 
 void
-rb_raise(VALUE exc, const char *fmt, ...)
+rb_raise(VALUE exc_class, const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    rb_vraise(exc, fmt, args);
+    VALUE exc = rb_exc_new3(exc_class, rb_vsprintf(fmt, args));
     va_end(args);
+    rb_exc_raise(exc);
 }
 
 NORETURN(static void raise_loaderror(VALUE path, VALUE mesg));
@@ -4008,7 +4039,7 @@ rb_error_frozen_object(VALUE frozen_obj)
 }
 
 void
-rb_warn_unchilled(VALUE obj)
+rb_warn_unchilled_literal(VALUE obj)
 {
     rb_warning_category_t category = RB_WARN_CATEGORY_DEPRECATED;
     if (!NIL_P(ruby_verbose) && rb_warning_category_enabled_p(category)) {
@@ -4037,6 +4068,15 @@ rb_warn_unchilled(VALUE obj)
         }
         rb_warn_category(mesg, rb_warning_category_to_name(category));
     }
+}
+
+void
+rb_warn_unchilled_symbol_to_s(VALUE obj)
+{
+    rb_category_warn(
+        RB_WARN_CATEGORY_DEPRECATED,
+        "warning: string returned by :%s.to_s will be frozen in the future", RSTRING_PTR(obj)
+    );
 }
 
 #undef rb_check_frozen

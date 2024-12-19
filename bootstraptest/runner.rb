@@ -236,7 +236,19 @@ End
         return true
       end
 
-      require_relative '../tool/lib/launchable'
+      begin
+        require_relative '../tool/lib/launchable'
+      rescue LoadError
+        # The following error sometimes happens, so we're going to skip writing Launchable report files in this case.
+        #
+        # ```
+        # /tmp/tmp.bISss9CtXZ/.ext/common/json/ext.rb:15:in 'Kernel#require':
+        #   /tmp/tmp.bISss9CtXZ/.ext/x86_64-linux/json/ext/parser.so:
+        #     undefined symbol: ruby_abi_version - ruby_abi_version (LoadError)
+        # ```
+        #
+        return true
+      end
       BT.launchable_test_reports = writer = Launchable::JsonStreamWriter.new($1)
       writer.write_array('testCases')
       at_exit {
@@ -342,6 +354,7 @@ def concurrent_exec_test
   begin
     while BT.wn != term_wn
       if r = rq.pop
+        BT_STATE.count += 1
         case
         when BT.quiet
         when BT.tty

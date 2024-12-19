@@ -705,10 +705,37 @@ class RDoc::ClassModule < RDoc::Context
 
   ##
   # Set the superclass of this class to +superclass+
+  #
+  # where +superclass+ is one of:
+  #
+  # - +nil+
+  # - a String containing the full name of the superclass
+  # - the RDoc::ClassModule representing the superclass
 
   def superclass=(superclass)
     raise NoMethodError, "#{full_name} is a module" if module?
-    @superclass = superclass
+    case superclass
+    when RDoc::ClassModule
+      @superclass = superclass.full_name
+    when nil, String
+      @superclass = superclass
+    else
+      raise TypeError, "superclass must be a String or RDoc::ClassModule, not #{superclass.class}"
+    end
+  end
+
+  ##
+  # Get all super classes of this class in an array. The last element might be
+  # a string if the name is unknown.
+
+  def super_classes
+    result = []
+    parent = self
+    while parent = parent.superclass
+      result << parent
+      return result if parent.is_a?(String)
+    end
+    result
   end
 
   def to_s # :nodoc:

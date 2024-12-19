@@ -1,4 +1,7 @@
 # -*- encoding: binary -*-
+
+require_relative 'marshal_multibyte_data'
+
 class UserDefined
   class Nested
     def ==(other)
@@ -267,17 +270,6 @@ module MarshalSpec
     end
   end
 
-  module_eval(<<~ruby.dup.force_encoding(Encoding::UTF_8))
-    class MultibyteぁあぃいClass
-    end
-
-    module MultibyteけげこごModule
-    end
-
-    class MultibyteぁあぃいTime < Time
-    end
-  ruby
-
   class ObjectWithFreezeRaisingException < Object
     def freeze
       raise
@@ -494,6 +486,22 @@ module MarshalSpec
                  "\004\bS:\024Struct::Pyramid\000"],
     "Random" => random_data,
   }
+
+  if defined? Data # TODO: remove the condition when minimal supported version is 3.2
+    module DataSpec
+      Measure = Data.define(:amount, :unit)
+      Empty = Data.define
+
+      MeasureExtended = Class.new(Measure)
+      MeasureExtended.extend(Enumerable)
+
+      class MeasureWithOverriddenName < Measure
+        def self.name
+          "Foo"
+        end
+      end
+    end
+  end
 end
 
 class ArraySub < Array

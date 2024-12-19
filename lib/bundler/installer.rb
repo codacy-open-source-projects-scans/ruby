@@ -77,12 +77,9 @@ module Bundler
           return
         end
 
-        if resolve_if_needed(options)
+        if @definition.setup_domain!(options)
           ensure_specs_are_compatible!
           Bundler.load_plugins(@definition)
-          options.delete(:jobs)
-        else
-          options[:jobs] = 1 # to avoid the overhead of Bundler::Worker
         end
         install(options)
 
@@ -197,18 +194,14 @@ module Bundler
       standalone = options[:standalone]
       force = options[:force]
       local = options[:local]
-      jobs = installation_parallelization(options)
+      jobs = installation_parallelization
       spec_installations = ParallelInstaller.call(self, @definition.specs, jobs, standalone, force, local: local)
       spec_installations.each do |installation|
         post_install_messages[installation.name] = installation.post_install_message if installation.has_post_install_message?
       end
     end
 
-    def installation_parallelization(options)
-      if jobs = options.delete(:jobs)
-        return jobs
-      end
-
+    def installation_parallelization
       if jobs = Bundler.settings[:jobs]
         return jobs
       end
@@ -226,19 +219,6 @@ module Bundler
           raise InstallError, "#{spec.full_name} requires rubygems version #{spec.required_rubygems_version}, " \
             "which is incompatible with the current version, #{Gem.rubygems_version}"
         end
-      end
-    end
-
-    # returns whether or not a re-resolve was needed
-    def resolve_if_needed(options)
-      @definition.prefer_local! if options[:"prefer-local"]
-
-      if options[:local] || (@definition.no_resolve_needed? && !@definition.missing_specs?)
-        @definition.resolve_with_cache!
-        false
-      else
-        @definition.resolve_remotely!
-        true
       end
     end
 

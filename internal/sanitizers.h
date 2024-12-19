@@ -16,7 +16,7 @@
 #endif
 
 #ifdef HAVE_SANITIZER_ASAN_INTERFACE_H
-# if __has_feature(address_sanitizer)
+# if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
 #  define RUBY_ASAN_ENABLED
 #  include <sanitizer/asan_interface.h>
 # endif
@@ -39,6 +39,9 @@
 #elif defined(RUBY_ASAN_ENABLED)
 # define ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS(x) \
     __attribute__((__no_sanitize__("address"), __noinline__)) x
+#elif defined(RUBY_MSAN_ENABLED)
+    # define ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS(x) \
+    __attribute__((__no_sanitize__("memory"), __noinline__)) x
 #elif defined(NO_SANITIZE_ADDRESS)
 # define ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS(x) \
     NO_SANITIZE_ADDRESS(NOINLINE(x))

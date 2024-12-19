@@ -1200,8 +1200,10 @@ rb_process_status_wait(rb_pid_t pid, int flags)
     // We only enter the scheduler if we are "blocking":
     if (!(flags & WNOHANG)) {
         VALUE scheduler = rb_fiber_scheduler_current();
-        VALUE result = rb_fiber_scheduler_process_wait(scheduler, pid, flags);
-        if (!UNDEF_P(result)) return result;
+        if (scheduler != Qnil) {
+            VALUE result = rb_fiber_scheduler_process_wait(scheduler, pid, flags);
+            if (!UNDEF_P(result)) return result;
+        }
     }
 
     struct waitpid_state waitpid_state;
@@ -1676,12 +1678,15 @@ after_exec(void)
 static void
 before_fork_ruby(void)
 {
+    rb_gc_before_fork();
     before_exec();
 }
 
 static void
 after_fork_ruby(rb_pid_t pid)
 {
+    rb_gc_after_fork(pid);
+
     if (pid == 0) {
         // child
         clear_pid_cache();
@@ -3363,6 +3368,7 @@ run_exec_dup2(VALUE ary, VALUE tmpbuf, struct rb_execarg *sargp, char *errmsg, s
             //   in #assert_close_on_exec because the FD_CLOEXEC is not dup'd by default
             if (fd_get_cloexec(pairs[i].oldfd, errmsg, errmsg_buflen)) {
                 if (fd_set_cloexec(extra_fd, errmsg, errmsg_buflen)) {
+                    close(extra_fd);
                     goto fail;
                 }
             }

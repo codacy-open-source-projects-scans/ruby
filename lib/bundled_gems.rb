@@ -1,8 +1,6 @@
 # -*- frozen-string-literal: true -*-
 
-# :stopdoc:
-
-module Gem::BUNDLED_GEMS
+module Gem::BUNDLED_GEMS # :nodoc:
   SINCE = {
     "matrix" => "3.1.0",
     "net-ftp" => "3.1.0",
@@ -47,17 +45,20 @@ module Gem::BUNDLED_GEMS
     "drb" => true,
     "rinda" => true,
     "syslog" => true,
-  }.freeze
-
-  OPTIONAL = {
     "fiddle" => true,
   }.freeze
 
   WARNED = {}                   # unfrozen
 
   conf = ::RbConfig::CONFIG
-  LIBDIR = (conf["rubylibdir"] + "/").freeze
-  ARCHDIR = (conf["rubyarchdir"] + "/").freeze
+  if ENV["TEST_BUNDLED_GEMS_FAKE_RBCONFIG"]
+    LIBDIR = (File.expand_path(File.join(__dir__, "..", "lib")) + "/").freeze
+    rubyarchdir = $LOAD_PATH.find{|path| path.include?(".ext/common") }
+    ARCHDIR = (File.expand_path(rubyarchdir) + "/").freeze
+  else
+    LIBDIR = (conf["rubylibdir"] + "/").freeze
+    ARCHDIR = (conf["rubyarchdir"] + "/").freeze
+  end
   dlext = [conf["DLEXT"], "so"].uniq
   DLEXT = /\.#{Regexp.union(dlext)}\z/
   LIBEXT = /\.#{Regexp.union("rb", *dlext)}\z/
@@ -70,30 +71,15 @@ module Gem::BUNDLED_GEMS
     [::Kernel.singleton_class, ::Kernel].each do |kernel_class|
       kernel_class.send(:alias_method, :no_warning_require, :require)
       kernel_class.send(:define_method, :require) do |name|
-
-        message = ::Gem::BUNDLED_GEMS.warning?(name, specs: spec_names)
-        begin
-          result = kernel_class.send(:no_warning_require, name)
-        rescue LoadError => e
-          result = e
-        end
-
-        # Don't warn if the gem is optional dependency and not found in the Bundler environment.
-        if !(result.is_a?(LoadError) && OPTIONAL[name]) && message
+        if message = ::Gem::BUNDLED_GEMS.warning?(name, specs: spec_names)
           if ::Gem::BUNDLED_GEMS.uplevel > 0
             Kernel.warn message, uplevel: ::Gem::BUNDLED_GEMS.uplevel
           else
             Kernel.warn message
           end
         end
-
-        if result.is_a?(LoadError)
-          raise result
-        else
-          result
-        end
+        kernel_class.send(:no_warning_require, name)
       end
-
       if kernel_class == ::Kernel
         kernel_class.send(:private, :require)
       else
@@ -136,7 +122,7 @@ module Gem::BUNDLED_GEMS
     if !path
       return
     elsif path.start_with?(ARCHDIR)
-      n = path.delete_prefix(ARCHDIR).sub(DLEXT, "")
+      n = path.delete_prefix(ARCHDIR).sub(DLEXT, "").chomp(".rb")
     elsif path.start_with?(LIBDIR)
       n = path.delete_prefix(LIBDIR).chomp(".rb")
     else
@@ -259,7 +245,7 @@ end
 # for RubyGems without Bundler environment.
 # If loading library is not part of the default gems and the bundled gems, warn it.
 class LoadError
-  def message
+  def message # :nodoc:
     return super unless path
 
     name = path.tr("/", "-")
@@ -269,5 +255,3 @@ class LoadError
     super
   end
 end
-
-# :startdoc:

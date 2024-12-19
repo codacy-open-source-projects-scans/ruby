@@ -31,6 +31,10 @@
 # include <sys/time.h>
 #endif
 
+#if defined(HAVE_LOCALE_H)
+# include <locale.h>
+#endif
+
 #include "id.h"
 #include "internal.h"
 #include "internal/array.h"
@@ -331,6 +335,8 @@ v2w(VALUE v)
 #endif
     return WIDEVAL_WRAP(v);
 }
+
+#define NUM2WV(v) v2w(rb_Integer(v))
 
 static int
 weq(wideval_t wx, wideval_t wy)
@@ -950,7 +956,11 @@ zone_str(const char *zone)
         str = rb_usascii_str_new(zone, len);
     }
     else {
+#if defined(_WIN32)
+        str = rb_utf8_str_new(zone, len);
+#else
         str = rb_enc_str_new(zone, len, rb_locale_encoding());
+#endif
     }
     return rb_fstring(str);
 }
@@ -1649,11 +1659,25 @@ localtime_with_gmtoff_zone(const time_t *t, struct tm *result, long *gmtoff, VAL
         if (zone) {
 #if defined(HAVE_TM_ZONE)
             *zone = zone_str(tm.tm_zone);
+#elif defined(_WIN32)
+            {
+                enum {tz_name_max = 32}; /* numberof(TIME_ZONE_INFORMATION::StandardName) */
+                WCHAR wbuf[tz_name_max + 1];
+                char cbuf[tz_name_max * 4 + 1];
+                size_t wlen = wcsftime(wbuf, numberof(wbuf), L"%Z", &tm);
+                DWORD clen = 0;
+                if (wlen > 0 && wlen < numberof(wbuf)) {
+                    clen = WideCharToMultiByte(CP_UTF8, 0, wbuf, wlen, cbuf, sizeof(cbuf), NULL, NULL);
+                }
+                if (clen > 0 && clen < sizeof(cbuf)) {
+                    cbuf[clen] = '\0';
+                    *zone = zone_str(cbuf);
+                }
+                else {
+                    *zone = zone_str(NULL);
+                }
+            }
 #elif defined(HAVE_TZNAME) && defined(HAVE_DAYLIGHT)
-# if defined(RUBY_MSVCRT_VERSION) && RUBY_MSVCRT_VERSION >= 140
-#  define tzname _tzname
-#  define daylight _daylight
-# endif
             /* this needs tzset or localtime, instead of localtime_r */
             *zone = zone_str(tzname[daylight && tm.tm_isdst]);
 #else
@@ -2256,7 +2280,7 @@ extract_time(VALUE time)
     const ID id_to_i = idTo_i;
 
 #define EXTRACT_TIME() do { \
-        t = v2w(rb_Integer(AREF(to_i))); \
+        t = NUM2WV(AREF(to_i)); \
     } while (0)
 
     if (rb_typeddata_is_kind_of(time, &time_data_type)) {
@@ -2299,7 +2323,7 @@ extract_vtm(VALUE time, VALUE orig_time, struct time_object *orig_tobj, VALUE su
         vtm->sec = obj2subsecx(AREF(sec), &subsecx); \
         vtm->isdst = RTEST(AREF(isdst));             \
         vtm->utc_offset = Qnil; \
-        t = v2w(rb_Integer(AREF(to_i))); \
+        t = NUM2WV(AREF(to_i)); \
     } while (0)
 
     if (rb_typeddata_is_kind_of(time, &time_data_type)) {

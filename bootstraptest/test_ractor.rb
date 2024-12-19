@@ -211,22 +211,12 @@ assert_equal '[:a, :b, :c, :d, :e, :f, :g]', %q{
   Ractor.make_shareable(closure).call
 }
 
-# Now autoload in non-main Ractor is not supported
-assert_equal 'ok', %q{
-  autoload :Foo, 'foo.rb'
-  r = Ractor.new do
-    p Foo
-  rescue Ractor::UnsafeError
-    :ok
-  end
-  r.take
-}
-
 ###
 ###
 # Ractor still has several memory corruption so skip huge number of tests
 if ENV['GITHUB_WORKFLOW'] &&
-   ENV['GITHUB_WORKFLOW'] == 'Compilations'
+   (ENV['GITHUB_WORKFLOW'] == 'Compilations' ||
+   ENV['GITHUB_WORKFLOW'] == 'ModGC')
    # ignore the follow
 else
 
@@ -1513,6 +1503,21 @@ assert_equal '[nil, "b", "a"]', %q{
   ans << Ractor.current[:key]
 }
 
+assert_equal '1', %q{
+  N = 1_000
+  Ractor.new{
+    a = []
+    1_000.times.map{|i|
+      Thread.new(i){|i|
+        Thread.pass if i < N
+        a << Ractor.store_if_absent(:i){ i }
+        a << Ractor.current[:i]
+      }
+    }.each(&:join)
+    a.uniq.size
+  }.take
+}
+
 ###
 ### Synchronization tests
 ###
@@ -1835,4 +1840,91 @@ assert_equal 'false', %q{
 assert_equal 'true', %q{
   shareable = Ractor.make_shareable("chilled")
   shareable == "chilled" && Ractor.shareable?(shareable)
+}
+
+# require in Ractor
+assert_equal 'true', %q{
+  Module.new do
+    def require feature
+      return Ractor._require(feature) unless Ractor.main?
+      super
+    end
+    Object.prepend self
+    set_temporary_name 'Ractor#require'
+  end
+
+  Ractor.new{
+    begin
+      require 'benchmark'
+      Benchmark.measure{}
+    rescue SystemStackError
+      # prism parser with -O0 build consumes a lot of machine stack
+      Data.define(:real).new(1)
+    end
+  }.take.real > 0
+}
+
+# require_relative in Ractor
+assert_equal 'true', %q{
+  dummyfile = File.join(__dir__, "dummy#{rand}.rb")
+  return true if File.exist?(dummyfile)
+
+  begin
+    File.write dummyfile, ''
+  rescue Exception
+    # skip on any errors
+    return true
+  end
+
+  begin
+    Ractor.new dummyfile do |f|
+      require_relative File.basename(f)
+    end.take
+  ensure
+    File.unlink dummyfile
+  end
+}
+
+# require_relative in Ractor
+assert_equal 'LoadError', %q{
+  dummyfile = File.join(__dir__, "not_existed_dummy#{rand}.rb")
+  return true if File.exist?(dummyfile)
+
+  Ractor.new dummyfile do |f|
+    begin
+      require_relative File.basename(f)
+    rescue LoadError => e
+      e.class
+    end
+  end.take
+}
+
+# autolaod in Ractor
+assert_equal 'true', %q{
+  autoload :Benchmark, 'benchmark'
+
+  r = Ractor.new do
+    begin
+      Benchmark.measure{}
+    rescue SystemStackError
+      # prism parser with -O0 build consumes a lot of machine stack
+      Data.define(:real).new(1)
+    end
+  end
+  r.take.real > 0
+}
+
+# failed in autolaod in Ractor
+assert_equal 'LoadError', %q{
+  dummyfile = File.join(__dir__, "not_existed_dummy#{rand}.rb")
+  autoload :Benchmark, dummyfile
+
+  r = Ractor.new do
+    begin
+      Benchmark.measure{}
+    rescue LoadError => e
+      e.class
+    end
+  end
+  r.take
 }

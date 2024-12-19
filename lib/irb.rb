@@ -75,7 +75,7 @@ require_relative "irb/pager"
 # 2.  Constructs the initial session context from [hash
 #     IRB.conf](rdoc-ref:IRB@Hash+IRB.conf) and from default values; the hash
 #     content may have been affected by [command-line
-#     options](rdoc-ref:IB@Command-Line+Options), and by direct assignments in
+#     options](rdoc-ref:IRB@Command-Line+Options), and by direct assignments in
 #     the configuration file.
 # 3.  Assigns the context to variable `conf`.
 # 4.  Assigns command-line arguments to variable `ARGV`.
@@ -879,7 +879,7 @@ require_relative "irb/pager"
 module IRB
 
   # An exception raised by IRB.irb_abort
-  class Abort < Exception;end
+  class Abort < Exception;end # :nodoc:
 
   class << self
     # The current IRB::Context of the session, see IRB.conf
@@ -1469,10 +1469,10 @@ module IRB
         when "N"
           @context.irb_name
         when "m"
-          main_str = @context.main.to_s rescue "!#{$!.class}"
+          main_str = @context.safe_method_call_on_main(:to_s) rescue "!#{$!.class}"
           truncate_prompt_main(main_str)
         when "M"
-          main_str = @context.main.inspect rescue "!#{$!.class}"
+          main_str = @context.safe_method_call_on_main(:inspect) rescue "!#{$!.class}"
           truncate_prompt_main(main_str)
         when "l"
           ltype

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use crate::codegen::CodegenGlobals;
 use crate::cruby::*;
 use crate::options::*;
-use crate::yjit::yjit_enabled_p;
+use crate::yjit::{yjit_enabled_p, YJIT_INIT_TIME};
 
 /// Running total of how many ISeqs are in the system.
 #[no_mangle]
@@ -281,7 +281,9 @@ pub const DEFAULT_COUNTERS: &'static [Counter] = &[
     Counter::deleted_defer_block_count,
     Counter::compiled_branch_count,
     Counter::compile_time_ns,
+    Counter::compilation_failure,
     Counter::max_inline_versions,
+    Counter::inline_block_count,
     Counter::num_contexts_encoded,
     Counter::context_cache_hits,
 
@@ -419,6 +421,9 @@ make_counters! {
     send_bmethod_ractor,
     send_bmethod_block_arg,
     send_optimized_block_arg,
+    send_pred_not_fixnum,
+    send_pred_underflow,
+    send_str_dup_exivar,
 
     invokesuper_defined_class_mismatch,
     invokesuper_forwarding,
@@ -462,8 +467,10 @@ make_counters! {
     guard_send_not_fixnum_or_flonum,
     guard_send_not_string,
     guard_send_respond_to_mid_mismatch,
+    guard_send_str_aref_not_fixnum,
 
     guard_send_cfunc_bad_splat_vargs,
+    guard_send_cfunc_block_not_nil,
 
     guard_invokesuper_me_changed,
 
@@ -569,6 +576,7 @@ make_counters! {
     branch_insn_count,
     branch_known_count,
     max_inline_versions,
+    inline_block_count,
     num_contexts_encoded,
 
     freed_iseq_count,
@@ -790,6 +798,10 @@ fn rb_yjit_gen_stats_dict(key: VALUE) -> VALUE {
         set_stat_usize!(hash, "iseq_alloc_count", rb_yjit_iseq_alloc_count as usize);
 
         set_stat!(hash, "object_shape_count", rb_object_shape_count());
+
+        // Time since YJIT init in nanoseconds
+        let time_nanos = Instant::now().duration_since(YJIT_INIT_TIME.unwrap()).as_nanos();
+        set_stat_usize!(hash, "yjit_active_ns", time_nanos as usize);
     }
 
     // If we're not generating stats, put only default counters

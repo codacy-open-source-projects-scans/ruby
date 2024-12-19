@@ -37,7 +37,7 @@ module RubyVM::YJIT
   # whether to enable \YJIT compilation logging or not.
   #
   # `stats`:
-  # * `false`: Disable stats.
+  # * `false`: Don't enable stats.
   # * `true`: Enable stats. Print stats at exit.
   # * `:quiet`: Enable stats. Do not print stats at exit.
   #
@@ -48,6 +48,7 @@ module RubyVM::YJIT
   def self.enable(stats: false, log: false)
     return false if enabled?
     at_exit { print_and_dump_stats } if stats
+    call_yjit_hooks
     Primitive.rb_yjit_enable(stats, stats != :quiet, log, log != :quiet)
   end
 
@@ -247,9 +248,25 @@ module RubyVM::YJIT
     at_exit { print_and_dump_stats }
   end
 
+  # Blocks that are called when YJIT is enabled
+  @yjit_hooks = []
+
   class << self
     # :stopdoc:
     private
+
+    # Register a block to be called when YJIT is enabled
+    def add_yjit_hook(hook)
+      @yjit_hooks << hook
+    end
+
+    # Run YJIT hooks registered by RubyVM::YJIT.with_yjit
+    def call_yjit_hooks
+      # Skip using builtin methods in Ruby if --yjit-c-builtin is given
+      return if Primitive.yjit_c_builtin_p
+      @yjit_hooks.each(&:call)
+      @yjit_hooks.clear
+    end
 
     # Print stats and dump exit locations
     def print_and_dump_stats # :nodoc:
@@ -365,13 +382,16 @@ module RubyVM::YJIT
       out.puts "compiled_iseq_count:   " + format_number(13, stats[:compiled_iseq_count])
       out.puts "compiled_blockid_count:" + format_number(13, stats[:compiled_blockid_count])
       out.puts "compiled_block_count:  " + format_number(13, stats[:compiled_block_count])
+      out.puts "inline_block_count:    " + format_number_pct(13, stats[:inline_block_count], stats[:compiled_block_count])
       out.puts "deleted_defer_block_count:" + format_number_pct(10, stats[:deleted_defer_block_count], stats[:compiled_block_count])
       if stats[:compiled_blockid_count] != 0
         out.puts "versions_per_block:    " + format_number(13, "%4.3f" % (stats[:compiled_block_count].fdiv(stats[:compiled_blockid_count])))
       end
       out.puts "max_inline_versions:   " + format_number(13, stats[:max_inline_versions])
       out.puts "compiled_branch_count: " + format_number(13, stats[:compiled_branch_count])
-      out.puts "compile_time_ms:       " + format_number(13, stats[:compile_time_ns] / (1000 * 1000))
+
+      out.puts "yjit_active_ms:        " + format_number(13, stats[:yjit_active_ns] / 10**6)
+      out.puts "compile_time_ms:       " + format_number_pct(13, stats[:compile_time_ns] / 10**6 , stats[:yjit_active_ns] / 10**6)
       out.puts "block_next_count:      " + format_number(13, stats[:block_next_count])
       out.puts "defer_count:           " + format_number(13, stats[:defer_count])
       out.puts "defer_empty_count:     " + format_number(13, stats[:defer_empty_count])
@@ -501,9 +521,14 @@ module RubyVM::YJIT
     # Format a number along with a percentage over a total value
     def format_number_pct(pad, number, total) # :nodoc:
       padded_count = format_number(pad, number)
-      percentage = number.fdiv(total) * 100
-      formatted_pct = "%4.1f%%" % percentage
-      "#{padded_count} (#{formatted_pct})"
+
+      if total != 0
+        percentage = number.fdiv(total) * 100
+        formatted_pct = "%4.1f%%" % percentage
+        "#{padded_count} (#{formatted_pct})"
+      else
+        "#{padded_count}"
+      end
     end
 
     # :startdoc:

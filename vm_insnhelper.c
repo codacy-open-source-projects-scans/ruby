@@ -2189,7 +2189,7 @@ rb_vm_search_method_slowpath(const struct rb_callinfo *ci, VALUE klass)
 {
     const struct rb_callcache *cc;
 
-    VM_ASSERT(RB_TYPE_P(klass, T_CLASS) || RB_TYPE_P(klass, T_ICLASS), "klass=%"PRIxVALUE", type=%d", klass, TYPE(klass));
+    VM_ASSERT_TYPE2(klass, T_CLASS, T_ICLASS);
 
     RB_VM_LOCK_ENTER();
     {
@@ -2336,6 +2336,12 @@ check_cfunc(const rb_callable_method_entry_t *me, cfunc_type func)
 #endif
         }
     }
+}
+
+static inline int
+check_method_basic_definition(const rb_callable_method_entry_t *me)
+{
+    return me && METHOD_ENTRY_BASIC(me);
 }
 
 static inline int
@@ -3035,6 +3041,7 @@ warn_unused_block(const rb_callable_method_entry_t *cme, const rb_iseq_t *iseq, 
     rb_vm_t *vm = GET_VM();
     st_table *dup_check_table = vm->unused_block_warning_table;
     st_data_t key;
+    bool strict_unused_block = rb_warning_category_enabled_p(RB_WARN_CATEGORY_STRICT_UNUSED_BLOCK);
 
     union {
         VALUE v;
@@ -3046,7 +3053,7 @@ warn_unused_block(const rb_callable_method_entry_t *cme, const rb_iseq_t *iseq, 
     };
 
     // relax check
-    if (!vm->unused_block_warning_strict) {
+    if (!strict_unused_block) {
         key = (st_data_t)cme->def->original_id;
 
         if (st_lookup(dup_check_table, key, NULL)) {
@@ -3072,16 +3079,16 @@ warn_unused_block(const rb_callable_method_entry_t *cme, const rb_iseq_t *iseq, 
     if (st_insert(dup_check_table, key, 1)) {
         // already shown
     }
-    else {
+    else if (RTEST(ruby_verbose) || strict_unused_block) {
         VALUE m_loc = rb_method_entry_location((const rb_method_entry_t *)cme);
         VALUE name = rb_gen_method_name(cme->defined_class, ISEQ_BODY(iseq)->location.base_label);
 
         if (!NIL_P(m_loc)) {
-            rb_warning("the block passed to '%"PRIsVALUE"' defined at %"PRIsVALUE":%"PRIsVALUE" may be ignored",
-                       name, RARRAY_AREF(m_loc, 0), RARRAY_AREF(m_loc, 1));
+            rb_warn("the block passed to '%"PRIsVALUE"' defined at %"PRIsVALUE":%"PRIsVALUE" may be ignored",
+                    name, RARRAY_AREF(m_loc, 0), RARRAY_AREF(m_loc, 1));
         }
         else {
-            rb_warning("the block may be ignored because '%"PRIsVALUE"' does not use a block", name);
+            rb_warn("the block may be ignored because '%"PRIsVALUE"' does not use a block", name);
         }
     }
 }
@@ -4144,7 +4151,7 @@ aliased_callable_method_entry(const rb_callable_method_entry_t *me)
 
     if (orig_me->defined_class == 0) {
         VALUE defined_class = rb_find_defined_class_by_owner(me->defined_class, orig_me->owner);
-        VM_ASSERT(RB_TYPE_P(orig_me->owner, T_MODULE));
+        VM_ASSERT_TYPE(orig_me->owner, T_MODULE);
         cme = rb_method_entry_complement_defined_class(orig_me, me->called_id, defined_class);
 
         if (me->def->reference_count == 1) {
@@ -6071,7 +6078,7 @@ vm_objtostring(const rb_iseq_t *iseq, VALUE recv, CALL_DATA cd)
 
     switch (type) {
       case T_SYMBOL:
-        if (check_cfunc(vm_cc_cme(cc), rb_sym_to_s)) {
+        if (check_method_basic_definition(vm_cc_cme(cc))) {
             // rb_sym_to_s() allocates a mutable string, but since we are only
             // going to use this string for interpolation, it's fine to use the
             // frozen string.
@@ -6150,6 +6157,29 @@ vm_opt_str_freeze(VALUE str, int bop, ID id)
 
 /* this macro is mandatory to use OPTIMIZED_CMP. What a design! */
 #define id_cmp idCmp
+
+static VALUE
+vm_opt_duparray_include_p(rb_execution_context_t *ec, const VALUE ary, VALUE target)
+{
+    if (BASIC_OP_UNREDEFINED_P(BOP_INCLUDE_P, ARRAY_REDEFINED_OP_FLAG)) {
+        return rb_ary_includes(ary, target);
+    }
+    else {
+        VALUE args[1] = {target};
+
+        // duparray
+        RUBY_DTRACE_CREATE_HOOK(ARRAY, RARRAY_LEN(ary));
+        VALUE dupary = rb_ary_resurrect(ary);
+
+        return rb_vm_call_with_refinements(ec, dupary, idIncludeP, 1, args, RB_NO_KEYWORDS);
+    }
+}
+
+VALUE
+rb_vm_opt_duparray_include_p(rb_execution_context_t *ec, const VALUE ary, VALUE target)
+{
+    return vm_opt_duparray_include_p(ec, ary, target);
+}
 
 static VALUE
 vm_opt_newarray_max(rb_execution_context_t *ec, rb_num_t num, const VALUE *ptr)
@@ -6233,6 +6263,26 @@ VALUE rb_setup_fake_ary(struct RArray *fake_ary, const VALUE *list, long len);
 VALUE rb_ec_pack_ary(rb_execution_context_t *ec, VALUE ary, VALUE fmt, VALUE buffer);
 
 static VALUE
+vm_opt_newarray_include_p(rb_execution_context_t *ec, rb_num_t num, const VALUE *ptr, VALUE target)
+{
+    if (BASIC_OP_UNREDEFINED_P(BOP_INCLUDE_P, ARRAY_REDEFINED_OP_FLAG)) {
+        struct RArray fake_ary;
+        VALUE ary = rb_setup_fake_ary(&fake_ary, ptr, num);
+        return rb_ary_includes(ary, target);
+    }
+    else {
+        VALUE args[1] = {target};
+        return rb_vm_call_with_refinements(ec, rb_ary_new4(num, ptr), idIncludeP, 1, args, RB_NO_KEYWORDS);
+    }
+}
+
+VALUE
+rb_vm_opt_newarray_include_p(rb_execution_context_t *ec, rb_num_t num, const VALUE *ptr, VALUE target)
+{
+    return vm_opt_newarray_include_p(ec, num, ptr, target);
+}
+
+static VALUE
 vm_opt_newarray_pack_buffer(rb_execution_context_t *ec, rb_num_t num, const VALUE *ptr, VALUE fmt, VALUE buffer)
 {
     if (BASIC_OP_UNREDEFINED_P(BOP_PACK, ARRAY_REDEFINED_OP_FLAG)) {
@@ -6276,7 +6326,8 @@ rb_vm_opt_newarray_pack(rb_execution_context_t *ec, rb_num_t num, const VALUE *p
 static void
 vm_track_constant_cache(ID id, void *ic)
 {
-    struct rb_id_table *const_cache = GET_VM()->constant_cache;
+    rb_vm_t *vm = GET_VM();
+    struct rb_id_table *const_cache = vm->constant_cache;
     VALUE lookup_result;
     st_table *ics;
 
@@ -6288,7 +6339,23 @@ vm_track_constant_cache(ID id, void *ic)
         rb_id_table_insert(const_cache, id, (VALUE)ics);
     }
 
+    /* The call below to st_insert could allocate which could trigger a GC.
+     * If it triggers a GC, it may free an iseq that also holds a cache to this
+     * constant. If that iseq is the last iseq with a cache to this constant, then
+     * it will free this ST table, which would cause an use-after-free during this
+     * st_insert.
+     *
+     * So to fix this issue, we store the ID that is currently being inserted
+     * and, in remove_from_constant_cache, we don't free the ST table for ID
+     * equal to this one.
+     *
+     * See [Bug #20921].
+     */
+    vm->inserting_constant_cache_id = id;
+
     st_insert(ics, (st_data_t) ic, (st_data_t) Qtrue);
+
+    vm->inserting_constant_cache_id = (ID)0;
 }
 
 static void

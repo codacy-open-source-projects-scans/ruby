@@ -15,6 +15,7 @@
 #include "internal/error.h"
 #include "internal/eval.h"
 #include "internal/gc.h"
+#include "internal/hash.h"
 #include "internal/object.h"
 #include "internal/proc.h"
 #include "internal/symbol.h"
@@ -679,6 +680,29 @@ cfunc_proc_new(VALUE klass, VALUE ifunc)
     return procval;
 }
 
+VALUE
+rb_func_proc_dup(VALUE src_obj)
+{
+    RUBY_ASSERT(rb_typeddata_is_instance_of(src_obj, &proc_data_type));
+
+    rb_proc_t *src_proc;
+    GetProcPtr(src_obj, src_proc);
+    RUBY_ASSERT(vm_block_type(&src_proc->block) == block_type_ifunc);
+
+    cfunc_proc_t *proc;
+    VALUE proc_obj = TypedData_Make_Struct(rb_obj_class(src_obj), cfunc_proc_t, &proc_data_type, proc);
+
+    memcpy(&proc->basic, src_proc, sizeof(rb_proc_t));
+
+    VALUE *ep = *(VALUE **)&proc->basic.block.as.captured.ep = proc->env + VM_ENV_DATA_SIZE - 1;
+    ep[VM_ENV_DATA_INDEX_FLAGS]   = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_FLAGS];
+    ep[VM_ENV_DATA_INDEX_ME_CREF] = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_ME_CREF];
+    ep[VM_ENV_DATA_INDEX_SPECVAL] = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_SPECVAL];
+    ep[VM_ENV_DATA_INDEX_ENV]     = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_ENV];
+
+    return proc_obj;
+}
+
 static VALUE
 sym_proc_new(VALUE klass, VALUE sym)
 {
@@ -1310,10 +1334,15 @@ proc_eq(VALUE self, VALUE other)
         }
         break;
       case block_type_ifunc:
-        if (self_block->as.captured.ep != \
-                other_block->as.captured.ep ||
-                self_block->as.captured.code.ifunc != \
+        if (self_block->as.captured.code.ifunc != \
                 other_block->as.captured.code.ifunc) {
+            return Qfalse;
+        }
+
+        if (memcmp(
+                ((cfunc_proc_t *)self_proc)->env,
+                ((cfunc_proc_t *)other_proc)->env,
+                sizeof(((cfunc_proc_t *)self_proc)->env))) {
             return Qfalse;
         }
         break;
@@ -1437,9 +1466,33 @@ rb_hash_proc(st_index_t hash, VALUE prc)
 {
     rb_proc_t *proc;
     GetProcPtr(prc, proc);
-    hash = rb_hash_uint(hash, (st_index_t)proc->block.as.captured.code.val);
-    hash = rb_hash_uint(hash, (st_index_t)proc->block.as.captured.self);
-    return rb_hash_uint(hash, (st_index_t)proc->block.as.captured.ep);
+
+    switch (vm_block_type(&proc->block)) {
+      case block_type_iseq:
+        hash = rb_st_hash_uint(hash, (st_index_t)proc->block.as.captured.code.iseq->body);
+        break;
+      case block_type_ifunc:
+        hash = rb_st_hash_uint(hash, (st_index_t)proc->block.as.captured.code.ifunc->func);
+        hash = rb_st_hash_uint(hash, (st_index_t)proc->block.as.captured.code.ifunc->data);
+        break;
+      case block_type_symbol:
+        hash = rb_st_hash_uint(hash, rb_any_hash(proc->block.as.symbol));
+        break;
+      case block_type_proc:
+        hash = rb_st_hash_uint(hash, rb_any_hash(proc->block.as.proc));
+        break;
+      default:
+        rb_bug("rb_hash_proc: unknown block type %d", vm_block_type(&proc->block));
+    }
+
+    /* ifunc procs have their own allocated ep. If an ifunc is duplicated, they
+     * will point to different ep but they should return the same hash code, so
+     * we cannot include the ep in the hash. */
+    if (vm_block_type(&proc->block) != block_type_ifunc) {
+        hash = rb_hash_uint(hash, (st_index_t)proc->block.as.captured.ep);
+    }
+
+    return hash;
 }
 
 
@@ -4199,18 +4252,85 @@ proc_ruby2_keywords(VALUE procval)
  * Since +return+ and +break+ exits the block itself in lambdas,
  * lambdas cannot be orphaned.
  *
- * == Numbered parameters
+ * == Anonymous block parameters
  *
- * Numbered parameters are implicitly defined block parameters intended to
- * simplify writing short blocks:
+ * To simplify writing short blocks, Ruby provides two different types of
+ * anonymous parameters: +it+ (single parameter) and numbered ones: <tt>_1</tt>,
+ * <tt>_2</tt> and so on.
  *
  *     # Explicit parameter:
  *     %w[test me please].each { |str| puts str.upcase } # prints TEST, ME, PLEASE
  *     (1..5).map { |i| i**2 } # => [1, 4, 9, 16, 25]
  *
- *     # Implicit parameter:
+ *     # it:
+ *     %w[test me please].each { puts it.upcase } # prints TEST, ME, PLEASE
+ *     (1..5).map { it**2 } # => [1, 4, 9, 16, 25]
+ *
+ *     # Numbered parameter:
  *     %w[test me please].each { puts _1.upcase } # prints TEST, ME, PLEASE
  *     (1..5).map { _1**2 } # => [1, 4, 9, 16, 25]
+ *
+ * === +it+
+ *
+ * +it+ is a name that is available inside a block when no explicit parameters
+ * defined, as shown above.
+ *
+ *     %w[test me please].each { puts it.upcase } # prints TEST, ME, PLEASE
+ *     (1..5).map { it**2 } # => [1, 4, 9, 16, 25]
+ *
+ * +it+ is a "soft keyword": it is not a reserved name, and can be used as
+ * a name for methods and local variables:
+ *
+ *      it = 5 # no warnings
+ *      def it(&block) # RSpec-like API, no warnings
+ *         # ...
+ *      end
+ *
+ * +it+ can be used as a local variable even in blocks that use it as an
+ * implicit parameter (though this style is obviously confusing):
+ *
+ *      [1, 2, 3].each {
+ *        # takes a value of implicit parameter "it" and uses it to
+ *        # define a local variable with the same name
+ *        it = it**2
+ *        p it
+ *      }
+ *
+ * In a block with explicit parameters defined +it+ usage raises an exception:
+ *
+ *      [1, 2, 3].each { |x| p it }
+ *      # syntax error found (SyntaxError)
+ *      # [1, 2, 3].each { |x| p it }
+ *      #                        ^~ `it` is not allowed when an ordinary parameter is defined
+ *
+ * But if a local name (variable or method) is available, it would be used:
+ *
+ *      it = 5
+ *      [1, 2, 3].each { |x| p it }
+ *      # Prints 5, 5, 5
+ *
+ * Blocks using +it+ can be nested:
+ *
+ *     %w[test me].each { it.each_char { p it } }
+ *     # Prints "t", "e", "s", "t", "m", "e"
+ *
+ * Blocks using +it+ are considered to have one parameter:
+ *
+ *     p = proc { it**2 }
+ *     l = lambda { it**2 }
+ *     p.parameters     # => [[:opt, nil]]
+ *     p.arity          # => 1
+ *     l.parameters     # => [[:req]]
+ *     l.arity          # => 1
+ *
+ * === Numbered parameters
+ *
+ * Numbered parameters are another way to name block parameters implicitly.
+ * Unlike +it+, numbered parameters allow to refer to several parameters
+ * in one block.
+ *
+ *     %w[test me please].each { puts _1.upcase } # prints TEST, ME, PLEASE
+ *     {a: 100, b: 200}.map { "#{_1} = #{_2}" } # => "a = 100", "b = 200"
  *
  * Parameter names from +_1+ to +_9+ are supported:
  *
@@ -4226,11 +4346,16 @@ proc_ruby2_keywords(VALUE procval)
  *     [10, 20, 30].map { |x| _1**2 }
  *     # SyntaxError (ordinary parameter is defined)
  *
- * To avoid conflicts, naming local variables or method
- * arguments +_1+, +_2+ and so on, causes a warning.
+ * Numbered parameters can't be mixed with +it+ either:
  *
- *     _1 = 'test'
- *     # warning: `_1' is reserved as numbered parameter
+ *     [10, 20, 30].map { _1 + it }
+ *     # SyntaxError: `it` is not allowed when a numbered parameter is already used
+ *
+ * To avoid conflicts, naming local variables or method
+ * arguments +_1+, +_2+ and so on, causes an error.
+ *
+ *       _1 = 'test'
+ *     # ^~ _1 is reserved for numbered parameters (SyntaxError)
  *
  * Using implicit numbered parameters affects block's arity:
  *
@@ -4244,11 +4369,10 @@ proc_ruby2_keywords(VALUE procval)
  * Blocks with numbered parameters can't be nested:
  *
  *     %w[test me].each { _1.each_char { p _1 } }
- *     # SyntaxError (numbered parameter is already used in outer block here)
+ *     # numbered parameter is already used in outer block (SyntaxError)
  *     # %w[test me].each { _1.each_char { p _1 } }
  *     #                    ^~
  *
- * Numbered parameters were introduced in Ruby 2.7.
  */
 
 

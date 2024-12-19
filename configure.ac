@@ -20,6 +20,7 @@ RUBY_M4_INCLUDE([colorize_result.m4])dnl
 RUBY_M4_INCLUDE([ruby_append_option.m4])dnl
 RUBY_M4_INCLUDE([ruby_append_options.m4])dnl
 RUBY_M4_INCLUDE([ruby_check_builtin_func.m4])dnl
+RUBY_M4_INCLUDE([ruby_check_builtin_overflow.m4])dnl
 RUBY_M4_INCLUDE([ruby_check_builtin_setjmp.m4])dnl
 RUBY_M4_INCLUDE([ruby_check_header.m4])dnl
 RUBY_M4_INCLUDE([ruby_check_printf_prefix.m4])dnl
@@ -44,7 +45,7 @@ RUBY_M4_INCLUDE([ruby_replace_type.m4])dnl
 RUBY_M4_INCLUDE([ruby_require_funcs.m4])dnl
 RUBY_M4_INCLUDE([ruby_rm_recursive.m4])dnl
 RUBY_M4_INCLUDE([ruby_setjmp_type.m4])dnl
-RUBY_M4_INCLUDE([ruby_shared_gc.m4])dnl
+RUBY_M4_INCLUDE([ruby_modular_gc.m4])dnl
 RUBY_M4_INCLUDE([ruby_stack_grow_direction.m4])dnl
 RUBY_M4_INCLUDE([ruby_thread.m4])dnl
 RUBY_M4_INCLUDE([ruby_try_cflags.m4])dnl
@@ -148,6 +149,7 @@ dnl checks for alternative programs
 AC_CANONICAL_BUILD
 AC_CANONICAL_HOST
 AC_CANONICAL_TARGET
+AC_SUBST(config_target, $target)
 AS_CASE(["$target_cpu-$target_os"],
     [aarch64-darwin*], [
         target_cpu=arm64
@@ -1260,7 +1262,8 @@ main()
 		ac_cv_func_tgamma=no
 		AC_CHECK_TYPE([NET_LUID], [], [],
 			      [@%:@include <winsock2.h>
-			      @%:@include <iphlpapi.h>])
+			       @%:@include <windows.h>
+			       @%:@include <iphlpapi.h>])
 		AS_IF([test x"$ac_cv_type_NET_LUID" = xyes], [
 		    AC_DEFINE(HAVE_TYPE_NET_LUID, 1)
 		])
@@ -2297,10 +2300,6 @@ RUBY_CHECK_BUILTIN_FUNC(__builtin_clzl, [__builtin_clzl(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_clzll, [__builtin_clzll(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_ctz, [__builtin_ctz(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_ctzll, [__builtin_ctzll(0)])
-RUBY_CHECK_BUILTIN_FUNC(__builtin_add_overflow, [int x;__builtin_add_overflow(0,0,&x)])
-RUBY_CHECK_BUILTIN_FUNC(__builtin_sub_overflow, [int x;__builtin_sub_overflow(0,0,&x)])
-RUBY_CHECK_BUILTIN_FUNC(__builtin_mul_overflow, [int x;__builtin_mul_overflow(0,0,&x)])
-RUBY_CHECK_BUILTIN_FUNC(__builtin_mul_overflow_p, [__builtin_mul_overflow_p(0,0,(int)0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_constant_p, [__builtin_constant_p(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_choose_expr, [
     [int x[__extension__(__builtin_choose_expr(1, 1, -1))]];
@@ -2316,26 +2315,9 @@ RUBY_CHECK_BUILTIN_FUNC(__builtin_types_compatible_p, [__builtin_types_compatibl
 RUBY_CHECK_BUILTIN_FUNC(__builtin_trap, [__builtin_trap()])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_expect, [__builtin_expect(0, 0)])
 
-AS_IF([test "$rb_cv_builtin___builtin_mul_overflow" != no], [
-  AC_CACHE_CHECK(for __builtin_mul_overflow with long long arguments, rb_cv_use___builtin_mul_overflow_long_long, [
-    AC_LINK_IFELSE([AC_LANG_SOURCE([[
-#pragma clang optimize off
-
-int
-main(void)
-{
-    long long x = 0, y;
-    __builtin_mul_overflow(x, x, &y);
-
-    return 0;
-}
-]])],
-	rb_cv_use___builtin_mul_overflow_long_long=yes,
-	rb_cv_use___builtin_mul_overflow_long_long=no)])
-])
-AS_IF([test "$rb_cv_use___builtin_mul_overflow_long_long" = yes], [
-  AC_DEFINE(USE___BUILTIN_MUL_OVERFLOW_LONG_LONG, 1)
-])
+RUBY_CHECK_BUILTIN_OVERFLOW(add)
+RUBY_CHECK_BUILTIN_OVERFLOW(sub)
+RUBY_CHECK_BUILTIN_OVERFLOW(mul)
 
 AS_IF([test "$ac_cv_func_qsort_r" != no], [
   AC_CACHE_CHECK(whether qsort_r is GNU version, rb_cv_gnu_qsort_r,
@@ -3384,7 +3366,6 @@ AS_IF([test x$with_valgrind != xno],
 	DLEXT=so])
 : ${SOEXT="${DLEXT}"}
 AC_SUBST(SOEXT)
-}
 
 AS_IF([test "$rb_cv_dlopen:$load_relative" = yes:yes], [
     AS_IF([test "$ac_cv_func_dladdr" = yes], [
@@ -3404,6 +3385,7 @@ test ".$DLEXT"  = "." || AC_DEFINE_UNQUOTED(DLEXT,  ".$DLEXT")
 AC_SUBST(DLEXT)
 
 AC_DEFINE_UNQUOTED(SOEXT, ".$SOEXT")
+}
 
 : "strip" && {
     AC_MSG_CHECKING([for $STRIP flags])
@@ -3612,6 +3594,7 @@ AS_CASE("$enable_shared", [yes], [
      ])
     ])
 
+  relative_libprefix="/../${multiarch+../}${libdir_basename}"
   AS_CASE(["$target_os"],
     [sunos4*], [
 	LIBRUBY_ALIASES='$(LIBRUBY_SONAME) lib$(RUBY_SO_NAME).$(SOEXT)'
@@ -3620,7 +3603,7 @@ AS_CASE("$enable_shared", [yes], [
 	RUBY_APPEND_OPTIONS(LIBRUBY_DLDFLAGS, ['-Wl,-soname,$(LIBRUBY_SONAME)' "$LDFLAGS_OPTDIR"])
 	LIBRUBY_ALIASES='$(LIBRUBY_SONAME) lib$(RUBY_SO_NAME).$(SOEXT)'
 	AS_IF([test "$load_relative" = yes], [
-	    libprefix="'\$\${ORIGIN}/../${multiarch+../../}${libdir_basename}'"
+	    libprefix="'\$\${ORIGIN}${relative_libprefix}'"
 	    LIBRUBY_RPATHFLAGS="-Wl,-rpath,${libprefix}"
 	    LIBRUBY_RELATIVE=yes
 	])
@@ -3632,7 +3615,7 @@ AS_CASE("$enable_shared", [yes], [
 	    LIBRUBY_SO="$LIBRUBY_SO.\$(TEENY)"
 	    LIBRUBY_ALIASES=''
 	], [test "$load_relative" = yes], [
-	    libprefix="'\$\$ORIGIN/../${multiarch+../../}${libdir_basename}'"
+	    libprefix="'\$\$ORIGIN${relative_libprefix}'"
 	    LIBRUBY_RPATHFLAGS="-Wl,-rpath,${libprefix}"
 	    LIBRUBY_RELATIVE=yes
 	])
@@ -3656,7 +3639,7 @@ AS_CASE("$enable_shared", [yes], [
 	LIBRUBY_ALIASES='$(LIBRUBY_SONAME) lib$(RUBY_SO_NAME).$(SOEXT)'
 	RUBY_APPEND_OPTIONS(LIBRUBY_DLDFLAGS, ["${linker_flag}-h${linker_flag:+,}"'$(@F)'])
 	AS_IF([test "$load_relative" = yes], [
-	    libprefix="'\$\$ORIGIN/../${multiarch+../../}${libdir_basename}'"
+	    libprefix="'\$\$ORIGIN${relative_libprefix}'"
 	    LIBRUBY_RPATHFLAGS="-R${libprefix}"
 	    LIBRUBY_RELATIVE=yes
 	], [
@@ -3673,7 +3656,7 @@ AS_CASE("$enable_shared", [yes], [
 	LIBRUBY_SONAME='$(LIBRUBY_SO)'
 	LIBRUBY_ALIASES='lib$(RUBY_INSTALL_NAME).$(SOEXT)'
 	AS_IF([test "$load_relative" = yes], [
-	    libprefix="@executable_path/../${multiarch+../../}${libdir_basename}"
+	    libprefix="@executable_path${relative_libprefix}"
 	    LIBRUBY_RELATIVE=yes
 	])
 	LIBRUBY_DLDFLAGS="$LIBRUBY_DLDFLAGS -install_name ${libprefix}"'/$(LIBRUBY_SONAME)'
@@ -3812,7 +3795,7 @@ AS_IF([test x"$gcov" = xyes], [
 ])
 
 RUBY_SETJMP_TYPE
-RUBY_SHARED_GC
+RUBY_MODULAR_GC
 }
 
 [begin]_group "installation section" && {
@@ -4738,7 +4721,7 @@ config_summary "target OS"           "$target_os"
 config_summary "compiler"            "$CC"
 config_summary "with thread"         "$THREAD_MODEL"
 config_summary "with coroutine"      "$coroutine_type"
-config_summary "with shared GC"      "$shared_gc_summary"
+config_summary "with modular GC"     "$modular_gc_summary"
 config_summary "enable shared libs"  "$ENABLE_SHARED"
 config_summary "dynamic library ext" "$DLEXT"
 config_summary "CFLAGS"              "$cflags"

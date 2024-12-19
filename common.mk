@@ -721,7 +721,7 @@ install-prereq: $(CLEAR_INSTALLED_LIST) yes-fake sudo-precheck PHONY
 clear-installed-list: PHONY
 	@> $(INSTALLED_LIST) set MAKE="$(MAKE)"
 
-clean: clean-ext clean-enc clean-golf clean-docs clean-extout clean-local clean-platform clean-spec
+clean: clean-ext clean-enc clean-golf clean-docs clean-extout clean-modular-gc clean-local clean-platform clean-spec
 clean-local:: clean-runnable
 	$(Q)$(RM) $(ALLOBJS) $(LIBRUBY_A) $(LIBRUBY_SO) $(LIBRUBY) $(LIBRUBY_ALIASES)
 	$(Q)$(RM) $(PROGRAM) $(WPROGRAM) miniruby$(EXEEXT) dmyext.$(OBJEXT) dmyenc.$(OBJEXT) $(ARCHFILE) .*.time
@@ -755,9 +755,9 @@ clean-docs: clean-rdoc clean-html clean-capi
 clean-spec: PHONY
 clean-rubyspec: clean-spec
 
-distclean: distclean-ext distclean-enc distclean-golf distclean-docs distclean-extout distclean-local distclean-platform distclean-spec
+distclean: distclean-ext distclean-enc distclean-golf distclean-docs distclean-extout distclean-modular-gc distclean-local distclean-platform distclean-spec
 distclean-local:: clean-local
-	$(Q)$(RM) $(MKFILES) yasmdata.rb *.inc $(PRELUDES) *.rbinc *.rbbin
+	$(Q)$(RM) $(MKFILES) *.inc $(PRELUDES) *.rbinc *.rbbin
 	$(Q)$(RM) config.cache config.status config.status.lineno
 	$(Q)$(RM) *~ *.bak *.stackdump core *.core gmon.out $(PREP)
 	-$(Q)$(RMALL) $(srcdir)/autom4te.cache
@@ -1212,6 +1212,7 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/prelude.rb \
 		$(srcdir)/gem_prelude.rb \
 		$(srcdir)/yjit.rb \
+		$(srcdir)/yjit_hook.rb \
 		$(empty)
 BUILTIN_RB_INCS = $(BUILTIN_RB_SRCS:.rb=.rbinc)
 
@@ -1262,6 +1263,7 @@ incs: $(INSNS) {$(VPATH)}node_name.inc {$(VPATH)}known_errors.inc \
       {$(VPATH)}vm_call_iseq_optimized.inc $(srcdir)/revision.h \
       $(REVISION_H) \
       $(UNICODE_DATA_HEADERS) $(ENC_HEADERS) \
+      $(srcs_vpath)prism/ast.h $(srcs_vpath)prism/diagnostic.h \
       {$(VPATH)}id.h {$(VPATH)}probes.dmyh
 
 insns: $(INSNS)
@@ -1568,30 +1570,65 @@ update-bundled_gems: PHONY
 	$(GIT) -C "$(srcdir)" diff --no-ext-diff --ignore-submodules --exit-code || \
 	$(GIT) -C "$(srcdir)" commit -m "Update bundled_gems" gems/bundled_gems
 
-PRECHECK_BUNDLED_GEMS = test-bundled-gems-precheck
+PRECHECK_BUNDLED_GEMS = yes
 test-bundled-gems-precheck: $(TEST_RUNNABLE)-test-bundled-gems-precheck
-yes-test-bundled-gems-precheck: main
+yes-test-bundled-gems-precheck: $(PRECHECK_BUNDLED_GEMS:yes=main)
 no-test-bundled-gems-precheck:
+
+update-default-gemspecs: $(TEST_RUNNABLE)-update-default-gemspecs
+no-update-default-gemspecs:
+yes-update-default-gemspecs: $(PRECHECK_BUNDLED_GEMS:yes=main)
+	@$(MAKEDIRS) $(srcdir)/.bundle/specifications
+	@$(XRUBY) -W0 -C "$(srcdir)" -rrubygems \
+	    -e "destdir = ARGV.shift" \
+	    -e "ARGV.each do |basedir|" \
+	    -e   "Dir.glob(basedir+'/**/*.gemspec') do |g|" \
+	    -e     "dir, base = File.split(g)" \
+	    -e     "spec = Dir.chdir(dir) {Gem::Specification.load(base)} ||" \
+	    -e         "Gem::Specification.load(g)" \
+	    -e     "unless spec" \
+	    -e       "puts %[Ignoring #{g}]" \
+	    -e       "next" \
+	    -e     "end" \
+	    -e     "spec.files.clear" \
+	    -e     "spec.extensions.clear" \
+	    -e     "File.binwrite(File.join(destdir, spec.full_name+'.gemspec'), spec.to_ruby)" \
+	    -e   "end" \
+	    -e "end" \
+	    -- .bundle/specifications lib ext
+
+install-for-test-bundled-gems: $(TEST_RUNNABLE)-install-for-test-bundled-gems
+no-install-for-test-bundled-gems: no-update-default-gemspecs
+yes-install-for-test-bundled-gems: yes-update-default-gemspecs
+	$(XRUBY) -C "$(srcdir)" -r./tool/lib/gem_env.rb bin/gem \
+		install --no-document --conservative \
+		"hoe" "json-schema:5.1.0" "test-unit-rr" "simplecov" "simplecov-html" "simplecov-json" "rspec" "zeitwerk" \
+		"sinatra" "rack" "tilt" "mustermann" "base64" "compact_index" "rack-test"
 
 test-bundled-gems-fetch: yes-test-bundled-gems-fetch
 yes-test-bundled-gems-fetch:
-	$(ACTIONS_GROUP)
-	$(Q) $(BASERUBY) -C $(srcdir)/gems ../tool/fetch-bundled_gems.rb src bundled_gems
-	$(ACTIONS_ENDGROUP)
+	$(Q) $(BASERUBY) -C $(srcdir)/gems ../tool/fetch-bundled_gems.rb BUNDLED_GEMS="$(BUNDLED_GEMS)" src bundled_gems
 no-test-bundled-gems-fetch:
 
-test-bundled-gems-prepare: $(PRECHECK_BUNDLED_GEMS) test-bundled-gems-fetch
 test-bundled-gems-prepare: $(TEST_RUNNABLE)-test-bundled-gems-prepare
-no-test-bundled-gems-prepare: no-test-bundled-gems-precheck
-yes-test-bundled-gems-prepare: yes-test-bundled-gems-precheck
+no-test-bundled-gems-prepare: no-test-bundled-gems-precheck no-test-bundled-gems-fetch
+Preparing-test-bundled-gems:
 	$(ACTIONS_GROUP)
-	$(XRUBY) -C "$(srcdir)" bin/gem install --no-document \
-		--install-dir .bundle --conservative "hoe" "json-schema" "test-unit-rr"
+yes-test-bundled-gems-prepare: Preparing-test-bundled-gems $(DOT_WAIT)
 	$(ACTIONS_ENDGROUP)
+yes-test-bundled-gems-prepare: yes-test-bundled-gems-precheck $(DOT_WAIT)
+yes-test-bundled-gems-prepare: yes-install-for-test-bundled-gems $(DOT_WAIT)
+yes-test-bundled-gems-prepare: yes-test-bundled-gems-fetch $(DOT_WAIT)
+yes-test-bundled-gems-precheck: Preparing-test-bundled-gems
+yes-install-for-test-bundled-gems: Preparing-test-bundled-gems
+yes-test-bundled-gems-fetch: Preparing-test-bundled-gems
+
 
 PREPARE_BUNDLED_GEMS = test-bundled-gems-prepare
 test-bundled-gems: $(TEST_RUNNABLE)-test-bundled-gems $(DOT_WAIT) $(TEST_RUNNABLE)-test-bundled-gems-spec
-yes-test-bundled-gems: test-bundled-gems-run
+bundled_gems_spec-run: install-for-test-bundled-gems
+	$(XRUBY) -C $(srcdir) .bundle/bin/rspec spec/bundled_gems_spec.rb
+yes-test-bundled-gems: bundled_gems_spec-run $(DOT_WAIT) test-bundled-gems-run
 no-test-bundled-gems:
 
 # Override this to allow failure of specific gems on CI
@@ -1608,7 +1645,8 @@ yes-test-bundled-gems-spec: yes-test-spec-precheck $(PREPARE_BUNDLED_GEMS)
 	$(ACTIONS_GROUP)
 	$(gnumake_recursive)$(Q) \
 	$(RUNRUBY) -r./$(arch)-fake -r$(tooldir)/lib/_tmpdir \
-		$(srcdir)/spec/mspec/bin/mspec run -B $(srcdir)/spec/bundled_gems.mspec $(MSPECOPT) $(SPECOPTS)
+		$(srcdir)/spec/mspec/bin/mspec run --env BUNDLED_GEMS=$(BUNDLED_GEMS) -B $(srcdir)/spec/bundled_gems.mspec \
+		$(MSPECOPT) $(SPECOPTS)
 	$(ACTIONS_ENDGROUP)
 no-test-bundled-gems-spec:
 
@@ -1634,7 +1672,7 @@ yes-test-bundler-prepare: yes-test-bundler-precheck
 		-e 'load "spec/bundler/support/bundle.rb"' -- install --quiet --gemfile=tool/bundler/dev_gems.rb
 	$(ACTIONS_ENDGROUP)
 
-RSPECOPTS =
+RSPECOPTS = -r formatter_overrides
 BUNDLER_SPECS =
 PREPARE_BUNDLER = $(TEST_RUNNABLE)-test-bundler-prepare
 test-bundler: $(TEST_RUNNABLE)-test-bundler
@@ -1642,8 +1680,8 @@ yes-test-bundler: $(PREPARE_BUNDLER)
 	$(gnumake_recursive)$(XRUBY) \
 		-r./$(arch)-fake \
 		-e "exec(*ARGV)" -- \
-		$(XRUBY) -C $(srcdir) -Ispec/bundler:spec/lib .bundle/bin/rspec \
-		--require spec_helper --require formatter_overrides $(RSPECOPTS) spec/bundler/$(BUNDLER_SPECS)
+		$(XRUBY) -C $(srcdir) -Ispec/bundler -Ispec/lib .bundle/bin/rspec \
+		-r spec_helper $(RSPECOPTS) spec/bundler/$(BUNDLER_SPECS)
 no-test-bundler:
 
 PARALLELRSPECOPTS = --runtime-log $(srcdir)/tmp/parallel_runtime_rspec.log
@@ -1651,14 +1689,13 @@ test-bundler-parallel: $(TEST_RUNNABLE)-test-bundler-parallel
 yes-test-bundler-parallel: $(PREPARE_BUNDLER)
 	$(gnumake_recursive)$(XRUBY) \
 		-r./$(arch)-fake \
+		-I$(srcdir)/spec/bundler \
+		-e "ruby = ENV['RUBY']" \
 		-e "ARGV[-1] = File.expand_path(ARGV[-1])" \
-		-e "exec(*ARGV)" -- \
-		$(XRUBY) -I$(srcdir)/spec/bundler \
-		-e "ENV['PARALLEL_TESTS_EXECUTABLE'] = ARGV.shift" \
+		-e "ENV['PARALLEL_TESTS_EXECUTABLE'] = ruby + ARGV.shift" \
 		-e "load ARGV.shift" \
-		"$(XRUBY) -C $(srcdir) -Ispec/bundler:spec/lib .bundle/bin/rspec" \
-		$(srcdir)/.bundle/bin/parallel_rspec \
-		-o "--require spec_helper --require formatter_overrides" \
+		" -C $(srcdir) -Ispec/bundler -Ispec/lib .bundle/bin/rspec -r spec_helper" \
+		$(srcdir)/spec/bin/parallel_rspec $(RSPECOPTS) \
 		$(PARALLELRSPECOPTS) $(srcdir)/spec/bundler/$(BUNDLER_SPECS)
 no-test-bundler-parallel:
 
@@ -1904,17 +1941,23 @@ rewindable:
 
 HELP_EXTRA_TASKS = ""
 
-shared-gc: probes.h
-	$(Q) if test -z $(shared_gc_dir); then \
-		echo "You must configure with --with-shared-gc to use shared GC"; \
-		exit 1; \
-	elif test -z $(SHARED_GC); then \
-		echo "You must specify SHARED_GC with the GC to build"; \
-		exit 1; \
-	fi
-	$(ECHO) generating $(shared_gc_dir)librubygc.$(SHARED_GC).$(SOEXT)
-	$(Q) $(MAKEDIRS) $(shared_gc_dir)
-	$(Q) $(LDSHARED) -I$(srcdir)/include -I$(srcdir) -I$(arch_hdrdir) $(XDLDFLAGS) $(CFLAGS) $(CPPFLAGS) -DBUILDING_SHARED_GC -fPIC -o $(shared_gc_dir)librubygc.$(SHARED_GC).$(SOEXT) $(srcdir)/gc/$(SHARED_GC).c
+modular-gc-precheck:
+modular-gc: probes.h modular-gc-precheck
+	$(Q) $(MAKEDIRS) $(modular_gc_dir)
+	$(Q) $(RUNRUBY) $(srcdir)/ext/extmk.rb \
+		$(SCRIPT_ARGS) \
+		--make='$(MAKE)' --make-flags="V=$(V) MINIRUBY='$(MINIRUBY)'" \
+		--gnumake=$(gnumake) --extflags="$(EXTLDFLAGS)" \
+		--ext-build-dir=gc --command-output=gc/$(MODULAR_GC)/exts.mk -- \
+		configure gc/$(MODULAR_GC)
+	$(CHDIR) gc/$(MODULAR_GC) && $(exec) $(MAKE) TARGET_SO_DIR=./
+	$(CP) gc/$(MODULAR_GC)/librubygc.$(MODULAR_GC).$(DLEXT) $(modular_gc_dir)
+
+clean-modular-gc: gc/clean
+distclean-modular-gc: gc/distclean
+realclean-modular-gc: gc/realclean
+distclean-modular-gc realclean-modular-gc:
+	-$(Q) $(RMDIR) gc
 
 help: PHONY
 	$(MESSAGE_BEGIN) \
@@ -7236,7 +7279,7 @@ gc.$(OBJEXT): $(CCAN_DIR)/str/str.h
 gc.$(OBJEXT): $(hdrdir)/ruby.h
 gc.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 gc.$(OBJEXT): $(hdrdir)/ruby/version.h
-gc.$(OBJEXT): $(top_srcdir)/gc/default.c
+gc.$(OBJEXT): $(top_srcdir)/gc/default/default.c
 gc.$(OBJEXT): $(top_srcdir)/gc/gc.h
 gc.$(OBJEXT): $(top_srcdir)/gc/gc_impl.h
 gc.$(OBJEXT): $(top_srcdir)/internal/array.h
@@ -8595,19 +8638,25 @@ io_buffer.$(OBJEXT): $(CCAN_DIR)/str/str.h
 io_buffer.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 io_buffer.$(OBJEXT): $(hdrdir)/ruby/version.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/array.h
+io_buffer.$(OBJEXT): $(top_srcdir)/internal/basic_operators.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/bignum.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/bits.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/compilers.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/error.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/fixnum.h
+io_buffer.$(OBJEXT): $(top_srcdir)/internal/gc.h
+io_buffer.$(OBJEXT): $(top_srcdir)/internal/imemo.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/io.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/numeric.h
+io_buffer.$(OBJEXT): $(top_srcdir)/internal/sanitizers.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/serial.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/static_assert.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/string.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/thread.h
 io_buffer.$(OBJEXT): $(top_srcdir)/internal/vm.h
+io_buffer.$(OBJEXT): $(top_srcdir)/internal/warnings.h
 io_buffer.$(OBJEXT): {$(VPATH)}assert.h
+io_buffer.$(OBJEXT): {$(VPATH)}atomic.h
 io_buffer.$(OBJEXT): {$(VPATH)}backward/2/assume.h
 io_buffer.$(OBJEXT): {$(VPATH)}backward/2/attributes.h
 io_buffer.$(OBJEXT): {$(VPATH)}backward/2/bool.h
@@ -8621,6 +8670,7 @@ io_buffer.$(OBJEXT): {$(VPATH)}config.h
 io_buffer.$(OBJEXT): {$(VPATH)}defines.h
 io_buffer.$(OBJEXT): {$(VPATH)}encoding.h
 io_buffer.$(OBJEXT): {$(VPATH)}fiber/scheduler.h
+io_buffer.$(OBJEXT): {$(VPATH)}id.h
 io_buffer.$(OBJEXT): {$(VPATH)}intern.h
 io_buffer.$(OBJEXT): {$(VPATH)}internal.h
 io_buffer.$(OBJEXT): {$(VPATH)}internal/abi.h
@@ -8775,12 +8825,21 @@ io_buffer.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
 io_buffer.$(OBJEXT): {$(VPATH)}io.h
 io_buffer.$(OBJEXT): {$(VPATH)}io/buffer.h
 io_buffer.$(OBJEXT): {$(VPATH)}io_buffer.c
+io_buffer.$(OBJEXT): {$(VPATH)}method.h
 io_buffer.$(OBJEXT): {$(VPATH)}missing.h
+io_buffer.$(OBJEXT): {$(VPATH)}node.h
 io_buffer.$(OBJEXT): {$(VPATH)}onigmo.h
 io_buffer.$(OBJEXT): {$(VPATH)}oniguruma.h
+io_buffer.$(OBJEXT): {$(VPATH)}ruby_assert.h
+io_buffer.$(OBJEXT): {$(VPATH)}ruby_atomic.h
+io_buffer.$(OBJEXT): {$(VPATH)}rubyparser.h
 io_buffer.$(OBJEXT): {$(VPATH)}st.h
 io_buffer.$(OBJEXT): {$(VPATH)}subst.h
+io_buffer.$(OBJEXT): {$(VPATH)}thread.h
+io_buffer.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 io_buffer.$(OBJEXT): {$(VPATH)}thread_native.h
+io_buffer.$(OBJEXT): {$(VPATH)}vm_core.h
+io_buffer.$(OBJEXT): {$(VPATH)}vm_opts.h
 iseq.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
 iseq.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 iseq.$(OBJEXT): $(CCAN_DIR)/list/list.h
@@ -9276,6 +9335,8 @@ load.$(OBJEXT): {$(VPATH)}prism/version.h
 load.$(OBJEXT): {$(VPATH)}prism_compile.h
 load.$(OBJEXT): {$(VPATH)}probes.dmyh
 load.$(OBJEXT): {$(VPATH)}probes.h
+load.$(OBJEXT): {$(VPATH)}ractor.h
+load.$(OBJEXT): {$(VPATH)}ractor_core.h
 load.$(OBJEXT): {$(VPATH)}ruby_assert.h
 load.$(OBJEXT): {$(VPATH)}ruby_atomic.h
 load.$(OBJEXT): {$(VPATH)}rubyparser.h
@@ -9286,6 +9347,7 @@ load.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 load.$(OBJEXT): {$(VPATH)}thread_native.h
 load.$(OBJEXT): {$(VPATH)}util.h
 load.$(OBJEXT): {$(VPATH)}vm_core.h
+load.$(OBJEXT): {$(VPATH)}vm_debug.h
 load.$(OBJEXT): {$(VPATH)}vm_opts.h
 loadpath.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 loadpath.$(OBJEXT): $(hdrdir)/ruby/version.h
@@ -10642,6 +10704,7 @@ miniinit.$(OBJEXT): {$(VPATH)}vm_core.h
 miniinit.$(OBJEXT): {$(VPATH)}vm_opts.h
 miniinit.$(OBJEXT): {$(VPATH)}warning.rb
 miniinit.$(OBJEXT): {$(VPATH)}yjit.rb
+miniinit.$(OBJEXT): {$(VPATH)}yjit_hook.rb
 node.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
 node.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 node.$(OBJEXT): $(CCAN_DIR)/list/list.h
@@ -13000,6 +13063,7 @@ proc.$(OBJEXT): $(top_srcdir)/internal/compilers.h
 proc.$(OBJEXT): $(top_srcdir)/internal/error.h
 proc.$(OBJEXT): $(top_srcdir)/internal/eval.h
 proc.$(OBJEXT): $(top_srcdir)/internal/gc.h
+proc.$(OBJEXT): $(top_srcdir)/internal/hash.h
 proc.$(OBJEXT): $(top_srcdir)/internal/imemo.h
 proc.$(OBJEXT): $(top_srcdir)/internal/object.h
 proc.$(OBJEXT): $(top_srcdir)/internal/proc.h
@@ -16648,6 +16712,7 @@ scheduler.$(OBJEXT): {$(VPATH)}scheduler.c
 scheduler.$(OBJEXT): {$(VPATH)}shape.h
 scheduler.$(OBJEXT): {$(VPATH)}st.h
 scheduler.$(OBJEXT): {$(VPATH)}subst.h
+scheduler.$(OBJEXT): {$(VPATH)}thread.h
 scheduler.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 scheduler.$(OBJEXT): {$(VPATH)}thread_native.h
 scheduler.$(OBJEXT): {$(VPATH)}vm_core.h
@@ -19981,6 +20046,7 @@ vm.$(OBJEXT): {$(VPATH)}rubyparser.h
 vm.$(OBJEXT): {$(VPATH)}shape.h
 vm.$(OBJEXT): {$(VPATH)}st.h
 vm.$(OBJEXT): {$(VPATH)}subst.h
+vm.$(OBJEXT): {$(VPATH)}symbol.h
 vm.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 vm.$(OBJEXT): {$(VPATH)}thread_native.h
 vm.$(OBJEXT): {$(VPATH)}variable.h
@@ -20002,6 +20068,7 @@ vm.$(OBJEXT): {$(VPATH)}vm_opts.h
 vm.$(OBJEXT): {$(VPATH)}vm_sync.h
 vm.$(OBJEXT): {$(VPATH)}vmtc.inc
 vm.$(OBJEXT): {$(VPATH)}yjit.h
+vm.$(OBJEXT): {$(VPATH)}yjit_hook.rbinc
 vm_backtrace.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
 vm_backtrace.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 vm_backtrace.$(OBJEXT): $(CCAN_DIR)/list/list.h
@@ -20288,6 +20355,7 @@ vm_dump.$(OBJEXT): {$(VPATH)}config.h
 vm_dump.$(OBJEXT): {$(VPATH)}constant.h
 vm_dump.$(OBJEXT): {$(VPATH)}defines.h
 vm_dump.$(OBJEXT): {$(VPATH)}encoding.h
+vm_dump.$(OBJEXT): {$(VPATH)}fiber/scheduler.h
 vm_dump.$(OBJEXT): {$(VPATH)}id.h
 vm_dump.$(OBJEXT): {$(VPATH)}id_table.h
 vm_dump.$(OBJEXT): {$(VPATH)}intern.h

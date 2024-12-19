@@ -340,15 +340,36 @@ RSpec.describe "bundle install with gem sources" do
       expect(the_bundle).to include_gems "myrack 1.2", "activesupport 1.2.3"
     end
 
-    it "gives a useful error if no sources are set" do
+    it "gives useful errors if no global sources are set, and gems not installed locally, with and without a lockfile" do
       install_gemfile <<-G, raise_on_error: false
         gem "myrack"
       G
 
-      expect(err).to include("This Gemfile does not include an explicit global source. " \
-        "Not using an explicit global source may result in a different lockfile being generated depending on " \
-        "the gems you have installed locally before bundler is run. " \
-        "Instead, define a global source in your Gemfile like this: source \"https://rubygems.org\".")
+      expect(err).to eq("Could not find gem 'myrack' in locally installed gems.")
+
+      lockfile <<~L
+        GEM
+          specs:
+            myrack (1.0.0)
+
+        PLATFORMS
+          #{lockfile_platforms}
+
+        DEPENDENCIES
+          myrack
+
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
+
+      bundle "install", raise_on_error: false
+
+      expect(err).to include(
+        "Because your Gemfile specifies no global remote source, your bundle is locked to " \
+        "myrack (1.0.0) from locally installed gems. However, myrack (1.0.0) is not installed. " \
+        "You'll need to either add a global remote source to your Gemfile or make sure myrack (1.0.0) " \
+        "is available locally before rerunning Bundler."
+      )
     end
 
     it "creates a Gemfile.lock on a blank Gemfile" do
@@ -1218,6 +1239,35 @@ RSpec.describe "bundle install with gem sources" do
     end
   end
 
+  describe "when configured path is UTF-8 and a file inside a gem package too" do
+    let(:app_path) do
+      path = tmp("♥")
+      FileUtils.mkdir_p(path)
+      path
+    end
+
+    let(:path) do
+      root.join("vendor/bundle")
+    end
+
+    before do
+      build_repo4 do
+        build_gem "mygem" do |s|
+          s.write "spec/fixtures/_posts/2016-04-01-错误.html"
+        end
+      end
+    end
+
+    it "works" do
+      bundle "config path #{app_path}/vendor/bundle", dir: app_path
+
+      install_gemfile app_path.join("Gemfile"),<<~G, dir: app_path
+        source "https://gem.repo4"
+        gem "mygem", "1.0"
+      G
+    end
+  end
+
   context "after installing with --standalone" do
     before do
       install_gemfile <<-G
@@ -1690,5 +1740,61 @@ RSpec.describe "bundle install with gem sources" do
     expected_executables = [vendored_gems("bin/myrackup").to_s]
     expected_executables << vendored_gems("bin/myrackup.bat").to_s if Gem.win_platform?
     expect(Dir.glob(vendored_gems("bin/*"))).to eq(expected_executables)
+  end
+
+  it "preserves lockfile versions conservatively" do
+    build_repo4 do
+      build_gem "mypsych", "4.0.6" do |s|
+        s.add_dependency "mystringio"
+      end
+
+      build_gem "mypsych", "5.1.2" do |s|
+        s.add_dependency "mystringio"
+      end
+
+      build_gem "mystringio", "3.1.0"
+      build_gem "mystringio", "3.1.1"
+    end
+
+    lockfile <<~L
+      GEM
+        remote: https://gem.repo4/
+        specs:
+          mypsych (4.0.6)
+            mystringio
+          mystringio (3.1.0)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        mypsych (~> 4.0)
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    L
+
+    install_gemfile <<~G
+      source "https://gem.repo4"
+      gem "mypsych", "~> 5.0"
+    G
+
+    expect(lockfile).to eq <<~L
+      GEM
+        remote: https://gem.repo4/
+        specs:
+          mypsych (5.1.2)
+            mystringio
+          mystringio (3.1.0)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        mypsych (~> 5.0)
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    L
   end
 end

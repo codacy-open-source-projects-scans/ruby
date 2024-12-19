@@ -317,13 +317,6 @@ static void threadptr_trap_interrupt(rb_thread_t *);
 #define native_thread_yield() ((void)0)
 #endif
 
-/* 100ms.  10ms is too small for user level thread scheduling
- * on recent Linux (tested on 2.6.35)
- */
-#define TIME_QUANTUM_MSEC (100)
-#define TIME_QUANTUM_USEC (TIME_QUANTUM_MSEC * 1000)
-#define TIME_QUANTUM_NSEC (TIME_QUANTUM_USEC * 1000)
-
 static void native_thread_dedicated_inc(rb_vm_t *vm, rb_ractor_t *cr, struct rb_native_thread *nt);
 static void native_thread_dedicated_dec(rb_vm_t *vm, rb_ractor_t *cr, struct rb_native_thread *nt);
 static void native_thread_assign(struct rb_native_thread *nt, rb_thread_t *th);
@@ -845,7 +838,7 @@ thread_sched_wait_running_turn(struct rb_thread_sched *sched, rb_thread_t *th, b
     RUBY_DEBUG_LOG("th:%u", rb_th_serial(th));
 
     ASSERT_thread_sched_locked(sched, th);
-    VM_ASSERT(th == GET_THREAD());
+    VM_ASSERT(th == rb_ec_thread_ptr(rb_current_ec_noinline()));
 
     if (th != sched->running) {
         // already deleted from running threads
@@ -900,12 +893,12 @@ thread_sched_wait_running_turn(struct rb_thread_sched *sched, rb_thread_t *th, b
                     thread_sched_set_lock_owner(sched, th);
                 }
 
-                VM_ASSERT(GET_EC() == th->ec);
+                VM_ASSERT(rb_current_ec_noinline() == th->ec);
             }
         }
 
         VM_ASSERT(th->nt != NULL);
-        VM_ASSERT(GET_EC() == th->ec);
+        VM_ASSERT(rb_current_ec_noinline() == th->ec);
         VM_ASSERT(th->sched.waiting_reason.flags == thread_sched_waiting_none);
 
         // add th to running threads
