@@ -1,0 +1,25 @@
+---
+page_dir: doc
+charset: UTF-8
+encoding: UTF-8
+main_page: index.md
+title: Documentation for Ruby development version
+visibility: :private
+rdoc_include:
+- doc
+
+exclude:
+- \.gemspec\z
+
+autolink_excluded_words:
+- Class
+- Method
+- Module
+- Process
+- RDoc
+- Ruby
+- Set
+- ZJIT
+- YJIT
+
+canonical_root: https://docs.ruby-lang.org/en/master

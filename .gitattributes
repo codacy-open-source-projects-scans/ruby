@@ -1,0 +1,9 @@
+*.gemspec diff=ruby
+*.rb diff=ruby
+*.inc.rs linguist-generated=true
+bin svn-properties=svn:ignore=ruby
+bin/* diff=ruby
+tool/update-deps diff=ruby
+tool/make-snapshot diff=ruby
+tool/format-release diff=ruby
+tool/leaked-globals diff=ruby
