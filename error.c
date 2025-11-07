@@ -1090,7 +1090,7 @@ rb_bug_without_die_internal(const char *fmt, va_list args)
     const char *file = NULL;
     int line = 0;
 
-    if (GET_EC()) {
+    if (rb_current_execution_context(false)) {
         file = rb_source_location_cstr(&line);
     }
 
@@ -1123,7 +1123,7 @@ rb_bug_for_fatal_signal(ruby_sighandler_t default_sighandler, int sig, const voi
     const char *file = NULL;
     int line = 0;
 
-    if (GET_EC()) {
+    if (rb_current_execution_context(false)) {
         file = rb_source_location_cstr(&line);
     }
 
@@ -1686,7 +1686,7 @@ check_order_keyword(VALUE opt)
  *   - If the value of keyword +order+ is +:top+ (the default),
  *     lists the error message and the innermost backtrace entry first.
  *   - If the value of keyword +order+ is +:bottom+,
- *     lists the error message the the innermost entry last.
+ *     lists the error message the innermost entry last.
  *
  * Example:
  *
@@ -1706,16 +1706,16 @@ check_order_keyword(VALUE opt)
  * Output:
  *
  *   "divided by 0"
- *   ["t.rb:3:in `/': divided by 0 (ZeroDivisionError)",
- *    "\tfrom t.rb:3:in `baz'",
- *    "\tfrom t.rb:10:in `bar'",
- *    "\tfrom t.rb:11:in `foo'",
- *    "\tfrom t.rb:12:in `<main>'"]
- *   ["t.rb:3:in `/': \e[1mdivided by 0 (\e[1;4mZeroDivisionError\e[m\e[1m)\e[m",
- *    "\tfrom t.rb:3:in `baz'",
- *    "\tfrom t.rb:10:in `bar'",
- *    "\tfrom t.rb:11:in `foo'",
- *    "\tfrom t.rb:12:in `<main>'"]
+ *   ["t.rb:3:in 'Integer#/': divided by 0 (ZeroDivisionError)",
+ *    "\tfrom t.rb:3:in 'Object#baz'",
+ *    "\tfrom t.rb:10:in 'Object#bar'",
+ *    "\tfrom t.rb:11:in 'Object#foo'",
+ *    "\tfrom t.rb:12:in '<main>'"]
+ *   ["t.rb:3:in 'Integer#/': \e[1mdivided by 0 (\e[1;4mZeroDivisionError\e[m\e[1m)\e[m",
+ *    "\tfrom t.rb:3:in 'Object#baz'",
+ *    "\tfrom t.rb:10:in 'Object#bar'",
+ *    "\tfrom t.rb:11:in 'Object#foo'",
+ *    "\tfrom t.rb:12:in '<main>'"]
  *
  * An overriding method should be careful with ANSI code enhancements;
  * see {Messages}[rdoc-ref:exceptions.md@Messages].
@@ -1864,26 +1864,31 @@ exc_inspect(VALUE exc)
  *  call-seq:
  *    backtrace -> array or nil
  *
- *  Returns a backtrace value for +self+;
- *  the returned value depends on the form of the stored backtrace value:
+ *  Returns the backtrace (the list of code locations that led to the exception),
+ *  as an array of strings.
  *
- *  - \Array of Thread::Backtrace::Location objects:
- *    returns the array of strings given by
- *    <tt>Exception#backtrace_locations.map {|loc| loc.to_s }</tt>.
- *    This is the normal case, where the backtrace value was stored by Kernel#raise.
- *  - \Array of strings: returns that array.
- *    This is the unusual case, where the backtrace value was explicitly
- *    stored as an array of strings.
- *  - +nil+: returns +nil+.
+ *  Example (assuming the code is stored in the file named <tt>t.rb</tt>):
  *
- *  Example:
+ *    def division(numerator, denominator)
+ *      numerator / denominator
+ *    end
  *
  *    begin
- *      1 / 0
- *    rescue => x
- *      x.backtrace.take(2)
+ *      division(1, 0)
+ *    rescue => ex
+ *      p ex.backtrace
+ *      # ["t.rb:2:in 'Integer#/'", "t.rb:2:in 'Object#division'", "t.rb:6:in '<main>'"]
+ *      loc = ex.backtrace.first
+ *      p loc.class
+ *      # String
  *    end
- *    # => ["(irb):132:in `/'", "(irb):132:in `<top (required)>'"]
+ *
+ *  The value returned by this method might be adjusted when raising (see Kernel#raise),
+ *  or during intermediate handling by #set_backtrace.
+ *
+ *  See also #backtrace_locations that provide the same value, as structured objects.
+ *  (Note though that two values might not be consistent with each other when
+ *  backtraces are manually adjusted.)
  *
  *  see {Backtraces}[rdoc-ref:exceptions.md@Backtraces].
  */
@@ -1930,20 +1935,37 @@ rb_get_backtrace(VALUE exc)
  *  call-seq:
  *    backtrace_locations -> array or nil
  *
- *  Returns a backtrace value for +self+;
- *  the returned value depends on the form of the stored backtrace value:
+ *  Returns the backtrace (the list of code locations that led to the exception),
+ *  as an array of Thread::Backtrace::Location instances.
  *
- *  - \Array of Thread::Backtrace::Location objects: returns that array.
- *  - \Array of strings or +nil+: returns +nil+.
+ *  Example (assuming the code is stored in the file named <tt>t.rb</tt>):
  *
- *  Example:
+ *    def division(numerator, denominator)
+ *      numerator / denominator
+ *    end
  *
  *    begin
- *      1 / 0
- *    rescue => x
- *      x.backtrace_locations.take(2)
+ *      division(1, 0)
+ *    rescue => ex
+ *      p ex.backtrace_locations
+ *      # ["t.rb:2:in 'Integer#/'", "t.rb:2:in 'Object#division'", "t.rb:6:in '<main>'"]
+ *      loc = ex.backtrace_locations.first
+ *      p loc.class
+ *      # Thread::Backtrace::Location
+ *      p loc.path
+ *      # "t.rb"
+ *      p loc.lineno
+ *      # 2
+ *      p loc.label
+ *      # "Integer#/"
  *    end
- *    # => ["(irb):150:in `/'", "(irb):150:in `<top (required)>'"]
+ *
+ *  The value returned by this method might be adjusted when raising (see Kernel#raise),
+ *  or during intermediate handling by #set_backtrace.
+ *
+ *  See also #backtrace that provide the same value as an array of strings.
+ *  (Note though that two values might not be consistent with each other when
+ *  backtraces are manually adjusted.)
  *
  *  See {Backtraces}[rdoc-ref:exceptions.md@Backtraces].
  */
@@ -1985,15 +2007,100 @@ rb_check_backtrace(VALUE bt)
  *  call-seq:
  *    set_backtrace(value) -> value
  *
- *  Sets the backtrace value for +self+; returns the given +value:
+ *  Sets the backtrace value for +self+; returns the given +value+.
  *
- *    x = RuntimeError.new('Boom')
- *    x.set_backtrace(%w[foo bar baz]) # => ["foo", "bar", "baz"]
- *    x.backtrace                      # => ["foo", "bar", "baz"]
+ *  The +value+ might be:
  *
- *  The given +value+ must be an array of strings, a single string, or +nil+.
+ *  - an array of Thread::Backtrace::Location;
+ *  - an array of String instances;
+ *  - a single String instance; or
+ *  - +nil+.
  *
- *  Does not affect the value returned by #backtrace_locations.
+ *  Using array of Thread::Backtrace::Location is the most consistent
+ *  option: it sets both #backtrace and #backtrace_locations. It should be
+ *  preferred when possible. The suitable array of locations can be obtained
+ *  from Kernel#caller_locations, copied from another error, or just set to
+ *  the adjusted result of the current error's #backtrace_locations:
+ *
+ *      require 'json'
+ *
+ *      def parse_payload(text)
+ *        JSON.parse(text)  # test.rb, line 4
+ *      rescue JSON::ParserError => ex
+ *        ex.set_backtrace(ex.backtrace_locations[2...])
+ *        raise
+ *      end
+ *
+ *      parse_payload('{"wrong: "json"')
+ *      # test.rb:4:in 'Object#parse_payload': unexpected token at '{"wrong: "json"' (JSON::ParserError)
+ *      #
+ *      # An error points to the body of parse_payload method,
+ *      # hiding the parts of the backtrace related to the internals
+ *      # of the "json" library
+ *
+ *      # The error has both #backtace and #backtrace_locations set
+ *      # consistently:
+ *      begin
+ *        parse_payload('{"wrong: "json"')
+ *      rescue => ex
+ *        p ex.backtrace
+ *        # ["test.rb:4:in 'Object#parse_payload'", "test.rb:20:in '<main>'"]
+ *        p ex.backtrace_locations
+ *        # ["test.rb:4:in 'Object#parse_payload'", "test.rb:20:in '<main>'"]
+ *      end
+ *
+ *  When the desired stack of locations is not available and should
+ *  be constructed from scratch, an array of strings or a singular
+ *  string can be used. In this case, only #backtrace is affected:
+ *
+ *      def parse_payload(text)
+ *        JSON.parse(text)
+ *      rescue JSON::ParserError => ex
+ *        ex.set_backtrace(["dsl.rb:34", "framework.rb:1"])
+ *        # The error have the new value in #backtrace:
+ *        p ex.backtrace
+ *        # ["dsl.rb:34", "framework.rb:1"]
+ *
+ *        # but the original one in #backtrace_locations
+ *        p ex.backtrace_locations
+ *        # [".../json/common.rb:221:in 'JSON::Ext::Parser.parse'", ...]
+ *      end
+ *
+ *      parse_payload('{"wrong: "json"')
+ *
+ *  Calling #set_backtrace with +nil+ clears up #backtrace but doesn't affect
+ *  #backtrace_locations:
+ *
+ *      def parse_payload(text)
+ *        JSON.parse(text)
+ *      rescue JSON::ParserError => ex
+ *        ex.set_backtrace(nil)
+ *        p ex.backtrace
+ *        # nil
+ *        p ex.backtrace_locations
+ *        # [".../json/common.rb:221:in 'JSON::Ext::Parser.parse'", ...]
+ *      end
+ *
+ *      parse_payload('{"wrong: "json"')
+ *
+ *  On reraising of such an exception, both #backtrace and #backtrace_locations
+ *  is set to the place of reraising:
+ *
+ *      def parse_payload(text)
+ *        JSON.parse(text)
+ *      rescue JSON::ParserError => ex
+ *        ex.set_backtrace(nil)
+ *        raise # test.rb, line 7
+ *      end
+ *
+ *      begin
+ *        parse_payload('{"wrong: "json"')
+ *      rescue => ex
+ *        p ex.backtrace
+ *        # ["test.rb:7:in 'Object#parse_payload'", "test.rb:11:in '<main>'"]
+ *        p ex.backtrace_locations
+ *        # ["test.rb:7:in 'Object#parse_payload'", "test.rb:11:in '<main>'"]
+ *      end
  *
  *  See {Backtraces}[rdoc-ref:exceptions.md@Backtraces].
  */
@@ -2410,30 +2517,21 @@ typedef struct name_error_message_struct {
 } name_error_message_t;
 
 static void
-name_err_mesg_mark(void *p)
+name_err_mesg_mark_and_move(void *p)
 {
     name_error_message_t *ptr = (name_error_message_t *)p;
-    rb_gc_mark_movable(ptr->mesg);
-    rb_gc_mark_movable(ptr->recv);
-    rb_gc_mark_movable(ptr->name);
-}
-
-static void
-name_err_mesg_update(void *p)
-{
-    name_error_message_t *ptr = (name_error_message_t *)p;
-    ptr->mesg = rb_gc_location(ptr->mesg);
-    ptr->recv = rb_gc_location(ptr->recv);
-    ptr->name = rb_gc_location(ptr->name);
+    rb_gc_mark_and_move(&ptr->mesg);
+    rb_gc_mark_and_move(&ptr->recv);
+    rb_gc_mark_and_move(&ptr->name);
 }
 
 static const rb_data_type_t name_err_mesg_data_type = {
     "name_err_mesg",
     {
-        name_err_mesg_mark,
+        name_err_mesg_mark_and_move,
         RUBY_TYPED_DEFAULT_FREE,
         NULL, // No external memory to report,
-        name_err_mesg_update,
+        name_err_mesg_mark_and_move,
     },
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
@@ -2521,7 +2619,7 @@ name_err_mesg_to_str(VALUE obj)
     VALUE mesg = ptr->mesg;
     if (NIL_P(mesg)) return Qnil;
     else {
-        struct RString s_str, c_str, d_str;
+        struct RString s_str = {RBASIC_INIT}, c_str = {RBASIC_INIT}, d_str = {RBASIC_INIT};
         VALUE c, s, d = 0, args[4], c2;
         int state = 0;
         rb_encoding *usascii = rb_usascii_encoding();
@@ -2874,7 +2972,7 @@ syntax_error_with_path(VALUE exc, VALUE path, VALUE *mesg, rb_encoding *enc)
 
 /*
  *  Document-module: Errno
-
+ *
  *  When an operating system encounters an error,
  *  it typically reports the error as an integer error code:
  *
@@ -2915,6 +3013,13 @@ syntax_error_with_path(VALUE exc, VALUE path, VALUE *mesg, rb_encoding *enc)
  *    Errno::ENOENT::Errno      # => 2
  *    Errno::ENOTCAPABLE::Errno # => 0
  *
+ *  Each class in Errno can be created with optional messages:
+ *
+ *    Errno::EPIPE.new                  # => #<Errno::EPIPE: Broken pipe>
+ *    Errno::EPIPE.new("foo")           # => #<Errno::EPIPE: Broken pipe - foo>
+ *    Errno::EPIPE.new("foo", "here")   # => #<Errno::EPIPE: Broken pipe @ here - foo>
+ *
+ *  See SystemCallError.new.
  */
 
 static st_table *syserr_tbl;
@@ -2985,12 +3090,33 @@ get_syserr(int n)
 
 /*
  * call-seq:
- *   SystemCallError.new(msg, errno)  -> system_call_error_subclass
+ *   SystemCallError.new(msg, errno = nil, func = nil)  -> system_call_error_subclass
  *
  * If _errno_ corresponds to a known system error code, constructs the
  * appropriate Errno class for that error, otherwise constructs a
  * generic SystemCallError object. The error number is subsequently
  * available via the #errno method.
+ *
+ * If only numeric object is given, it is treated as an Integer _errno_,
+ * and _msg_ is omitted, otherwise the first argument _msg_ is used as
+ * the additional error message.
+ *
+ *   SystemCallError.new(Errno::EPIPE::Errno)
+ *   #=> #<Errno::EPIPE: Broken pipe>
+ *
+ *   SystemCallError.new("foo")
+ *   #=> #<SystemCallError: unknown error - foo>
+ *
+ *   SystemCallError.new("foo", Errno::EPIPE::Errno)
+ *   #=> #<Errno::EPIPE: Broken pipe - foo>
+ *
+ * If _func_ is not +nil+, it is appended to the message with "<tt> @ </tt>".
+ *
+ *   SystemCallError.new("foo", Errno::EPIPE::Errno, "here")
+ *   #=> #<Errno::EPIPE: Broken pipe @ here - foo>
+ *
+ * A subclass of SystemCallError can also be instantiated via the
+ * +new+ method of the subclass.  See Errno.
  */
 
 static VALUE
@@ -3365,6 +3491,18 @@ syserr_eqq(VALUE self, VALUE exc)
  */
 
 /*
+ *  Document-class: NoMatchingPatternError
+ *
+ *  Raised when matching pattern not found.
+ */
+
+/*
+ *  Document-class: NoMatchingPatternKeyError
+ *
+ *  Raised when matching key not found.
+ */
+
+/*
  * Document-class: fatal
  *
  * +fatal+ is an Exception that is raised when Ruby has encountered a fatal
@@ -3379,7 +3517,7 @@ syserr_eqq(VALUE self, VALUE exc)
 /*
  *  Document-class: Exception
  *
- *  \Class +Exception+ and its subclasses are used to indicate that an error
+ *  Class +Exception+ and its subclasses are used to indicate that an error
  *  or other problem has occurred,
  *  and may need to be handled.
  *  See {Exceptions}[rdoc-ref:exceptions.md].
@@ -3396,7 +3534,7 @@ syserr_eqq(VALUE self, VALUE exc)
  *  - An optional cause;
  *    see method #cause.
  *
- *  == Built-In \Exception \Class Hierarchy
+ *  == Built-In \Exception Class Hierarchy
  *
  *  The hierarchy of built-in subclasses of class +Exception+:
  *
@@ -3434,7 +3572,7 @@ syserr_eqq(VALUE self, VALUE exc)
  *    * ZeroDivisionError
  *  * SystemExit
  *  * SystemStackError
- *  * {fatal}[https://docs.ruby-lang.org/en/master/fatal.html]
+ *  * {fatal}[rdoc-ref:fatal]
  *
  */
 
@@ -4060,7 +4198,8 @@ rb_warn_unchilled_literal(VALUE obj)
         VALUE created = get_created_info(str, &line);
         if (NIL_P(created)) {
             rb_str_cat2(mesg, " (run with --debug-frozen-string-literal for more information)\n");
-        } else {
+        }
+        else {
             rb_str_cat2(mesg, "\n");
             rb_str_append(mesg, created);
             if (line) rb_str_catf(mesg, ":%d", line);
@@ -4075,7 +4214,7 @@ rb_warn_unchilled_symbol_to_s(VALUE obj)
 {
     rb_category_warn(
         RB_WARN_CATEGORY_DEPRECATED,
-        "warning: string returned by :%s.to_s will be frozen in the future", RSTRING_PTR(obj)
+        "string returned by :%s.to_s will be frozen in the future", RSTRING_PTR(obj)
     );
 }
 

@@ -77,6 +77,9 @@ class TestERB < Test::Unit::TestCase
 
     assert_equal("", ERB::Util.html_escape(nil))
     assert_equal("123", ERB::Util.html_escape(123))
+
+    assert_equal(65536+5, ERB::Util.html_escape("x"*65536 + "&").size)
+    assert_equal(65536+5, ERB::Util.html_escape("&" + "x"*65536).size)
   end
 
   def test_html_escape_to_s
@@ -249,6 +252,12 @@ EOS
 
     erb = @erb.new("<%- 3.times do -%>\r\nline\r\n<%- end -%>\r\n", trim_mode: '%-')
     assert_equal("line\r\n" * 3, erb.result)
+  end
+
+  def test_safe_level_warning
+    assert_warning(/#{__FILE__}:#{__LINE__ + 1}/) do
+      @erb.new("", 1)
+    end
   end
 
   def test_invalid_trim_mode

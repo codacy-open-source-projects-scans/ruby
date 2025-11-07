@@ -17,38 +17,49 @@ editor.
 Ruby core development can be done either in Windows `cmd` like:
 
 ```batch
+ridk install
 ridk enable ucrt64
 
 pacman -S --needed %MINGW_PACKAGE_PREFIX%-openssl %MINGW_PACKAGE_PREFIX%-libyaml %MINGW_PACKAGE_PREFIX%-libffi
 
-cd c:\
-mkdir work
-cd work
-git clone https://github.com/ruby/ruby
+mkdir c:\work\ruby
+cd /d c:\work\ruby
 
-cd c:\work\ruby
-sh autogen.sh
-sh configure  -C --disable-install-doc
+git clone https://github.com/ruby/ruby src
+
+sh ./src/autogen.sh
+
+mkdir build
+cd build
+sh ../src/configure -C --disable-install-doc
 make
 ```
 
 or in MSYS2 `bash` like:
 
 ```bash
+ridk install
 ridk enable ucrt64
 bash
 
 pacman -S --needed $MINGW_PACKAGE_PREFIX-openssl $MINGW_PACKAGE_PREFIX-libyaml $MINGW_PACKAGE_PREFIX-libffi
 
-cd /c/
-mkdir work
-cd work
-git clone https://github.com/ruby/ruby
-cd ruby
+mkdir /c/work/ruby
+cd /c/work/ruby
 
-./autogen.sh
-./configure -C --disable-install-doc
+git clone https://github.com/ruby/ruby src
+
+./src/autogen.sh
+cd build
+../src/configure -C --disable-install-doc
 make
+```
+
+If you have other MSYS2 environment via other package manager like `scoop`, you need to specify `$MINGW_PACKAGE_PREFIX` is `mingw-w64-ucrt-x86_64`.
+And you need to add `--with-opt-dir` option to `configure` command like:
+
+```batch
+sh ../../ruby/configure -C --disable-install-doc --with-opt-dir=C:\Users\username\scoop\apps\msys2\current\ucrt64
 ```
 
 [RubyInstaller-Devkit]: https://rubyinstaller.org/
@@ -66,9 +77,40 @@ make
     **Note** if you want to build x64 version, use native compiler for
     x64.
 
-3.  Please set environment variable `INCLUDE`, `LIB`, `PATH`
-    to run required commands properly from the command line.
-    These are set properly by `vcvarall*.bat` usually.
+    The minimum requirement is here:
+      * VC++/MSVC on VS 2017/2019/2022 version build tools.
+      * Windows 10/11 SDK
+
+    You can install Visual Studio Build Tools with `winget`.
+    `win32\install-buildtools.cmd` is a batch file to install the
+    minimum requirements excluding the IDE etc.
+
+3.  Please set environment variable `INCLUDE`, `LIB`, `PATH` to run
+    required commands properly from the command line.  These are set
+    properly by `vsdevcmd.bat` or `vcvarall*.bat` usually. You can run
+    the following command to set them in your command line.
+
+    To native build:
+
+    ```
+    cmd /k win32\vssetup.cmd
+    ```
+
+    To cross build arm64 binary:
+
+    ```
+    cmd /k win32\vssetup.cmd -arch=arm64
+    ```
+
+    To cross build x64 binary:
+
+    ```
+    cmd /k win32\vssetup.cmd -arch=x64
+    ```
+
+    This batch file is a wrapper of `vsdevcmd.bat` and options are
+    passed to it as-is.  `win32\vssetup.cmd -help` for other command
+    line options.
 
     **Note** building ruby requires following commands.
 
@@ -80,13 +122,20 @@ make
 
 4.  If you want to build from GIT source, following commands are required.
     * `git`
-    * `sed`
-    * `ruby` 3.0 or later
+    * `ruby` 3.1 or later
 
     You can use [scoop](https://scoop.sh/) to install them like:
 
     ```batch
-    scoop install git sed ruby
+    scoop install git ruby
+    ```
+
+    The windows version of `git` configured with `autocrlf` is `true`. The Ruby
+    test suite may fail with `autocrlf` set to `true`. You can set it to `false`
+    like:
+
+    ```batch
+    git config --global core.autocrlf false
     ```
 
 5.  You need to install required libraries using [vcpkg](https://vcpkg.io/) on
@@ -236,6 +285,7 @@ Any icon files(`*.ico`) in the build directory, directories specified with
 _icondirs_ make variable and `win32` directory under the ruby
 source directory will be included in DLL or executable files, according
 to their base names.
+
     $(RUBY_INSTALL_NAME).ico or ruby.ico   --> $(RUBY_INSTALL_NAME).exe
     $(RUBYW_INSTALL_NAME).ico or rubyw.ico --> $(RUBYW_INSTALL_NAME).exe
     the others                             --> $(RUBY_SO_NAME).dll

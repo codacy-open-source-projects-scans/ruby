@@ -151,6 +151,16 @@ class IPAddr
     return self.clone.set(addr_mask(~@addr))
   end
 
+  # Returns a new ipaddr greater than the original address by offset
+  def +(offset)
+    self.clone.set(@addr + offset, @family)
+  end
+
+  # Returns a new ipaddr less than the original address by offset
+  def -(offset)
+    self.clone.set(@addr - offset, @family)
+  end
+
   # Returns true if two ipaddrs are equal.
   def ==(other)
     other = coerce_other(other)
@@ -371,7 +381,9 @@ class IPAddr
     if !ipv4?
       raise InvalidAddressError, "not an IPv4 address: #{@addr}"
     end
-    return self.clone.set(@addr, Socket::AF_INET6)
+    clone = self.clone.set(@addr, Socket::AF_INET6)
+    clone.instance_variable_set(:@mask_addr, @mask_addr | 0xffffffffffffffffffffffff00000000)
+    clone
   end
 
   # Returns a new ipaddr built by converting the IPv6 address into a
@@ -709,8 +721,8 @@ class IPAddr
       octets = addr.split('.')
     end
     octets.inject(0) { |i, s|
-      (n = s.to_i) < 256 or raise InvalidAddressError, "invalid address: #{@addr}"
-      (s != '0') && s.start_with?('0') and raise InvalidAddressError, "zero-filled number in IPv4 address is ambiguous: #{@addr}"
+      (n = s.to_i) < 256 or raise InvalidAddressError, "invalid address: #{addr}"
+      (s != '0') && s.start_with?('0') and raise InvalidAddressError, "zero-filled number in IPv4 address is ambiguous: #{addr}"
       i << 8 | n
     }
   end

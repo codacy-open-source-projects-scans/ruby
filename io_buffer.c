@@ -272,14 +272,36 @@ io_buffer_free(struct rb_io_buffer *buffer)
 #endif
 }
 
-void
+static void
 rb_io_buffer_type_mark(void *_buffer)
 {
     struct rb_io_buffer *buffer = _buffer;
-    rb_gc_mark(buffer->source);
+    if (buffer->source != Qnil) {
+        if (RB_TYPE_P(buffer->source, T_STRING)) {
+            // The `source` String has to be pinned, because the `base` may point to the embedded String content,
+            // which can be otherwise moved by GC compaction.
+            rb_gc_mark(buffer->source);
+        } else {
+            rb_gc_mark_movable(buffer->source);
+        }
+    }
 }
 
-void
+static void
+rb_io_buffer_type_compact(void *_buffer)
+{
+    struct rb_io_buffer *buffer = _buffer;
+    if (buffer->source != Qnil) {
+        if (RB_TYPE_P(buffer->source, T_STRING)) {
+            // The `source` String has to be pinned, because the `base` may point to the embedded String content,
+            // which can be otherwise moved by GC compaction.
+        } else {
+            buffer->source = rb_gc_location(buffer->source);
+        }
+    }
+}
+
+static void
 rb_io_buffer_type_free(void *_buffer)
 {
     struct rb_io_buffer *buffer = _buffer;
@@ -287,7 +309,7 @@ rb_io_buffer_type_free(void *_buffer)
     io_buffer_free(buffer);
 }
 
-size_t
+static size_t
 rb_io_buffer_type_size(const void *_buffer)
 {
     const struct rb_io_buffer *buffer = _buffer;
@@ -306,6 +328,7 @@ static const rb_data_type_t rb_io_buffer_type = {
         .dmark = rb_io_buffer_type_mark,
         .dfree = rb_io_buffer_type_free,
         .dsize = rb_io_buffer_type_size,
+        .dcompact = rb_io_buffer_type_compact,
     },
     .data = NULL,
     .flags = RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE,
@@ -498,7 +521,9 @@ io_buffer_for_yield_instance(VALUE _arguments)
 
     arguments->instance = io_buffer_for_make_instance(arguments->klass, arguments->string, arguments->flags);
 
-    rb_str_locktmp(arguments->string);
+    if (!RB_OBJ_FROZEN(arguments->string)) {
+        rb_str_locktmp(arguments->string);
+    }
 
     return rb_yield(arguments->instance);
 }
@@ -512,7 +537,9 @@ io_buffer_for_yield_instance_ensure(VALUE _arguments)
         rb_io_buffer_free(arguments->instance);
     }
 
-    rb_str_unlocktmp(arguments->string);
+    if (!RB_OBJ_FROZEN(arguments->string)) {
+        rb_str_unlocktmp(arguments->string);
+    }
 
     return Qnil;
 }
@@ -2735,7 +2762,6 @@ io_buffer_blocking_region_ensure(VALUE _argument)
 static VALUE
 io_buffer_blocking_region(VALUE io, struct rb_io_buffer *buffer, rb_blocking_function_t *function, void *data)
 {
-    io = rb_io_get_io(io);
     struct rb_io *ioptr;
     RB_IO_POINTER(io, ioptr);
 
@@ -2800,6 +2826,8 @@ io_buffer_read_internal(void *_argument)
 VALUE
 rb_io_buffer_read(VALUE self, VALUE io, size_t length, size_t offset)
 {
+    io = rb_io_get_io(io);
+
     VALUE scheduler = rb_fiber_scheduler_current();
     if (scheduler != Qnil) {
         VALUE result = rb_fiber_scheduler_io_read(scheduler, io, self, length, offset);
@@ -2917,6 +2945,8 @@ io_buffer_pread_internal(void *_argument)
 VALUE
 rb_io_buffer_pread(VALUE self, VALUE io, rb_off_t from, size_t length, size_t offset)
 {
+    io = rb_io_get_io(io);
+
     VALUE scheduler = rb_fiber_scheduler_current();
     if (scheduler != Qnil) {
         VALUE result = rb_fiber_scheduler_io_pread(scheduler, io, from, self, length, offset);
@@ -3037,6 +3067,8 @@ io_buffer_write_internal(void *_argument)
 VALUE
 rb_io_buffer_write(VALUE self, VALUE io, size_t length, size_t offset)
 {
+    io = rb_io_get_write_io(rb_io_get_io(io));
+
     VALUE scheduler = rb_fiber_scheduler_current();
     if (scheduler != Qnil) {
         VALUE result = rb_fiber_scheduler_io_write(scheduler, io, self, length, offset);
@@ -3101,6 +3133,7 @@ io_buffer_write(int argc, VALUE *argv, VALUE self)
 
     return rb_io_buffer_write(self, io, length, offset);
 }
+
 struct io_buffer_pwrite_internal_argument {
     // The file descriptor to write to:
     int descriptor;
@@ -3146,6 +3179,8 @@ io_buffer_pwrite_internal(void *_argument)
 VALUE
 rb_io_buffer_pwrite(VALUE self, VALUE io, rb_off_t from, size_t length, size_t offset)
 {
+    io = rb_io_get_write_io(rb_io_get_io(io));
+
     VALUE scheduler = rb_fiber_scheduler_current();
     if (scheduler != Qnil) {
         VALUE result = rb_fiber_scheduler_io_pwrite(scheduler, io, from, self, length, offset);

@@ -2,7 +2,7 @@
 
 require_relative "../../path"
 
-$LOAD_PATH.unshift(*Dir[Spec::Path.base_system_gem_path.join("gems/{mustermann,rack,tilt,sinatra,ruby2_keywords,base64}-*/lib")].map(&:to_s))
+$LOAD_PATH.unshift(*Spec::Path.sinatra_dependency_paths)
 
 require "sinatra/base"
 
@@ -27,7 +27,7 @@ class Endpoint < Sinatra::Base
 
   set :raise_errors, true
   set :show_exceptions, false
-  set :host_authorization, permitted_hosts: [".example.org", ".local", ".repo", ".repo1", ".repo2", ".repo3", ".repo4", ".rubygems.org", ".security", ".source", ".test", "127.0.0.1"]
+  set :host_authorization, permitted_hosts: [".example.org", ".local", ".mirror", ".repo", ".repo1", ".repo2", ".repo3", ".repo4", ".rubygems.org", ".security", ".source", ".test", "127.0.0.1"]
 
   def call!(*)
     super.tap do

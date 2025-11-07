@@ -29,7 +29,18 @@ module Prism
     except = [
       # Skip this fixture because it has a different number of locals because
       # CRuby is eliminating dead code.
-      "whitequark/ruby_bug_10653.txt"
+      "whitequark/ruby_bug_10653.txt",
+
+      # Valid only on Ruby 3.3
+      "3.3-3.3/block_args_in_array_assignment.txt",
+      "3.3-3.3/it_with_ordinary_parameter.txt",
+      "3.3-3.3/keyword_args_in_array_assignment.txt",
+      "3.3-3.3/return_in_sclass.txt",
+
+      # Leaving these out until they are supported by parse.y.
+      "3.5/leading_logical.txt",
+      "3.5/endless_methods_command_call.txt",
+      "command_method_call_2.txt"
     ]
 
     Fixture.each(except: except) do |fixture|
@@ -140,14 +151,17 @@ module Prism
         case node
         when BlockNode, DefNode, LambdaNode
           names = node.locals
-          params =
-            if node.is_a?(DefNode)
-              node.parameters
-            elsif node.parameters.is_a?(NumberedParametersNode)
-              nil
-            else
-              node.parameters&.parameters
-            end
+          params = nil
+
+          if node.is_a?(DefNode)
+            params = node.parameters
+          elsif node.parameters.is_a?(NumberedParametersNode)
+            # nothing
+          elsif node.parameters.is_a?(ItParametersNode)
+            names.unshift(AnonymousLocal)
+          else
+            params = node.parameters&.parameters
+          end
 
           # prism places parameters in the same order that they appear in the
           # source. CRuby places them in the order that they need to appear

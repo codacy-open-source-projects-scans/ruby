@@ -249,6 +249,8 @@ module Test
     end
 
     module Parallel # :nodoc: all
+      attr_accessor :prefix
+
       def process_args(args = [])
         return @options if @options
         options = super
@@ -298,7 +300,7 @@ module Test
 
         opts.separator "parallel test options:"
 
-        options[:retry] = true
+        options[:retry] = false
 
         opts.on '-j N', '--jobs N', /\A(t)?(\d+)\z/, "Allow run tests with N jobs at once" do |_, t, a|
           options[:testing] = true & t # For testing
@@ -370,8 +372,12 @@ module Test
           @io.puts(*args)
         end
 
-        def run(task,type)
-          @file = File.basename(task, ".rb")
+        def run(task, type, base = nil)
+          if base
+            @file = task.delete_prefix(base).chomp(".rb")
+          else
+            @file = File.basename(task, ".rb")
+          end
           @real_file = task
           begin
             puts "loadpath #{[Marshal.dump($:-@loadpath)].pack("m0")}"
@@ -415,6 +421,7 @@ module Test
         end
 
         def kill
+          EnvUtil::Debugger.search&.dump(@pid)
           signal = RUBY_PLATFORM =~ /mswin|mingw/ ? :KILL : :SEGV
           Process.kill(signal, @pid)
           warn "worker #{to_s} does not respond; #{signal} is sent"
@@ -597,7 +604,7 @@ module Test
             worker.quit
             worker = launch_worker
           end
-          worker.run(task, type)
+          worker.run(task, type, (@prefix unless @options[:job_status] == :replace))
           @test_count += 1
 
           jobs_status(worker)
@@ -1292,10 +1299,15 @@ module Test
         parser.on '--repeat-count=NUM', "Number of times to repeat", Integer do |n|
           options[:repeat_count] = n
         end
+        options[:keep_repeating] = false
+        parser.on '--[no-]keep-repeating', "Keep repeating even failed" do |n|
+          options[:keep_repeating] = true
+        end
       end
 
       def _run_anything(type)
         @repeat_count = @options[:repeat_count]
+        @keep_repeating = @options[:keep_repeating]
         super
       end
     end
@@ -1617,7 +1629,7 @@ module Test
               [(@repeat_count ? "(#{@@current_repeat_count}/#{@repeat_count}) " : ""), type,
                 t, @test_count.fdiv(t), @assertion_count.fdiv(t)]
         end while @repeat_count && @@current_repeat_count < @repeat_count &&
-                  report.empty? && failures.zero? && errors.zero?
+                  (@keep_repeating || report.empty? && failures.zero? && errors.zero?)
 
         output.sync = old_sync if sync
 
@@ -1856,6 +1868,7 @@ module Test
         @force_standalone = force_standalone
         @runner = Runner.new do |files, options|
           base = options[:base_directory] ||= default_dir
+          @runner.prefix = base ? (base + "/") : nil
           files << default_dir if files.empty? and default_dir
           @to_run = files
           yield self if block_given?

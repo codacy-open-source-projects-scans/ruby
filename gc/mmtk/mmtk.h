@@ -61,8 +61,6 @@ typedef struct MMTk_RubyUpcalls {
     void (*get_mutators)(void (*visit_mutator)(MMTk_Mutator*, void*), void *data);
     void (*scan_gc_roots)(void);
     void (*scan_objspace)(void);
-    void (*scan_roots_in_mutator_thread)(MMTk_VMMutatorThread mutator_tls,
-                                         MMTk_VMWorkerThread worker_tls);
     void (*scan_object_ruby_style)(MMTk_ObjectReference object);
     void (*call_gc_mark_children)(MMTk_ObjectReference object);
     void (*call_obj_free)(MMTk_ObjectReference object);
@@ -70,7 +68,7 @@ typedef struct MMTk_RubyUpcalls {
     void (*update_global_tables)(int tbl_idx);
     int (*global_tables_count)(void);
     void (*update_finalizer_table)(void);
-    void (*update_obj_id_tables)(void);
+    bool (*special_const_p)(MMTk_ObjectReference object);
 } MMTk_RubyUpcalls;
 
 typedef struct MMTk_RawVecOfObjRef {
@@ -96,7 +94,7 @@ MMTk_Mutator *mmtk_bind_mutator(MMTk_VMMutatorThread tls);
 
 void mmtk_destroy_mutator(MMTk_Mutator *mutator);
 
-void mmtk_handle_user_collection_request(MMTk_VMMutatorThread tls);
+void mmtk_handle_user_collection_request(MMTk_VMMutatorThread tls, bool force, bool exhaustive);
 
 void mmtk_set_gc_enabled(bool enable);
 
@@ -144,6 +142,16 @@ size_t mmtk_free_bytes(void);
 MMTk_Address mmtk_starting_heap_address(void);
 
 MMTk_Address mmtk_last_heap_address(void);
+
+size_t mmtk_worker_count(void);
+
+const uint8_t *mmtk_plan(void);
+
+const uint8_t *mmtk_heap_mode(void);
+
+size_t mmtk_heap_min(void);
+
+size_t mmtk_heap_max(void);
 
 bool mmtk_is_mmtk_object(MMTk_Address addr);
 

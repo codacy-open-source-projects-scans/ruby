@@ -134,18 +134,6 @@ module Bundler
       loaded_gem_paths.flatten
     end
 
-    def load_plugins
-      Gem.load_plugins
-    end
-
-    def load_plugin_files(plugin_files)
-      Gem.load_plugin_files(plugin_files)
-    end
-
-    def load_env_plugins
-      Gem.load_env_plugins
-    end
-
     def ui=(obj)
       Gem::DefaultUserInteraction.ui = obj
     end
@@ -189,7 +177,7 @@ module Bundler
       end
     end
 
-    def replace_gem(specs, specs_by_name)
+    def replace_gem(specs_by_name)
       executables = nil
 
       [::Kernel.singleton_class, ::Kernel].each do |kernel_class|
@@ -226,16 +214,11 @@ module Bundler
           e.requirement = dep.requirement
           raise e
         end
-
-        # backwards compatibility shim, see https://github.com/rubygems/bundler/issues/5102
-        kernel_class.send(:public, :gem) if Bundler.feature_flag.setup_makes_kernel_gem_public?
       end
     end
 
     # Used to give better error messages when activating specs outside of the current bundle
     def replace_bin_path(specs_by_name)
-      gem_class = (class << Gem; self; end)
-
       redefine_method(gem_class, :find_spec_for_exe) do |gem_name, *args|
         exec_name = args.first
         raise ArgumentError, "you must supply exec_name" unless exec_name
@@ -286,7 +269,7 @@ module Bundler
       else
         Gem::BUNDLED_GEMS.replace_require(specs) if Gem::BUNDLED_GEMS.respond_to?(:replace_require)
       end
-      replace_gem(specs, specs_by_name)
+      replace_gem(specs_by_name)
       stub_rubygems(specs_by_name.values)
       replace_bin_path(specs_by_name)
 
@@ -305,7 +288,6 @@ module Bundler
         default_spec_name = default_spec.name
         next if specs_by_name.key?(default_spec_name)
 
-        specs << default_spec
         specs_by_name[default_spec_name] = default_spec
       end
 
@@ -358,8 +340,12 @@ module Bundler
         Gem::Specification.all = specs
       end
 
-      redefine_method((class << Gem; self; end), :finish_resolve) do |*|
+      redefine_method(gem_class, :finish_resolve) do |*|
         []
+      end
+
+      redefine_method(gem_class, :load_plugins) do |*|
+        load_plugin_files specs.flat_map(&:plugins)
       end
     end
 
@@ -430,11 +416,7 @@ module Bundler
     end
 
     def all_specs
-      SharedHelpers.major_deprecation 2, "Bundler.rubygems.all_specs has been removed in favor of Bundler.rubygems.installed_specs"
-
-      Gem::Specification.stubs.map do |stub|
-        StubSpecification.from_stub(stub)
-      end
+      SharedHelpers.feature_removed! "Bundler.rubygems.all_specs has been removed in favor of Bundler.rubygems.installed_specs"
     end
 
     def installed_specs
@@ -459,6 +441,12 @@ module Bundler
 
     def default_stubs
       Gem::Specification.default_stubs("*.gemspec")
+    end
+
+    private
+
+    def gem_class
+      class << Gem; self; end
     end
   end
 

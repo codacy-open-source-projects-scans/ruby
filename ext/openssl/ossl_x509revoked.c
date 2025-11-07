@@ -54,14 +54,9 @@ ossl_x509revoked_new(X509_REVOKED *rev)
     VALUE obj;
 
     obj = NewX509Rev(cX509Rev);
-    if (!rev) {
-	new = X509_REVOKED_new();
-    } else {
-	new = X509_REVOKED_dup(rev);
-    }
-    if (!new) {
-	ossl_raise(eX509RevError, NULL);
-    }
+    new = X509_REVOKED_dup(rev);
+    if (!new)
+	ossl_raise(eX509RevError, "X509_REVOKED_dup");
     SetX509Rev(obj, new);
 
     return obj;
@@ -105,6 +100,7 @@ ossl_x509revoked_initialize(int argc, VALUE *argv, VALUE self)
     return self;
 }
 
+/* :nodoc: */
 static VALUE
 ossl_x509revoked_initialize_copy(VALUE self, VALUE other)
 {
@@ -194,11 +190,7 @@ ossl_x509revoked_get_extensions(VALUE self)
 
     GetX509Rev(self, rev);
     count = X509_REVOKED_get_ext_count(rev);
-    if (count < 0) {
-	OSSL_Debug("count < 0???");
-	return rb_ary_new();
-    }
-    ary = rb_ary_new2(count);
+    ary = rb_ary_new_capa(count);
     for (i=0; i<count; i++) {
 	ext = X509_REVOKED_get_ext(rev, i);
 	rb_ary_push(ary, ossl_x509ext_new(ext));

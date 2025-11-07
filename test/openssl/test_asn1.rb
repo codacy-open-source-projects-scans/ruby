@@ -6,7 +6,7 @@ if defined?(OpenSSL)
 class  OpenSSL::TestASN1 < OpenSSL::TestCase
   def test_decode_x509_certificate
     subj = OpenSSL::X509::Name.parse("/DC=org/DC=ruby-lang/CN=TestCA")
-    key = Fixtures.pkey("rsa1024")
+    key = Fixtures.pkey("rsa-1")
     now = Time.at(Time.now.to_i) # suppress usec
     s = 0xdeadbeafdeadbeafdeadbeafdeadbeaf
     exts = [
@@ -389,6 +389,11 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     ])
     expected.indefinite_length = true
     encode_test B(%w{ 30 80 04 01 00 00 00 }), expected
+
+    # Missing EOC at the end of contents octets
+    assert_raise(OpenSSL::ASN1::ASN1Error) {
+      OpenSSL::ASN1.decode(B(%w{ 30 80 01 01 FF }))
+    }
   end
 
   def test_set
@@ -406,13 +411,16 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
   def test_utctime
     encode_decode_test B(%w{ 17 0D }) + "160908234339Z".b,
       OpenSSL::ASN1::UTCTime.new(Time.utc(2016, 9, 8, 23, 43, 39))
-    begin
-      # possible range of UTCTime is 1969-2068 currently
-      encode_decode_test B(%w{ 17 0D }) + "690908234339Z".b,
-        OpenSSL::ASN1::UTCTime.new(Time.utc(1969, 9, 8, 23, 43, 39))
-    rescue OpenSSL::ASN1::ASN1Error
-      pend "No negative time_t support?"
-    end
+
+    # 1950-2049 range is assumed to match RFC 5280's expectation
+    encode_decode_test B(%w{ 17 0D }) + "490908234339Z".b,
+      OpenSSL::ASN1::UTCTime.new(Time.utc(2049, 9, 8, 23, 43, 39))
+    encode_decode_test B(%w{ 17 0D }) + "500908234339Z".b,
+      OpenSSL::ASN1::UTCTime.new(Time.utc(1950, 9, 8, 23, 43, 39))
+    assert_raise(OpenSSL::ASN1::ASN1Error) {
+      OpenSSL::ASN1::UTCTime.new(Time.new(2049, 12, 31, 23, 0, 0, "-04:00")).to_der
+    }
+
     # not implemented
     # decode_test B(%w{ 17 11 }) + "500908234339+0930".b,
     #   OpenSSL::ASN1::UTCTime.new(Time.new(1950, 9, 8, 23, 43, 39, "+09:30"))
@@ -458,7 +466,7 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     encode_decode_test B(%w{ 81 00 }), OpenSSL::ASN1::ASN1Data.new(B(%w{}), 1, :CONTEXT_SPECIFIC)
     encode_decode_test B(%w{ C1 00 }), OpenSSL::ASN1::ASN1Data.new(B(%w{}), 1, :PRIVATE)
     encode_decode_test B(%w{ 1F 20 00 }), OpenSSL::ASN1::ASN1Data.new(B(%w{}), 32, :UNIVERSAL)
-    encode_decode_test B(%w{ 1F C0 20 00 }), OpenSSL::ASN1::ASN1Data.new(B(%w{}), 8224, :UNIVERSAL)
+    encode_decode_test B(%w{ 9F C0 20 00 }), OpenSSL::ASN1::ASN1Data.new(B(%w{}), 8224, :CONTEXT_SPECIFIC)
     encode_decode_test B(%w{ 41 02 AB CD }), OpenSSL::ASN1::ASN1Data.new(B(%w{ AB CD }), 1, :APPLICATION)
     encode_decode_test B(%w{ 41 81 80 } + %w{ AB CD } * 64), OpenSSL::ASN1::ASN1Data.new(B(%w{ AB CD } * 64), 1, :APPLICATION)
     encode_decode_test B(%w{ 41 82 01 00 } + %w{ AB CD } * 128), OpenSSL::ASN1::ASN1Data.new(B(%w{ AB CD } * 128), 1, :APPLICATION)

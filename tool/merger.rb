@@ -115,6 +115,9 @@ class << Merger = Object.new
     end
     tagname = "v#{v.join('_')}#{("_#{pl}" if v[0] < "2" || (v[0] == "2" && v[1] < "1") || /^(?:preview|rc)/ =~ pl)}"
 
+    unless execute('git', 'diff', '--exit-code')
+      abort 'uncommitted changes'
+    end
     unless execute('git', 'tag', tagname)
       abort 'specfied tag already exists. check tag name and remove it if you want to force re-tagging'
     end
@@ -260,7 +263,7 @@ else
     end
 
     # Merge revision from Git patch
-    git_uri = "https://git.ruby-lang.org/ruby.git/patch/?id=#{git_rev}"
+    git_uri = "https://github.com/ruby/ruby/commit/#{git_rev}.patch"
     resp = Net::HTTP.get_response(URI(git_uri))
     if resp.code != '200'
       abort "'#{git_uri}' returned status '#{resp.code}':\n#{resp.body}"

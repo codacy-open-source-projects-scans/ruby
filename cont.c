@@ -30,12 +30,12 @@ extern int madvise(caddr_t, size_t, int);
 #include "internal/cont.h"
 #include "internal/thread.h"
 #include "internal/error.h"
+#include "internal/eval.h"
 #include "internal/gc.h"
 #include "internal/proc.h"
 #include "internal/sanitizers.h"
 #include "internal/warnings.h"
 #include "ruby/fiber/scheduler.h"
-#include "rjit.h"
 #include "yjit.h"
 #include "vm_core.h"
 #include "vm_sync.h"
@@ -277,7 +277,12 @@ static struct fiber_pool shared_fiber_pool = {NULL, NULL, 0, 0, 0, 0};
 void
 rb_free_shared_fiber_pool(void)
 {
-    xfree(shared_fiber_pool.allocations);
+    struct fiber_pool_allocation *allocations = shared_fiber_pool.allocations;
+    while (allocations) {
+        struct fiber_pool_allocation *next = allocations->next;
+        xfree(allocations);
+        allocations = next;
+    }
 }
 
 static ID fiber_initialize_keywords[3] = {0};
@@ -505,80 +510,87 @@ fiber_pool_allocate_memory(size_t * count, size_t stride)
 static struct fiber_pool_allocation *
 fiber_pool_expand(struct fiber_pool * fiber_pool, size_t count)
 {
-    STACK_GROW_DIR_DETECTION;
+    struct fiber_pool_allocation * allocation;
+    RB_VM_LOCK_ENTER();
+    {
+        STACK_GROW_DIR_DETECTION;
 
-    size_t size = fiber_pool->size;
-    size_t stride = size + RB_PAGE_SIZE;
+        size_t size = fiber_pool->size;
+        size_t stride = size + RB_PAGE_SIZE;
 
-    // Allocate the memory required for the stacks:
-    void * base = fiber_pool_allocate_memory(&count, stride);
+        // Allocate the memory required for the stacks:
+        void * base = fiber_pool_allocate_memory(&count, stride);
 
-    if (base == NULL) {
-        rb_raise(rb_eFiberError, "can't alloc machine stack to fiber (%"PRIuSIZE" x %"PRIuSIZE" bytes): %s", count, size, ERRNOMSG);
-    }
+        if (base == NULL) {
+            rb_raise(rb_eFiberError, "can't alloc machine stack to fiber (%"PRIuSIZE" x %"PRIuSIZE" bytes): %s", count, size, ERRNOMSG);
+        }
 
-    struct fiber_pool_vacancy * vacancies = fiber_pool->vacancies;
-    struct fiber_pool_allocation * allocation = RB_ALLOC(struct fiber_pool_allocation);
+        struct fiber_pool_vacancy * vacancies = fiber_pool->vacancies;
+        allocation = RB_ALLOC(struct fiber_pool_allocation);
 
-    // Initialize fiber pool allocation:
-    allocation->base = base;
-    allocation->size = size;
-    allocation->stride = stride;
-    allocation->count = count;
+        // Initialize fiber pool allocation:
+        allocation->base = base;
+        allocation->size = size;
+        allocation->stride = stride;
+        allocation->count = count;
 #ifdef FIBER_POOL_ALLOCATION_FREE
-    allocation->used = 0;
+        allocation->used = 0;
 #endif
-    allocation->pool = fiber_pool;
+        allocation->pool = fiber_pool;
 
-    if (DEBUG) {
-        fprintf(stderr, "fiber_pool_expand(%"PRIuSIZE"): %p, %"PRIuSIZE"/%"PRIuSIZE" x [%"PRIuSIZE":%"PRIuSIZE"]\n",
-                count, (void*)fiber_pool, fiber_pool->used, fiber_pool->count, size, fiber_pool->vm_stack_size);
-    }
+        if (DEBUG) {
+            fprintf(stderr, "fiber_pool_expand(%"PRIuSIZE"): %p, %"PRIuSIZE"/%"PRIuSIZE" x [%"PRIuSIZE":%"PRIuSIZE"]\n",
+                    count, (void*)fiber_pool, fiber_pool->used, fiber_pool->count, size, fiber_pool->vm_stack_size);
+        }
 
-    // Iterate over all stacks, initializing the vacancy list:
-    for (size_t i = 0; i < count; i += 1) {
-        void * base = (char*)allocation->base + (stride * i);
-        void * page = (char*)base + STACK_DIR_UPPER(size, 0);
-
+        // Iterate over all stacks, initializing the vacancy list:
+        for (size_t i = 0; i < count; i += 1) {
+            void * base = (char*)allocation->base + (stride * i);
+            void * page = (char*)base + STACK_DIR_UPPER(size, 0);
 #if defined(_WIN32)
-        DWORD old_protect;
+            DWORD old_protect;
 
-        if (!VirtualProtect(page, RB_PAGE_SIZE, PAGE_READWRITE | PAGE_GUARD, &old_protect)) {
-            VirtualFree(allocation->base, 0, MEM_RELEASE);
-            rb_raise(rb_eFiberError, "can't set a guard page: %s", ERRNOMSG);
-        }
+            if (!VirtualProtect(page, RB_PAGE_SIZE, PAGE_READWRITE | PAGE_GUARD, &old_protect)) {
+                VirtualFree(allocation->base, 0, MEM_RELEASE);
+                rb_raise(rb_eFiberError, "can't set a guard page: %s", ERRNOMSG);
+            }
+#elif defined(__wasi__)
+            // wasi-libc's mprotect emulation doesn't support PROT_NONE.
+            (void)page;
 #else
-        if (mprotect(page, RB_PAGE_SIZE, PROT_NONE) < 0) {
-            munmap(allocation->base, count*stride);
-            rb_raise(rb_eFiberError, "can't set a guard page: %s", ERRNOMSG);
+            if (mprotect(page, RB_PAGE_SIZE, PROT_NONE) < 0) {
+                munmap(allocation->base, count*stride);
+                rb_raise(rb_eFiberError, "can't set a guard page: %s", ERRNOMSG);
+            }
+#endif
+
+            vacancies = fiber_pool_vacancy_initialize(
+                fiber_pool, vacancies,
+                (char*)base + STACK_DIR_UPPER(0, RB_PAGE_SIZE),
+                size
+            );
+
+#ifdef FIBER_POOL_ALLOCATION_FREE
+            vacancies->stack.allocation = allocation;
+#endif
         }
-#endif
 
-        vacancies = fiber_pool_vacancy_initialize(
-            fiber_pool, vacancies,
-            (char*)base + STACK_DIR_UPPER(0, RB_PAGE_SIZE),
-            size
-        );
+        // Insert the allocation into the head of the pool:
+        allocation->next = fiber_pool->allocations;
 
 #ifdef FIBER_POOL_ALLOCATION_FREE
-        vacancies->stack.allocation = allocation;
-#endif
-    }
+        if (allocation->next) {
+            allocation->next->previous = allocation;
+        }
 
-    // Insert the allocation into the head of the pool:
-    allocation->next = fiber_pool->allocations;
-
-#ifdef FIBER_POOL_ALLOCATION_FREE
-    if (allocation->next) {
-        allocation->next->previous = allocation;
-    }
-
-    allocation->previous = NULL;
+        allocation->previous = NULL;
 #endif
 
-    fiber_pool->allocations = allocation;
-    fiber_pool->vacancies = vacancies;
-    fiber_pool->count += count;
+        fiber_pool->allocations = allocation;
+        fiber_pool->vacancies = vacancies;
+        fiber_pool->count += count;
+    }
+    RB_VM_LOCK_LEAVE();
 
     return allocation;
 }
@@ -652,41 +664,46 @@ fiber_pool_allocation_free(struct fiber_pool_allocation * allocation)
 static struct fiber_pool_stack
 fiber_pool_stack_acquire(struct fiber_pool * fiber_pool)
 {
-    struct fiber_pool_vacancy * vacancy = fiber_pool_vacancy_pop(fiber_pool);
-
-    if (DEBUG) fprintf(stderr, "fiber_pool_stack_acquire: %p used=%"PRIuSIZE"\n", (void*)fiber_pool->vacancies, fiber_pool->used);
-
-    if (!vacancy) {
-        const size_t maximum = FIBER_POOL_ALLOCATION_MAXIMUM_SIZE;
-        const size_t minimum = fiber_pool->initial_count;
-
-        size_t count = fiber_pool->count;
-        if (count > maximum) count = maximum;
-        if (count < minimum) count = minimum;
-
-        fiber_pool_expand(fiber_pool, count);
-
-        // The free list should now contain some stacks:
-        VM_ASSERT(fiber_pool->vacancies);
-
+    struct fiber_pool_vacancy * vacancy ;
+    RB_VM_LOCK_ENTER();
+    {
         vacancy = fiber_pool_vacancy_pop(fiber_pool);
-    }
 
-    VM_ASSERT(vacancy);
-    VM_ASSERT(vacancy->stack.base);
+        if (DEBUG) fprintf(stderr, "fiber_pool_stack_acquire: %p used=%"PRIuSIZE"\n", (void*)fiber_pool->vacancies, fiber_pool->used);
+
+        if (!vacancy) {
+            const size_t maximum = FIBER_POOL_ALLOCATION_MAXIMUM_SIZE;
+            const size_t minimum = fiber_pool->initial_count;
+
+            size_t count = fiber_pool->count;
+            if (count > maximum) count = maximum;
+            if (count < minimum) count = minimum;
+
+            fiber_pool_expand(fiber_pool, count);
+
+            // The free list should now contain some stacks:
+            VM_ASSERT(fiber_pool->vacancies);
+
+            vacancy = fiber_pool_vacancy_pop(fiber_pool);
+        }
+
+        VM_ASSERT(vacancy);
+        VM_ASSERT(vacancy->stack.base);
 
 #if defined(COROUTINE_SANITIZE_ADDRESS)
-    __asan_unpoison_memory_region(fiber_pool_stack_poison_base(&vacancy->stack), fiber_pool_stack_poison_size(&vacancy->stack));
+        __asan_unpoison_memory_region(fiber_pool_stack_poison_base(&vacancy->stack), fiber_pool_stack_poison_size(&vacancy->stack));
 #endif
 
-    // Take the top item from the free list:
-    fiber_pool->used += 1;
+        // Take the top item from the free list:
+        fiber_pool->used += 1;
 
 #ifdef FIBER_POOL_ALLOCATION_FREE
-    vacancy->stack.allocation->used += 1;
+        vacancy->stack.allocation->used += 1;
 #endif
 
-    fiber_pool_stack_reset(&vacancy->stack);
+        fiber_pool_stack_reset(&vacancy->stack);
+    }
+    RB_VM_LOCK_LEAVE();
 
     return vacancy->stack;
 }
@@ -903,6 +920,17 @@ fiber_stack_release(rb_fiber_t * fiber)
     rb_ec_clear_vm_stack(ec);
 }
 
+static void
+fiber_stack_release_locked(rb_fiber_t *fiber)
+{
+    if (!ruby_vm_during_cleanup) {
+        // We can't try to acquire the VM lock here because MMTK calls free in its own native thread which has no ec.
+        // This assertion will fail on MMTK but we currently don't have CI for debug releases of MMTK, so we can assert for now.
+        ASSERT_vm_locking_with_barrier();
+    }
+    fiber_stack_release(fiber);
+}
+
 static const char *
 fiber_status_name(enum fiber_status s)
 {
@@ -1063,7 +1091,7 @@ cont_free(void *ptr)
     else {
         rb_fiber_t *fiber = (rb_fiber_t*)cont;
         coroutine_destroy(&fiber->context);
-        fiber_stack_release(fiber);
+        fiber_stack_release_locked(fiber);
     }
 
     RUBY_FREE_UNLESS_NULL(cont->saved_vm_stack.ptr);
@@ -1504,6 +1532,51 @@ cont_restore_thread(rb_context_t *cont)
             rb_raise(rb_eRuntimeError, "can't call across trace_func");
         }
 
+#if defined(__wasm__) && !defined(__EMSCRIPTEN__)
+        if (th->ec->tag != sec->tag) {
+            /* find the lowest common ancestor tag of the current EC and the saved EC */
+
+            struct rb_vm_tag *lowest_common_ancestor = NULL;
+            size_t num_tags = 0;
+            size_t num_saved_tags = 0;
+            for (struct rb_vm_tag *tag = th->ec->tag; tag != NULL; tag = tag->prev) {
+                ++num_tags;
+            }
+            for (struct rb_vm_tag *tag = sec->tag; tag != NULL; tag = tag->prev) {
+                ++num_saved_tags;
+            }
+
+            size_t min_tags = num_tags <= num_saved_tags ? num_tags : num_saved_tags;
+
+            struct rb_vm_tag *tag = th->ec->tag;
+            while (num_tags > min_tags) {
+                tag = tag->prev;
+                --num_tags;
+            }
+
+            struct rb_vm_tag *saved_tag = sec->tag;
+            while (num_saved_tags > min_tags) {
+                saved_tag = saved_tag->prev;
+                --num_saved_tags;
+            }
+
+            while (min_tags > 0) {
+                if (tag == saved_tag) {
+                    lowest_common_ancestor = tag;
+                    break;
+                }
+                tag = tag->prev;
+                saved_tag = saved_tag->prev;
+                --min_tags;
+            }
+
+            /* free all the jump buffers between the current EC's tag and the lowest common ancestor tag */
+            for (struct rb_vm_tag *tag = th->ec->tag; tag != lowest_common_ancestor; tag = tag->prev) {
+                rb_vm_tag_jmpbuf_deinit(&tag->buf);
+            }
+        }
+#endif
+
         /* copy vm stack */
 #ifdef CAPTURE_JUST_VALID_VM_STACK
         MEMCPY(th->ec->vm_stack,
@@ -1590,9 +1663,9 @@ cont_restore_1(rb_context_t *cont)
     cont_restore_thread(cont);
 
     /* restore machine stack */
-#if defined(_M_AMD64) && !defined(__MINGW64__)
+#if (defined(_M_AMD64) && !defined(__MINGW64__)) || defined(_M_ARM64)
     {
-        /* workaround for x64 SEH */
+        /* workaround for x64 and arm64 SEH on Windows */
         jmp_buf buf;
         setjmp(buf);
         _JUMP_BUFFER *bp = (void*)&cont->jmpbuf;
@@ -1891,7 +1964,7 @@ rb_cont_call(int argc, VALUE *argv, VALUE contval)
  *  == Non-blocking Fibers
  *
  *  The concept of <em>non-blocking fiber</em> was introduced in Ruby 3.0.
- *  A non-blocking fiber, when reaching a operation that would normally block
+ *  A non-blocking fiber, when reaching an operation that would normally block
  *  the fiber (like <code>sleep</code>, or wait for another process or I/O)
  *  will yield control to other fibers and allow the <em>scheduler</em> to
  *  handle blocking and waking up (resuming) this fiber when it can proceed.
@@ -2119,7 +2192,7 @@ rb_fiber_storage_set(VALUE self, VALUE value)
 static VALUE
 rb_fiber_storage_aref(VALUE class, VALUE key)
 {
-    Check_Type(key, T_SYMBOL);
+    key = rb_to_symbol(key);
 
     VALUE storage = fiber_storage_get(fiber_current(), FALSE);
     if (storage == Qnil) return Qnil;
@@ -2140,7 +2213,7 @@ rb_fiber_storage_aref(VALUE class, VALUE key)
 static VALUE
 rb_fiber_storage_aset(VALUE class, VALUE key, VALUE value)
 {
-    Check_Type(key, T_SYMBOL);
+    key = rb_to_symbol(key);
 
     VALUE storage = fiber_storage_get(fiber_current(), value != Qnil);
     if (storage == Qnil) return Qnil;
@@ -2675,7 +2748,9 @@ fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat, rb_fi
     // We cannot free the stack until the pthread is joined:
 #ifndef COROUTINE_PTHREAD_CONTEXT
     if (resuming_fiber && FIBER_TERMINATED_P(fiber)) {
-        fiber_stack_release(fiber);
+        RB_VM_LOCKING() {
+            fiber_stack_release(fiber);
+        }
     }
 #endif
 
@@ -3153,9 +3228,9 @@ fiber_raise(rb_fiber_t *fiber, VALUE exception)
 }
 
 VALUE
-rb_fiber_raise(VALUE fiber, int argc, const VALUE *argv)
+rb_fiber_raise(VALUE fiber, int argc, VALUE *argv)
 {
-    VALUE exception = rb_make_exception(argc, argv);
+    VALUE exception = rb_exception_setup(argc, argv);
 
     return fiber_raise(fiber_ptr(fiber), exception);
 }
@@ -3431,6 +3506,10 @@ Init_Cont(void)
     rb_define_singleton_method(rb_cFiber, "schedule", rb_fiber_s_schedule, -1);
 
 #ifdef RB_EXPERIMENTAL_FIBER_POOL
+    /*
+     * Document-class: Fiber::Pool
+     * :nodoc: experimental
+     */
     rb_cFiberPool = rb_define_class_under(rb_cFiber, "Pool", rb_cObject);
     rb_define_alloc_func(rb_cFiberPool, fiber_pool_alloc);
     rb_define_method(rb_cFiberPool, "initialize", rb_fiber_pool_initialize, -1);

@@ -115,10 +115,8 @@ RSpec.describe "The library itself" do
   end
 
   it "maintains language quality of the documentation" do
-    included = /ronn/
     error_messages = []
     man_tracked_files.each do |filename|
-      next unless filename&.match?(included)
       error_messages << check_for_expendable_words(filename)
       error_messages << check_for_specific_pronouns(filename)
     end
@@ -138,12 +136,12 @@ RSpec.describe "The library itself" do
 
   it "documents all used settings" do
     exemptions = %w[
-      forget_cli_options
       gem.changelog
       gem.ci
       gem.coc
       gem.linter
       gem.mit
+      gem.bundle
       gem.rubocop
       gem.test
       git.allow_insecure
@@ -165,7 +163,8 @@ RSpec.describe "The library itself" do
         line.scan(/Bundler\.settings\[:#{key_pattern}\]/).flatten.each {|s| all_settings[s] << "referenced at `#{filename}:#{number.succ}`" }
       end
     end
-    documented_settings = File.read("lib/bundler/man/bundle-config.1.ronn")[/LIST OF AVAILABLE KEYS.*/m].scan(/^\* `#{key_pattern}`/).flatten
+    settings_section = File.read("lib/bundler/man/bundle-config.1.ronn").split(/^## /).find {|section| section.start_with?("LIST OF AVAILABLE KEYS") }
+    documented_settings = settings_section.scan(/^\* `#{key_pattern}`/).flatten
 
     documented_settings.each do |s|
       all_settings.delete(s)
@@ -216,7 +215,7 @@ RSpec.describe "The library itself" do
       end
     end
 
-    warnings = last_command.stdboth.split("\n")
+    warnings = stdboth.split("\n")
     # ignore warnings around deprecated Object#=~ method in RubyGems
     warnings.reject! {|w| w =~ %r{rubygems\/version.rb.*deprecated\ Object#=~} }
 

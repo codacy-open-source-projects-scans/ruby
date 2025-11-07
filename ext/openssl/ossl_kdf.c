@@ -3,9 +3,7 @@
  * Copyright (C) 2007, 2017 Ruby/OpenSSL Project Authors
  */
 #include "ossl.h"
-#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
-# include <openssl/kdf.h>
-#endif
+#include <openssl/kdf.h>
 
 static VALUE mKDF, eKDF;
 
@@ -37,7 +35,7 @@ static VALUE mKDF, eKDF;
 static VALUE
 kdf_pbkdf2_hmac(int argc, VALUE *argv, VALUE self)
 {
-    VALUE pass, salt, opts, kwargs[4], str;
+    VALUE pass, salt, opts, kwargs[4], str, md_holder;
     static ID kwargs_ids[4];
     int iters, len;
     const EVP_MD *md;
@@ -55,7 +53,7 @@ kdf_pbkdf2_hmac(int argc, VALUE *argv, VALUE self)
     salt = StringValue(kwargs[0]);
     iters = NUM2INT(kwargs[1]);
     len = NUM2INT(kwargs[2]);
-    md = ossl_evp_get_digestbyname(kwargs[3]);
+    md = ossl_evp_md_fetch(kwargs[3], &md_holder);
 
     str = rb_str_new(0, len);
     if (!PKCS5_PBKDF2_HMAC(RSTRING_PTR(pass), RSTRING_LENINT(pass),
@@ -141,7 +139,6 @@ kdf_scrypt(int argc, VALUE *argv, VALUE self)
 }
 #endif
 
-#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
 /*
  * call-seq:
  *    KDF.hkdf(ikm, salt:, info:, length:, hash:) -> String
@@ -175,7 +172,7 @@ kdf_scrypt(int argc, VALUE *argv, VALUE self)
 static VALUE
 kdf_hkdf(int argc, VALUE *argv, VALUE self)
 {
-    VALUE ikm, salt, info, opts, kwargs[4], str;
+    VALUE ikm, salt, info, opts, kwargs[4], str, md_holder;
     static ID kwargs_ids[4];
     int saltlen, ikmlen, infolen;
     size_t len;
@@ -200,7 +197,7 @@ kdf_hkdf(int argc, VALUE *argv, VALUE self)
     len = (size_t)NUM2LONG(kwargs[2]);
     if (len > LONG_MAX)
 	rb_raise(rb_eArgError, "length must be non-negative");
-    md = ossl_evp_get_digestbyname(kwargs[3]);
+    md = ossl_evp_md_fetch(kwargs[3], &md_holder);
 
     str = rb_str_new(NULL, (long)len);
     pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
@@ -238,7 +235,6 @@ kdf_hkdf(int argc, VALUE *argv, VALUE self)
 
     return str;
 }
-#endif
 
 void
 Init_ossl_kdf(void)
@@ -305,7 +301,5 @@ Init_ossl_kdf(void)
 #if defined(HAVE_EVP_PBE_SCRYPT)
     rb_define_module_function(mKDF, "scrypt", kdf_scrypt, -1);
 #endif
-#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
     rb_define_module_function(mKDF, "hkdf", kdf_hkdf, -1);
-#endif
 }

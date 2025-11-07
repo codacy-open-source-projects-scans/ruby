@@ -94,6 +94,9 @@ class TestFiberScheduler < Test::Unit::TestCase
     def scheduler.kernel_sleep
     end
 
+    def scheduler.fiber_interrupt(_fiber, _exception)
+    end
+
     thread = Thread.new do
       Fiber.set_scheduler scheduler
     end
@@ -137,6 +140,19 @@ class TestFiberScheduler < Test::Unit::TestCase
       $LOADED_FEATURES.delete(File.expand_path("autoload.rb", __dir__))
       Object.send(:remove_const, :TestFiberSchedulerAutoload)
     end
+  end
+
+  def test_iseq_compile_under_gc_stress_bug_21180
+    Thread.new do
+      scheduler = Scheduler.new
+      Fiber.set_scheduler scheduler
+
+      Fiber.schedule do
+        EnvUtil.under_gc_stress do
+          RubyVM::InstructionSequence.compile_file(File::NULL)
+        end
+      end
+    end.join
   end
 
   def test_deadlock

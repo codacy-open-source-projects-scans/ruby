@@ -37,6 +37,7 @@
 #include "ruby/internal/dllexport.h"
 #include "ruby/internal/error.h"
 #include "ruby/internal/fl_type.h"
+#include "ruby/internal/static_assert.h"
 #include "ruby/internal/stdbool.h"
 #include "ruby/internal/value_type.h"
 
@@ -114,7 +115,8 @@
 #define RUBY_TYPED_PROMOTED1         RUBY_TYPED_PROMOTED1
 /** @endcond */
 
-#define TYPED_DATA_EMBEDDED 2
+#define TYPED_DATA_EMBEDDED ((VALUE)1)
+#define TYPED_DATA_PTR_MASK (~(TYPED_DATA_EMBEDDED))
 
 /**
  * @private
@@ -177,9 +179,9 @@ rbimpl_typeddata_flags {
     RUBY_TYPED_WB_PROTECTED     = RUBY_FL_WB_PROTECTED, /* THIS FLAG DEPENDS ON Ruby version */
 
     /**
-     * This flag no longer in use
+     * This flag is used to distinguish RTypedData from deprecated RData objects.
      */
-    RUBY_TYPED_UNUSED           = RUBY_FL_UNUSED6,
+    RUBY_TYPED_FL_IS_TYPED_DATA = RUBY_FL_USERPRIV0,
 
     /**
      * This flag determines whether marking and compaction should be carried out
@@ -352,23 +354,27 @@ struct RTypedData {
     /** The part that all ruby objects have in common. */
     struct RBasic basic;
 
+    /** Direct reference to the slots that holds instance variables, if any **/
+    VALUE fields_obj;
+
     /**
+     * This is a `const rb_data_type_t *const` value, with the low bits set:
+     *
+     * 1: Set if object is embedded.
+     *
      * This field  stores various  information about how  Ruby should  handle a
      * data.   This roughly  resembles a  Ruby level  class (apart  from method
      * definition etc.)
      */
-    const rb_data_type_t *const type;
-
-    /**
-     * This has to be always 1.
-     *
-     * @internal
-     */
-    const VALUE typed_flag;
+    const VALUE type;
 
     /** Pointer to the actual C level struct that you want to wrap. */
     void *data;
 };
+
+#if !defined(__cplusplus) || __cplusplus >= 201103L
+RBIMPL_STATIC_ASSERT(data_in_rtypeddata, offsetof(struct RData, data) == offsetof(struct RTypedData, data));
+#endif
 
 RBIMPL_SYMBOL_EXPORT_BEGIN()
 RBIMPL_ATTR_NONNULL((3))
@@ -470,8 +476,7 @@ RBIMPL_SYMBOL_EXPORT_END()
 /**
  * Identical to #TypedData_Wrap_Struct,  except it allocates a  new data region
  * internally instead of taking an existing  one.  The allocation is done using
- * ruby_calloc().  Hence  it makes no sense  for `data_type->function.dfree` to
- * be anything other than ::RUBY_TYPED_DEFAULT_FREE.
+ * ruby_calloc().
  *
  * @param      klass          Ruby level class of the object.
  * @param      type           Type name of the C struct.
@@ -525,7 +530,7 @@ RTYPEDDATA_EMBEDDED_P(VALUE obj)
     }
 #endif
 
-    return RTYPEDDATA(obj)->typed_flag & TYPED_DATA_EMBEDDED;
+    return (RTYPEDDATA(obj)->type) & TYPED_DATA_EMBEDDED;
 }
 
 static inline void *
@@ -538,11 +543,10 @@ RTYPEDDATA_GET_DATA(VALUE obj)
     }
 #endif
 
-    /* We reuse the data pointer in embedded TypedData. We can't use offsetof
-     * since RTypedData a non-POD type in C++. */
-    const size_t embedded_typed_data_size = sizeof(struct RTypedData) - sizeof(void *);
-
-    return RTYPEDDATA_EMBEDDED_P(obj) ? (char *)obj + embedded_typed_data_size : RTYPEDDATA(obj)->data;
+    /* We reuse the data pointer in embedded TypedData. */
+    return RTYPEDDATA_EMBEDDED_P(obj) ?
+        RBIMPL_CAST((void *)&(RTYPEDDATA(obj)->data)) :
+        RTYPEDDATA(obj)->data;
 }
 
 RBIMPL_ATTR_PURE()
@@ -561,8 +565,7 @@ RBIMPL_ATTR_ARTIFICIAL()
 static inline bool
 rbimpl_rtypeddata_p(VALUE obj)
 {
-    VALUE typed_flag = RTYPEDDATA(obj)->typed_flag;
-    return typed_flag != 0 && typed_flag <= 3;
+    return FL_TEST_RAW(obj, RUBY_TYPED_FL_IS_TYPED_DATA);
 }
 
 RBIMPL_ATTR_PURE_UNLESS_DEBUG()
@@ -608,7 +611,7 @@ RTYPEDDATA_TYPE(VALUE obj)
     }
 #endif
 
-    return RTYPEDDATA(obj)->type;
+    return (const struct rb_data_type_struct *)(RTYPEDDATA(obj)->type & TYPED_DATA_PTR_MASK);
 }
 
 /**

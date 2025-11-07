@@ -199,7 +199,7 @@ pub use rb_get_call_data_ci as get_call_data_ci;
 pub use rb_yarv_str_eql_internal as rb_str_eql_internal;
 pub use rb_yarv_ary_entry_internal as rb_ary_entry_internal;
 pub use rb_yjit_fix_div_fix as rb_fix_div_fix;
-pub use rb_yjit_fix_mod_fix as rb_fix_mod_fix;
+pub use rb_jit_fix_mod_fix as rb_fix_mod_fix;
 pub use rb_FL_TEST as FL_TEST;
 pub use rb_FL_TEST_RAW as FL_TEST_RAW;
 pub use rb_RB_TYPE_P as RB_TYPE_P;
@@ -441,28 +441,16 @@ impl VALUE {
     }
 
     pub fn shape_too_complex(self) -> bool {
-        unsafe { rb_shape_obj_too_complex(self) }
+        unsafe { rb_yjit_shape_obj_too_complex_p(self) }
     }
 
     pub fn shape_id_of(self) -> u32 {
-        unsafe { rb_shape_get_shape_id(self) }
-    }
-
-    pub fn shape_of(self) -> *mut rb_shape {
-        unsafe {
-            let shape = rb_shape_get_shape_by_id(self.shape_id_of());
-
-            if shape.is_null() {
-                panic!("Shape should not be null");
-            } else {
-                shape
-            }
-        }
+        unsafe { rb_obj_shape_id(self) }
     }
 
     pub fn embedded_p(self) -> bool {
         unsafe {
-            FL_TEST_RAW(self, VALUE(ROBJECT_EMBED as usize)) != VALUE(0)
+            FL_TEST_RAW(self, VALUE(ROBJECT_HEAP as usize)) == VALUE(0)
         }
     }
 
@@ -613,9 +601,15 @@ pub fn rust_str_to_ruby(str: &str) -> VALUE {
 
 /// Produce a Ruby symbol from a Rust string slice
 pub fn rust_str_to_sym(str: &str) -> VALUE {
+    let id = rust_str_to_id(str);
+    unsafe { rb_id2sym(id) }
+}
+
+/// Produce an ID from a Rust string slice
+pub fn rust_str_to_id(str: &str) -> ID {
     let c_str = CString::new(str).unwrap();
     let c_ptr: *const c_char = c_str.as_ptr();
-    unsafe { rb_id2sym(rb_intern(c_ptr)) }
+    unsafe { rb_intern(c_ptr) }
 }
 
 /// Produce an owned Rust String from a C char pointer
@@ -683,7 +677,7 @@ where
     let line = loc.line;
     let mut recursive_lock_level: c_uint = 0;
 
-    unsafe { rb_yjit_vm_lock_then_barrier(&mut recursive_lock_level, file, line) };
+    unsafe { rb_jit_vm_lock_then_barrier(&mut recursive_lock_level, file, line) };
 
     let ret = match catch_unwind(func) {
         Ok(result) => result,
@@ -703,7 +697,7 @@ where
         }
     };
 
-    unsafe { rb_yjit_vm_unlock(&mut recursive_lock_level, file, line) };
+    unsafe { rb_jit_vm_unlock(&mut recursive_lock_level, file, line) };
 
     ret
 }

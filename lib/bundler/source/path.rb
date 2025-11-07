@@ -53,6 +53,8 @@ module Bundler
         "source at `#{@path}`"
       end
 
+      alias_method :identifier, :to_s
+
       alias_method :to_gemfile, :path
 
       def hash
@@ -60,8 +62,8 @@ module Bundler
       end
 
       def eql?(other)
-        return unless other.class == self.class
-        expanded_original_path == other.expanded_original_path &&
+        [Gemspec, Path].include?(other.class) &&
+          expanded_original_path == other.expanded_original_path &&
           version == other.version
       end
 
@@ -81,7 +83,7 @@ module Bundler
 
       def cache(spec, custom_path = nil)
         app_cache_path = app_cache_path(custom_path)
-        return unless Bundler.feature_flag.cache_all?
+        return unless Bundler.settings[:cache_all]
         return if expand(@original_path).to_s.index(root_path.to_s + "/") == 0
 
         unless @original_path.exist?
@@ -124,11 +126,7 @@ module Bundler
       end
 
       def expand(somepath)
-        if Bundler.current_ruby.jruby? # TODO: Unify when https://github.com/rubygems/bundler/issues/7598 fixed upstream and all supported jrubies include the fix
-          somepath.expand_path(root_path).expand_path
-        else
-          somepath.expand_path(root_path)
-        end
+        somepath.expand_path(root_path)
       rescue ArgumentError => e
         Bundler.ui.debug(e)
         raise PathError, "There was an error while trying to use the path " \
@@ -166,6 +164,13 @@ module Bundler
           Gem::Util.glob_files_in_dir(@glob, expanded_path).sort_by {|p| -p.split(File::SEPARATOR).size }.each do |file|
             next unless spec = load_gemspec(file)
             spec.source = self
+
+            # The ignore attribute is for ignoring installed gems that don't
+            # have extensions correctly compiled for activation. In the case of
+            # path sources, there's a single version of each gem in the path
+            # source available to Bundler, so we always certainly want to
+            # consider that for activation and never makes sense to ignore it.
+            spec.ignored = false
 
             # Validation causes extension_dir to be calculated, which depends
             # on #source, so we validate here instead of load_gemspec

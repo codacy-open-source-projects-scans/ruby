@@ -26,12 +26,14 @@ module Bundler
     def run
       check_for_deployment_mode!
 
-      gems.each do |gem_name|
-        Bundler::CLI::Common.select_spec(gem_name)
-      end
-
       Bundler.definition.validate_runtime!
       current_specs = Bundler.ui.silence { Bundler.definition.resolve }
+
+      gems.each do |gem_name|
+        if current_specs[gem_name].empty?
+          raise GemNotFound, "Could not find gem '#{gem_name}'."
+        end
+      end
 
       current_dependencies = Bundler.ui.silence do
         Bundler.load.dependencies.map {|dep| [dep.name, dep] }.to_h
@@ -153,7 +155,7 @@ module Bundler
 
       return active_spec if strict
 
-      active_specs = active_spec.source.specs.search(current_spec.name).select {|spec| spec.match_platform(current_spec.platform) }.sort_by(&:version)
+      active_specs = active_spec.source.specs.search(current_spec.name).select {|spec| spec.installable_on_platform?(current_spec.platform) }.sort_by(&:version)
       if !current_spec.version.prerelease? && !options[:pre] && active_specs.size > 1
         active_specs.delete_if {|b| b.respond_to?(:version) && b.version.prerelease? }
       end

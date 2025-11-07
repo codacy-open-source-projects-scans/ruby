@@ -68,14 +68,9 @@ ossl_x509ext_new(X509_EXTENSION *ext)
     VALUE obj;
 
     obj = NewX509Ext(cX509Ext);
-    if (!ext) {
-	new = X509_EXTENSION_new();
-    } else {
-	new = X509_EXTENSION_dup(ext);
-    }
-    if (!new) {
-	ossl_raise(eX509ExtError, NULL);
-    }
+    new = X509_EXTENSION_dup(ext);
+    if (!new)
+        ossl_raise(eX509ExtError, "X509_EXTENSION_dup");
     SetX509Ext(obj, new);
 
     return obj;
@@ -230,11 +225,7 @@ ossl_x509extfactory_create_ext(int argc, VALUE *argv, VALUE self)
     conf = NIL_P(rconf) ? NULL : GetConfig(rconf);
     X509V3_set_nconf(ctx, conf);
 
-#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_IS_LIBRESSL
     ext = X509V3_EXT_nconf(conf, ctx, oid_cstr, RSTRING_PTR(valstr));
-#else
-    ext = X509V3_EXT_nconf(conf, ctx, (char *)oid_cstr, RSTRING_PTR(valstr));
-#endif
     X509V3_set_ctx_nodb(ctx);
     if (!ext){
 	ossl_raise(eX509ExtError, "%"PRIsVALUE" = %"PRIsVALUE, oid, valstr);
@@ -299,6 +290,7 @@ ossl_x509ext_initialize(int argc, VALUE *argv, VALUE self)
     return self;
 }
 
+/* :nodoc: */
 static VALUE
 ossl_x509ext_initialize_copy(VALUE self, VALUE other)
 {

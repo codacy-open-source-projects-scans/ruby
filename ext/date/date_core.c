@@ -1599,7 +1599,7 @@ m_ajd(union DateData *x)
 
     if (simple_dat_p(x)) {
 	r = m_real_jd(x);
-	if (FIXNUM_P(r) && FIX2LONG(r) <= (FIXNUM_MAX / 2)) {
+	if (FIXNUM_P(r) && FIX2LONG(r) <= (FIXNUM_MAX / 2) && FIX2LONG(r) >= (FIXNUM_MIN + 1) / 2) {
 	    long ir = FIX2LONG(r);
 	    ir = ir * 2 - 1;
 	    return rb_rational_new2(LONG2FIX(ir), INT2FIX(2));
@@ -3878,7 +3878,6 @@ static VALUE
 rt_complete_frags(VALUE klass, VALUE hash)
 {
     static VALUE tab = Qnil;
-    int g;
     long e;
     VALUE k, a, d;
 
@@ -3975,9 +3974,13 @@ rt_complete_frags(VALUE klass, VALUE hash)
 	rb_gc_register_mark_object(tab);
     }
 
-    {
-	long i, eno = 0, idx = 0;
+    k = a = Qnil;
 
+    {
+	long i, eno = 0;
+	VALUE t = Qnil;
+
+	e = 0;
 	for (i = 0; i < RARRAY_LEN(tab); i++) {
 	    VALUE x, a;
 
@@ -3992,23 +3995,20 @@ rt_complete_frags(VALUE klass, VALUE hash)
 			n++;
 		if (n > eno) {
 		    eno = n;
-		    idx = i;
+		    t = x;
 		}
 	    }
 	}
-	if (eno == 0)
-	    g = 0;
-	else {
-	    g = 1;
-	    k = RARRAY_AREF(RARRAY_AREF(tab, idx), 0);
-	    a = RARRAY_AREF(RARRAY_AREF(tab, idx), 1);
-	    e =	eno;
+	if (eno > 0) {
+	    k = RARRAY_AREF(t, 0);
+	    a = RARRAY_AREF(t, 1);
 	}
+	e = eno;
     }
 
     d = Qnil;
 
-    if (g && !NIL_P(k) && (RARRAY_LEN(a) - e)) {
+    if (!NIL_P(k) && (RARRAY_LEN(a) > e)) {
 	if (k == sym("ordinal")) {
 	    if (NIL_P(ref_hash("year"))) {
 		if (NIL_P(d))
@@ -4095,7 +4095,7 @@ rt_complete_frags(VALUE klass, VALUE hash)
 	}
     }
 
-    if (g && k == sym("time")) {
+    if (k == sym("time")) {
 	if (f_le_p(klass, cDateTime)) {
 	    if (NIL_P(d))
 		d = date_s_today(0, (VALUE *)0, cDate);
@@ -4464,11 +4464,10 @@ get_limit(VALUE opt)
 #define rb_category_warn(category, fmt) rb_warn(fmt)
 #endif
 
-static void
+static VALUE
 check_limit(VALUE str, VALUE opt)
 {
     size_t slen, limit;
-    if (NIL_P(str)) return;
     StringValue(str);
     slen = RSTRING_LEN(str);
     limit = get_limit(opt);
@@ -4476,6 +4475,7 @@ check_limit(VALUE str, VALUE opt)
 	rb_raise(rb_eArgError,
 		 "string length (%"PRI_SIZE_PREFIX"u) exceeds the limit %"PRI_SIZE_PREFIX"u", slen, limit);
     }
+    return str;
 }
 
 static VALUE
@@ -4484,8 +4484,7 @@ date_s__parse_internal(int argc, VALUE *argv, VALUE klass)
     VALUE vstr, vcomp, hash, opt;
 
     argc = rb_scan_args(argc, argv, "11:", &vstr, &vcomp, &opt);
-    check_limit(vstr, opt);
-    StringValue(vstr);
+    vstr = check_limit(vstr, opt);
     if (!rb_enc_str_asciicompat_p(vstr))
 	rb_raise(rb_eArgError,
 		 "string should have ASCII compatible encoding");
@@ -4620,7 +4619,7 @@ date_s__iso8601(int argc, VALUE *argv, VALUE klass)
     VALUE str, opt;
 
     rb_scan_args(argc, argv, "1:", &str, &opt);
-    check_limit(str, opt);
+    if (!NIL_P(str)) str = check_limit(str, opt);
 
     return date__iso8601(str);
 }
@@ -4690,7 +4689,7 @@ date_s__rfc3339(int argc, VALUE *argv, VALUE klass)
     VALUE str, opt;
 
     rb_scan_args(argc, argv, "1:", &str, &opt);
-    check_limit(str, opt);
+    if (!NIL_P(str)) str = check_limit(str, opt);
 
     return date__rfc3339(str);
 }
@@ -4759,7 +4758,7 @@ date_s__xmlschema(int argc, VALUE *argv, VALUE klass)
     VALUE str, opt;
 
     rb_scan_args(argc, argv, "1:", &str, &opt);
-    check_limit(str, opt);
+    if (!NIL_P(str)) str = check_limit(str, opt);
 
     return date__xmlschema(str);
 }
@@ -4828,7 +4827,7 @@ date_s__rfc2822(int argc, VALUE *argv, VALUE klass)
     VALUE str, opt;
 
     rb_scan_args(argc, argv, "1:", &str, &opt);
-    check_limit(str, opt);
+    if (!NIL_P(str)) str = check_limit(str, opt);
 
     return date__rfc2822(str);
 }
@@ -4896,7 +4895,7 @@ date_s__httpdate(int argc, VALUE *argv, VALUE klass)
     VALUE str, opt;
 
     rb_scan_args(argc, argv, "1:", &str, &opt);
-    check_limit(str, opt);
+    if (!NIL_P(str)) str = check_limit(str, opt);
 
     return date__httpdate(str);
 }
@@ -4965,7 +4964,7 @@ date_s__jisx0301(int argc, VALUE *argv, VALUE klass)
     VALUE str, opt;
 
     rb_scan_args(argc, argv, "1:", &str, &opt);
-    check_limit(str, opt);
+    if (!NIL_P(str)) str = check_limit(str, opt);
 
     return date__jisx0301(str);
 }
@@ -6936,13 +6935,24 @@ d_lite_eql_p(VALUE self, VALUE other)
 static VALUE
 d_lite_hash(VALUE self)
 {
-    st_index_t v, h[4];
+    st_index_t v, h[5];
+    VALUE nth;
 
     get_d1(self);
-    h[0] = m_nth(dat);
-    h[1] = m_jd(dat);
-    h[2] = m_df(dat);
-    h[3] = m_sf(dat);
+    nth = m_nth(dat);
+
+    if (FIXNUM_P(nth)) {
+        h[0] = 0;
+        h[1] = (st_index_t)nth;
+    } else {
+        h[0] = 1;
+        h[1] = (st_index_t)FIX2LONG(rb_hash(nth));
+    }
+
+    h[2] = m_jd(dat);
+    h[3] = m_df(dat);
+    h[4] = m_sf(dat);
+
     v = rb_memhash(h, sizeof(h));
     return ST2FIX(v);
 }
@@ -7517,10 +7527,7 @@ d_lite_marshal_dump_old(VALUE self)
 		    m_of_in_day(dat),
 		    DBL2NUM(m_sg(dat)));
 
-    if (FL_TEST(self, FL_EXIVAR)) {
-	rb_copy_generic_ivar(a, self);
-	FL_SET(a, FL_EXIVAR);
-    }
+    rb_copy_generic_ivar(a, self);
 
     return a;
 }
@@ -7542,10 +7549,8 @@ d_lite_marshal_dump(VALUE self)
 		    INT2FIX(m_of(dat)),
 		    DBL2NUM(m_sg(dat)));
 
-    if (FL_TEST(self, FL_EXIVAR)) {
-	rb_copy_generic_ivar(a, self);
-	FL_SET(a, FL_EXIVAR);
-    }
+
+    rb_copy_generic_ivar(a, self);
 
     return a;
 }
@@ -7618,10 +7623,7 @@ d_lite_marshal_load(VALUE self, VALUE a)
 		       HAVE_JD | HAVE_DF);
     }
 
-    if (FL_TEST(a, FL_EXIVAR)) {
-	rb_copy_generic_ivar(self, a);
-	FL_SET(self, FL_EXIVAR);
-    }
+    rb_copy_generic_ivar(self, a);
 
     return self;
 }

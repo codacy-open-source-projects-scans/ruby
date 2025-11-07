@@ -9,7 +9,20 @@ if File.expand_path(__FILE__) =~ %r{([^\w/\.:\-])}
   abort "The bundler specs cannot be run from a path that contains special characters (particularly #{$1.inspect})"
 end
 
+# Bundler CLI will have different help text depending on whether any of these
+# variables is set, since the `-e` flag `bundle gem` with require an explicit
+# value if they are not set, but will use their value by default if set. So make
+# sure they are `nil` before loading bundler to get a consistent help text,
+# since some tests rely on that.
+ENV["EDITOR"] = nil
+ENV["VISUAL"] = nil
+ENV["BUNDLER_EDITOR"] = nil
 require "bundler"
+
+# If we use shared GEM_HOME and install multiple versions, it may cause
+# unexpected test failures.
+gem "diff-lcs"
+
 require "rspec/core"
 require "rspec/expectations"
 require "rspec/mocks"
@@ -75,6 +88,10 @@ RSpec.configure do |config|
 
     require_relative "support/rubygems_ext"
     Spec::Rubygems.test_setup
+
+    # Simulate bundler has not yet been loaded
+    ENV.replace(ENV.to_hash.delete_if {|k, _v| k.start_with?(Bundler::EnvironmentPreserver::BUNDLER_PREFIX) })
+
     ENV["BUNDLER_SPEC_RUN"] = "true"
     ENV["BUNDLE_USER_CONFIG"] = ENV["BUNDLE_USER_CACHE"] = ENV["BUNDLE_USER_PLUGIN"] = nil
     ENV["BUNDLE_APP_CONFIG"] = nil
@@ -82,22 +99,19 @@ RSpec.configure do |config|
     ENV["RUBYGEMS_GEMDEPS"] = nil
     ENV["XDG_CONFIG_HOME"] = nil
     ENV["GEMRC"] = nil
-    ENV["EDITOR"] = nil
 
     # Don't wrap output in tests
     ENV["THOR_COLUMNS"] = "10000"
 
     extend(Spec::Builders)
 
-    check_test_gems!
-
     build_repo1
 
-    reset_paths!
+    reset!
   end
 
   config.around :each do |example|
-    FileUtils.cp_r pristine_system_gem_path, system_gem_path
+    default_system_gems
 
     with_gem_path_as(system_gem_path) do
       Bundler.ui.silence { example.run }
@@ -112,9 +126,5 @@ RSpec.configure do |config|
     end
   ensure
     reset!
-  end
-
-  config.after :suite do
-    FileUtils.rm_rf Spec::Path.pristine_system_gem_path
   end
 end

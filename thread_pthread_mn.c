@@ -72,7 +72,7 @@ thread_sched_wait_events(struct rb_thread_sched *sched, rb_thread_t *th, int fd,
         RUBY_DEBUG_LOG("wait fd:%d", fd);
 
         RB_VM_SAVE_MACHINE_CONTEXT(th);
-        setup_ubf(th, ubf_event_waiting, (void *)th);
+        ubf_set(th, ubf_event_waiting, (void *)th);
 
         RB_INTERNAL_THREAD_HOOK(RUBY_INTERNAL_THREAD_EVENT_SUSPENDED, th);
 
@@ -102,7 +102,7 @@ thread_sched_wait_events(struct rb_thread_sched *sched, rb_thread_t *th, int fd,
             timer_thread_cancel_waiting(th);
         }
 
-        setup_ubf(th, NULL, NULL); // TODO: maybe it is already NULL?
+        ubf_clear(th); // TODO: maybe it is already NULL?
 
         th->status = THREAD_RUNNABLE;
     }
@@ -397,11 +397,15 @@ native_thread_check_and_create_shared(rb_vm_t *vm)
 
     rb_native_mutex_lock(&vm->ractor.sched.lock);
     {
-        unsigned int snt_cnt = vm->ractor.sched.snt_cnt;
-        if (!vm->ractor.main_ractor->threads.sched.enable_mn_threads) snt_cnt++; // do not need snt for main ractor
+        unsigned int schedulable_ractor_cnt = vm->ractor.cnt;
+        RUBY_ASSERT(schedulable_ractor_cnt >= 1);
 
+        if (!vm->ractor.main_ractor->threads.sched.enable_mn_threads)
+            schedulable_ractor_cnt--; // do not need snt for main ractor
+
+        unsigned int snt_cnt = vm->ractor.sched.snt_cnt;
         if (((int)snt_cnt < MINIMUM_SNT) ||
-            (snt_cnt < vm->ractor.cnt  &&
+            (snt_cnt < schedulable_ractor_cnt  &&
              snt_cnt < vm->ractor.sched.max_cpu)) {
 
             RUBY_DEBUG_LOG("added snt:%u dnt:%u ractor_cnt:%u grq_cnt:%u",
@@ -429,7 +433,12 @@ native_thread_check_and_create_shared(rb_vm_t *vm)
     }
 }
 
-static COROUTINE
+#ifdef __APPLE__
+# define co_start ruby_coroutine_start
+#else
+static
+#endif
+COROUTINE
 co_start(struct coroutine_context *from, struct coroutine_context *self)
 {
 #ifdef RUBY_ASAN_ENABLED
@@ -445,7 +454,7 @@ co_start(struct coroutine_context *from, struct coroutine_context *self)
 
     // RUBY_DEBUG_LOG("th:%u", rb_th_serial(th));
 
-    thread_sched_set_lock_owner(sched, th);
+    thread_sched_set_locked(sched, th);
     thread_sched_add_running_thread(TH_SCHED(th), th);
     thread_sched_unlock(sched, th);
     {
@@ -470,13 +479,11 @@ co_start(struct coroutine_context *from, struct coroutine_context *self)
         coroutine_transfer0(self, nt->nt_context, true);
     }
     else {
-        rb_vm_t *vm = th->vm;
-        bool has_ready_ractor = vm->ractor.sched.grq_cnt > 0; // at least this ractor is not queued
         rb_thread_t *next_th = sched->running;
 
-        if (!has_ready_ractor && next_th && !next_th->nt) {
+        if (next_th && !next_th->nt) {
             // switch to the next thread
-            thread_sched_set_lock_owner(sched, NULL);
+            thread_sched_set_unlocked(sched, NULL);
             th->sched.finished = true;
             thread_sched_switch0(th->sched.context, next_th, nt, true);
         }
@@ -830,8 +837,8 @@ timer_thread_register_waiting(rb_thread_t *th, int fd, enum thread_sched_waiting
 
                 verify_waiting_list();
 
-                // update timeout seconds
-                timer_thread_wakeup();
+                // update timeout seconds; force wake so timer thread notices short deadlines
+                timer_thread_wakeup_force();
             }
         }
         else {

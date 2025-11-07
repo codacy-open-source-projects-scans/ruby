@@ -458,9 +458,8 @@ RSpec.describe "Bundler.setup" do
     end
 
     it "works even when the cache directory has been deleted" do
-      bundle "config set --local path vendor/bundle"
       bundle :install
-      FileUtils.rm_rf vendored_gems("cache")
+      FileUtils.rm_r default_cache_path
       expect(the_bundle).to include_gems "myrack 1.0.0"
     end
 
@@ -497,7 +496,7 @@ RSpec.describe "Bundler.setup" do
       bundle %(config set local.myrack #{lib_path("local-myrack")})
       bundle :install
 
-      FileUtils.rm_rf(lib_path("local-myrack"))
+      FileUtils.rm_r(lib_path("local-myrack"))
       run "require 'myrack'", raise_on_error: false
       expect(err).to match(/Cannot use local override for myrack-0.8 because #{Regexp.escape(lib_path("local-myrack").to_s)} does not exist/)
     end
@@ -612,7 +611,7 @@ RSpec.describe "Bundler.setup" do
         gem 'foo', :path => 'vendor/foo', :group => :development
       G
 
-      FileUtils.rm_rf(path)
+      FileUtils.rm_r(path)
 
       ruby "require 'bundler'; Bundler.setup", env: { "DEBUG" => "1" }
       expect(out).to include("Assuming that source at `vendor/foo` has not changed since fetching its specs errored")
@@ -1407,7 +1406,6 @@ end
     describe "default gem activation" do
       let(:exemptions) do
         exempts = %w[did_you_mean bundler uri pathname]
-        exempts << "etc" if (Gem.ruby_version < Gem::Version.new("3.2") || Gem.ruby_version >= Gem::Version.new("3.3.2")) && Gem.win_platform?
         exempts << "error_highlight" # added in Ruby 3.1 as a default gem
         exempts << "ruby2_keywords" # added in Ruby 3.1 as a default gem
         exempts << "syntax_suggest" # added in Ruby 3.2 as a default gem
@@ -1466,7 +1464,7 @@ end
         install_gemfile "source 'https://gem.repo1'"
         create_file("script.rb", "#!/usr/bin/env ruby\n\n#{code}")
         FileUtils.chmod(0o777, bundled_app("script.rb"))
-        bundle "exec ./script.rb", artifice: nil, env: { "RUBYOPT" => activation_warning_hack_rubyopt }
+        bundle "exec ./script.rb", env: { "RUBYOPT" => activation_warning_hack_rubyopt }
         expect(out).to eq("{}")
       end
 
@@ -1526,22 +1524,7 @@ end
   end
 
   describe "after setup" do
-    it "allows calling #gem on random objects", bundler: "< 3" do
-      install_gemfile <<-G
-        source "https://gem.repo1"
-        gem "myrack"
-      G
-
-      ruby <<-RUBY
-        require "bundler/setup"
-        Object.new.gem "myrack"
-        puts Gem.loaded_specs["myrack"].full_name
-      RUBY
-
-      expect(out).to eq("myrack-1.0.0")
-    end
-
-    it "keeps Kernel#gem private", bundler: "3" do
+    it "keeps Kernel#gem private" do
       install_gemfile <<-G
         source "https://gem.repo1"
         gem "myrack"
@@ -1553,7 +1536,7 @@ end
         puts "FAIL"
       RUBY
 
-      expect(last_command.stdboth).not_to include "FAIL"
+      expect(stdboth).not_to include "FAIL"
       expect(err).to match(/private method [`']gem'/)
     end
 
@@ -1569,7 +1552,7 @@ end
         puts "FAIL"
       RUBY
 
-      expect(last_command.stdboth).not_to include "FAIL"
+      expect(stdboth).not_to include "FAIL"
       expect(err).to match(/private method [`']require'/)
     end
 
@@ -1655,5 +1638,36 @@ end
     RUBY
     expect(err).to be_empty
     expect(out).to include("Installing myrack 1.0.0")
+  end
+
+  context "in a read-only filesystem" do
+    before do
+      gemfile <<-G
+        source "https://gem.repo4"
+      G
+
+      lockfile <<-L
+        GEM
+          remote: https://gem.repo4/
+
+        PLATFORMS
+          x86_64-darwin-19
+
+        DEPENDENCIES
+
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
+    end
+
+    it "should fail loudly if the lockfile platforms don't include the current platform" do
+      simulate_platform "x86_64-linux" do
+        ruby <<-RUBY, raise_on_error: false, env: { "BUNDLER_SPEC_READ_ONLY" => "true", "BUNDLER_FORCE_TTY" => "true" }
+          require "bundler/setup"
+        RUBY
+      end
+
+      expect(err).to include("Your lockfile is missing the current platform, but can't be updated because file system is read-only")
+    end
   end
 end

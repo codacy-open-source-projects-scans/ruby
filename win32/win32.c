@@ -1309,46 +1309,6 @@ is_batch(const char *cmd)
 #define utf8_to_wstr(str, plen) mbstr_to_wstr(CP_UTF8, str, -1, plen)
 #define wstr_to_utf8(str, plen) wstr_to_mbstr(CP_UTF8, str, -1, plen)
 
-/* License: Ruby's */
-HANDLE
-rb_w32_start_process(const char *abspath, char *const *argv, int out_fd)
-{
-    /* NOTE: This function is used by RJIT worker, so it can be used parallelly with
-       Ruby's main thread. So functions touching things shared with main thread can't
-       be used, like `ALLOCV` that may trigger GC or `FindFreeChildSlot` that finds
-       a slot from shared memory without atomic locks. */
-    struct ChildRecord child;
-    char *cmd;
-    size_t len;
-    WCHAR *wcmd = NULL, *wprog = NULL;
-    HANDLE outHandle = NULL;
-
-    if (out_fd) {
-        outHandle = (HANDLE)rb_w32_get_osfhandle(out_fd);
-    }
-
-    len = join_argv(NULL, argv, FALSE, filecp(), 1);
-    cmd = alloca(sizeof(char) * len);
-    join_argv(cmd, argv, FALSE, filecp(), 1);
-
-    if (!(wcmd = mbstr_to_wstr(filecp(), cmd, -1, NULL))) {
-        errno = E2BIG;
-        return NULL;
-    }
-    if (!(wprog = mbstr_to_wstr(filecp(), abspath, -1, NULL))) {
-        errno = E2BIG;
-        return NULL;
-    }
-
-    if (!CreateChild(&child, wcmd, wprog, NULL, outHandle, outHandle, 0)) {
-        return NULL;
-    }
-
-    free(wcmd);
-    free(wprog);
-    return child.hProcess;
-}
-
 /* License: Artistic or GPL */
 static rb_pid_t
 w32_spawn(int mode, const char *cmd, const char *prog, UINT cp)
@@ -2007,14 +1967,28 @@ open_special(const WCHAR *path, DWORD access, DWORD flags)
 
 static const WCHAR namespace_prefix[] = {L'\\', L'\\', L'?', L'\\'};
 
-enum {FINAL_PATH_MAX = PATH_MAX + numberof(namespace_prefix)};
+/* License: Ruby's */
+/* returns 0 on failure, otherwise stores tha path in `*pathptr` and
+ * returns the length of that path.  The path must be freed. */
+static DWORD
+get_handle_pathname(HANDLE fh, WCHAR **pathptr, DWORD add)
+{
+    DWORD len = GetFinalPathNameByHandleW(fh, NULL, 0, 0);
+    if (!len) return 0;
+    WCHAR *path = malloc((len + add + 1) * sizeof(WCHAR));
+    if (!(*pathptr = path)) return 0;
+    len = GetFinalPathNameByHandleW(fh, path, len + 1, 0);
+    if (!len) free(path);
+    return len;
+}
 
 /* License: Artistic or GPL */
 static HANDLE
 open_dir_handle(const WCHAR *filename, WIN32_FIND_DATAW *fd)
 {
     HANDLE fh;
-    WCHAR fullname[FINAL_PATH_MAX + rb_strlen_lit("\\*")];
+    int wildcard_len = rb_strlen_lit("\\*");
+    WCHAR *fullname = 0;
     WCHAR *p;
     int len = 0;
 
@@ -2024,20 +1998,17 @@ open_dir_handle(const WCHAR *filename, WIN32_FIND_DATAW *fd)
 
     fh = open_special(filename, 0, 0);
     if (fh != INVALID_HANDLE_VALUE) {
-        len = GetFinalPathNameByHandleW(fh, fullname, FINAL_PATH_MAX, 0);
+        len = get_handle_pathname(fh, &fullname, wildcard_len);
         CloseHandle(fh);
-        if (len >= FINAL_PATH_MAX) {
-            errno = ENAMETOOLONG;
-            return INVALID_HANDLE_VALUE;
-        }
     }
     if (!len) {
         len = lstrlenW(filename);
-        if (len >= PATH_MAX) {
-            errno = ENAMETOOLONG;
-            return INVALID_HANDLE_VALUE;
-        }
+        fullname = malloc((len + wildcard_len + 1) * sizeof(WCHAR));
+        if (!fullname) return INVALID_HANDLE_VALUE;
         MEMCPY(fullname, filename, WCHAR, len);
+    }
+    else {
+        RUBY_ASSERT(fullname);
     }
     p = &fullname[len-1];
     if (!(isdirsep(*p) || *p == L':')) *++p = L'\\';
@@ -2051,6 +2022,7 @@ open_dir_handle(const WCHAR *filename, WIN32_FIND_DATAW *fd)
     if (fh == INVALID_HANDLE_VALUE) {
         errno = map_errno(GetLastError());
     }
+    free(fullname);
     return fh;
 }
 
@@ -2179,7 +2151,6 @@ rb_w32_wstr_to_mbstr(UINT cp, const WCHAR *wstr, int clen, long *plen)
 WCHAR *
 rb_w32_mbstr_to_wstr(UINT cp, const char *str, int clen, long *plen)
 {
-    /* This is used by RJIT worker. Do not trigger GC or call Ruby method here. */
     WCHAR *ptr;
     int len = MultiByteToWideChar(cp, 0, str, clen, NULL, 0);
     if (!(ptr = malloc(sizeof(WCHAR) * len))) return 0;
@@ -2834,11 +2805,11 @@ rb_w32_strerror(int e)
     DWORD source = 0;
     char *p;
 
-    if (e < 0 || e > sys_nerr) {
-        if (e < 0)
-            e = GetLastError();
+    if (e < 0)
+        strlcpy(buffer, "Unknown Error", sizeof(buffer));
+    else if (e > sys_nerr) {
 #if WSAEWOULDBLOCK != EWOULDBLOCK
-        else if (e >= EADDRINUSE && e <= EWOULDBLOCK) {
+        if (e >= EADDRINUSE && e <= EWOULDBLOCK) {
             static int s = -1;
             int i;
             if (s < 0)
@@ -4754,26 +4725,35 @@ waitpid(rb_pid_t pid, int *stat_loc, int options)
 #include <sys/timeb.h>
 
 /* License: Ruby's */
+#define filetime_unit (10UL * 1000 * 1000)
+#define filetime_diff_days ((1970-1601)*3652425UL/10000)
+#define filetime_diff_secs (filetime_diff_days * (24ULL * 60 * 60))
+#define unix_to_filetime(sec) (((sec) + filetime_diff_secs) * filetime_unit)
+#define filetime_unix_offset unix_to_filetime(0ULL)
+
+/* License: Ruby's */
+typedef union {
+    /* FILETIME and ULARGE_INTEGER::u are the same layout */
+    FILETIME ft;
+    ULARGE_INTEGER i;
+} FILETIME_INTEGER;
+
+/* License: Ruby's */
 /* split FILETIME value into UNIX time and sub-seconds in NT ticks */
 static time_t
 filetime_split(const FILETIME* ft, long *subsec)
 {
-    ULARGE_INTEGER tmp;
-    unsigned LONG_LONG lt;
-    const unsigned LONG_LONG subsec_unit = (unsigned LONG_LONG)10 * 1000 * 1000;
-
-    tmp.LowPart = ft->dwLowDateTime;
-    tmp.HighPart = ft->dwHighDateTime;
-    lt = tmp.QuadPart;
+    FILETIME_INTEGER fi = {.ft = *ft};
+    ULONGLONG lt = fi.i.QuadPart;
 
     /* lt is now 100-nanosec intervals since 1601/01/01 00:00:00 UTC,
        convert it into UNIX time (since 1970/01/01 00:00:00 UTC).
        the first leap second is at 1972/06/30, so we doesn't need to think
        about it. */
-    lt -= (LONG_LONG)((1970-1601)*365.2425) * 24 * 60 * 60 * subsec_unit;
+    lt -= unix_to_filetime(0);
 
-    *subsec = (long)(lt % subsec_unit);
-    return (time_t)(lt / subsec_unit);
+    *subsec = (long)(lt % filetime_unit);
+    return (time_t)(lt / filetime_unit);
 }
 
 /* License: Ruby's */
@@ -4791,37 +4771,67 @@ gettimeofday(struct timeval *tv, struct timezone *tz)
 }
 
 /* License: Ruby's */
+static void
+filetime_to_timespec(FILETIME ft, struct timespec *sp)
+{
+    long subsec;
+    sp->tv_sec = filetime_split(&ft, &subsec);
+    sp->tv_nsec = subsec * 100;
+}
+
+/* License: Ruby's */
+static const long secs_in_ns = 1000000000;
+
+/* License: Ruby's */
 int
 clock_gettime(clockid_t clock_id, struct timespec *sp)
 {
     switch (clock_id) {
       case CLOCK_REALTIME:
+      case CLOCK_REALTIME_COARSE:
         {
             FILETIME ft;
-            long subsec;
 
             GetSystemTimePreciseAsFileTime(&ft);
-            sp->tv_sec = filetime_split(&ft, &subsec);
-            sp->tv_nsec = subsec * 100;
+            filetime_to_timespec(ft, sp);
             return 0;
         }
       case CLOCK_MONOTONIC:
         {
             LARGE_INTEGER freq;
             LARGE_INTEGER count;
-            if (!QueryPerformanceFrequency(&freq)) {
+            if (UNLIKELY(!QueryPerformanceFrequency(&freq))) {
                 errno = map_errno(GetLastError());
                 return -1;
             }
-            if (!QueryPerformanceCounter(&count)) {
+            if (UNLIKELY(!QueryPerformanceCounter(&count))) {
                 errno = map_errno(GetLastError());
                 return -1;
             }
             sp->tv_sec = count.QuadPart / freq.QuadPart;
-            if (freq.QuadPart < 1000000000)
-                sp->tv_nsec = (count.QuadPart % freq.QuadPart) * 1000000000 / freq.QuadPart;
+            if (freq.QuadPart < secs_in_ns)
+                sp->tv_nsec = (count.QuadPart % freq.QuadPart) * secs_in_ns / freq.QuadPart;
             else
-                sp->tv_nsec = (long)((count.QuadPart % freq.QuadPart) * (1000000000.0 / freq.QuadPart));
+                sp->tv_nsec = (long)((count.QuadPart % freq.QuadPart) * ((double)secs_in_ns / freq.QuadPart));
+            return 0;
+        }
+      case CLOCK_PROCESS_CPUTIME_ID:
+      case CLOCK_THREAD_CPUTIME_ID:
+        {
+            FILETIME_INTEGER c, e, k, u, total;
+            BOOL ok;
+            if (clock_id == CLOCK_PROCESS_CPUTIME_ID) {
+                ok = GetProcessTimes(GetCurrentProcess(), &c.ft, &e.ft, &k.ft, &u.ft);
+            }
+            else {
+                ok = GetThreadTimes(GetCurrentThread(), &c.ft, &e.ft, &k.ft, &u.ft);
+            }
+            if (UNLIKELY(!ok)) {
+                errno = map_errno(GetLastError());
+                return -1;
+            }
+            total.i.QuadPart = k.i.QuadPart + u.i.QuadPart;
+            filetime_to_timespec(total.ft, sp);
             return 0;
         }
       default:
@@ -4836,6 +4846,7 @@ clock_getres(clockid_t clock_id, struct timespec *sp)
 {
     switch (clock_id) {
       case CLOCK_REALTIME:
+      case CLOCK_REALTIME_COARSE:
         {
             sp->tv_sec = 0;
             sp->tv_nsec = 1000;
@@ -4849,7 +4860,15 @@ clock_getres(clockid_t clock_id, struct timespec *sp)
                 return -1;
             }
             sp->tv_sec = 0;
-            sp->tv_nsec = (long)(1000000000.0 / freq.QuadPart);
+            sp->tv_nsec = (long)((double)secs_in_ns / freq.QuadPart);
+            return 0;
+        }
+      case CLOCK_PROCESS_CPUTIME_ID:
+      case CLOCK_THREAD_CPUTIME_ID:
+        {
+            const int frames_in_sec = 60;
+            sp->tv_sec = 0;
+            sp->tv_nsec = (long)(secs_in_ns / frames_in_sec);
             return 0;
         }
       default:
@@ -5738,7 +5757,6 @@ check_valid_dir(const WCHAR *path)
     WIN32_FIND_DATAW fd;
     HANDLE fh;
     WCHAR full[PATH_MAX];
-    WCHAR *dmy;
     WCHAR *p, *q;
 
     /* GetFileAttributes() determines "..." as directory. */
@@ -5754,12 +5772,20 @@ check_valid_dir(const WCHAR *path)
 
     /* if the specified path is the root of a drive and the drive is empty, */
     /* FindFirstFile() returns INVALID_HANDLE_VALUE. */
-    if (!GetFullPathNameW(path, sizeof(full) / sizeof(WCHAR), full, &dmy)) {
+    DWORD len = GetFullPathNameW(path, numberof(full), full, NULL);
+    if (len >= numberof(full)) {
+        WCHAR *fullpath = malloc(len * sizeof(WCHAR));
+        if (!fullpath) return -1;
+        len = GetFullPathNameW(path, len, fullpath, NULL);
+        if (len == 3) MEMCPY(full, fullpath, WCHAR, len+1);
+        free(fullpath);
+    }
+    if (!len) {
         errno = map_errno(GetLastError());
         return -1;
     }
-    if (full[1] == L':' && !full[3] && GetDriveTypeW(full) != DRIVE_NO_ROOT_DIR)
-        return 0;
+    if (len == 3 && full[1] == L':' && GetDriveTypeW(full) != DRIVE_NO_ROOT_DIR)
+        return 0;               /* x:\ only */
 
     fh = open_dir_handle(path, &fd);
     if (fh == INVALID_HANDLE_VALUE)
@@ -5798,8 +5824,11 @@ stat_by_find(const WCHAR *path, struct stati128 *st)
 static int
 path_drive(const WCHAR *path)
 {
-    return (iswalpha(path[0]) && path[1] == L':') ?
-        towupper(path[0]) - L'A' : _getdrive() - 1;
+    if (path[0] && path[1] == L':') {
+        if (iswalpha(path[0])) return towupper(path[0]) - L'A';
+        return (int)path[0];
+    }
+    return _getdrive() - 1;
 }
 
 /* License: Ruby's */
@@ -5808,7 +5837,7 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
 {
     DWORD flags = lstat ? FILE_FLAG_OPEN_REPARSE_POINT : 0;
     HANDLE f;
-    WCHAR finalname[PATH_MAX];
+    WCHAR *finalname = 0;
     int open_error;
 
     memset(st, 0, sizeof(*st));
@@ -5829,7 +5858,6 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
     }
     if (f != INVALID_HANDLE_VALUE) {
         DWORD attr = stati128_handle(f, st);
-        const DWORD len = GetFinalPathNameByHandleW(f, finalname, numberof(finalname), 0);
         unsigned mode = 0;
         switch (GetFileType(f)) {
           case FILE_TYPE_CHAR:
@@ -5839,6 +5867,9 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
             mode = S_IFIFO;
             break;
           default:
+            if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+                if (check_valid_dir(path)) return -1;
+            }
             if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
                 FILE_ATTRIBUTE_TAG_INFO attr_info;
                 DWORD e;
@@ -5859,13 +5890,10 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
                 }
             }
         }
+        const DWORD len = get_handle_pathname(f, &finalname, 0);
         CloseHandle(f);
-        if (attr & FILE_ATTRIBUTE_DIRECTORY) {
-            if (check_valid_dir(path)) return -1;
-        }
         st->st_mode = fileattr_to_unixmode(attr, path, mode);
         if (len) {
-            finalname[min(len, numberof(finalname)-1)] = L'\0';
             path = finalname;
             if (wcsncmp(path, namespace_prefix, numberof(namespace_prefix)) == 0)
                 path += numberof(namespace_prefix);
@@ -5882,6 +5910,7 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
     }
 
     st->st_dev = st->st_rdev = path_drive(path);
+    if (finalname) free(finalname);
 
     return 0;
 }
@@ -6808,46 +6837,53 @@ constat_attr(int count, const int *seq, WORD attr, WORD default_attr, int *rever
           case 1:
             bold = FOREGROUND_INTENSITY;
             break;
+          case 22:
+            bold = 0;
+            break;
           case 4:
 #ifndef COMMON_LVB_UNDERSCORE
 #define COMMON_LVB_UNDERSCORE 0x8000
 #endif
             attr |= COMMON_LVB_UNDERSCORE;
             break;
+          case 24:
+            attr &= ~COMMON_LVB_UNDERSCORE;
+            break;
           case 7:
             rev = 1;
+            break;
+          case 27:
+            rev = 0;
             break;
 
           case 30:
             attr &= ~(FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED);
             break;
-          case 17:
           case 31:
             attr = (attr & ~(FOREGROUND_BLUE | FOREGROUND_GREEN)) | FOREGROUND_RED;
             break;
-          case 18:
           case 32:
             attr = (attr & ~(FOREGROUND_BLUE | FOREGROUND_RED)) | FOREGROUND_GREEN;
             break;
-          case 19:
           case 33:
             attr = (attr & ~FOREGROUND_BLUE) | FOREGROUND_GREEN | FOREGROUND_RED;
             break;
-          case 20:
           case 34:
             attr = (attr & ~(FOREGROUND_GREEN | FOREGROUND_RED)) | FOREGROUND_BLUE;
             break;
-          case 21:
           case 35:
             attr = (attr & ~FOREGROUND_GREEN) | FOREGROUND_BLUE | FOREGROUND_RED;
             break;
-          case 22:
           case 36:
             attr = (attr & ~FOREGROUND_RED) | FOREGROUND_BLUE | FOREGROUND_GREEN;
             break;
-          case 23:
           case 37:
             attr |= FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED;
+            break;
+          case 38: /* 256-color or true color; N/A on old Command Prompt */
+            break;
+          case 39:
+            attr = (attr & ~FOREGROUND_MASK) | (default_attr & FOREGROUND_MASK);
             break;
 
           case 40:
@@ -6873,6 +6909,11 @@ constat_attr(int count, const int *seq, WORD attr, WORD default_attr, int *rever
             break;
           case 47:
             attr |= BACKGROUND_BLUE | BACKGROUND_GREEN | BACKGROUND_RED;
+            break;
+          case 48: /* 256-color or true color; N/A on old Command Prompt */
+            break;
+          case 49:
+            attr = (attr & ~BACKGROUND_MASK) | (default_attr & BACKGROUND_MASK);
             break;
         }
     }
@@ -7558,7 +7599,7 @@ unixtime_to_filetime(time_t time, FILETIME *ft)
 {
     ULARGE_INTEGER tmp;
 
-    tmp.QuadPart = ((LONG_LONG)time + (LONG_LONG)((1970-1601)*365.2425) * 24 * 60 * 60) * 10 * 1000 * 1000;
+    tmp.QuadPart = unix_to_filetime((ULONGLONG)time);
     ft->dwLowDateTime = tmp.LowPart;
     ft->dwHighDateTime = tmp.HighPart;
     return 0;
@@ -7571,7 +7612,7 @@ timespec_to_filetime(const struct timespec *ts, FILETIME *ft)
 {
     ULARGE_INTEGER tmp;
 
-    tmp.QuadPart = ((LONG_LONG)ts->tv_sec + (LONG_LONG)((1970-1601)*365.2425) * 24 * 60 * 60) * 10 * 1000 * 1000;
+    tmp.QuadPart = unix_to_filetime((ULONGLONG)ts->tv_sec);
     tmp.QuadPart += ts->tv_nsec / 100;
     ft->dwLowDateTime = tmp.LowPart;
     ft->dwHighDateTime = tmp.HighPart;

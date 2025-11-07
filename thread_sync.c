@@ -8,6 +8,7 @@ static VALUE rb_eClosedQueueError;
 /* Mutex */
 typedef struct rb_mutex_struct {
     rb_fiber_t *fiber;
+    VALUE thread; // even if the fiber is collected, we might need access to the thread in mutex_free
     struct rb_mutex_struct *next_mutex;
     struct ccan_list_head waitq; /* protected by GVL */
 } rb_mutex_t;
@@ -106,8 +107,6 @@ static const char* rb_mutex_unlock_th(rb_mutex_t *mutex, rb_thread_t *th, rb_fib
  *
  */
 
-#define mutex_mark ((void(*)(void*))0)
-
 static size_t
 rb_mutex_num_waiting(rb_mutex_t *mutex)
 {
@@ -123,13 +122,39 @@ rb_mutex_num_waiting(rb_mutex_t *mutex)
 
 rb_thread_t* rb_fiber_threadptr(const rb_fiber_t *fiber);
 
+static bool
+locked_p(rb_mutex_t *mutex)
+{
+    return mutex->fiber != 0;
+}
+
+static void
+mutex_mark(void *ptr)
+{
+    rb_mutex_t *mutex = ptr;
+    VALUE fiber;
+    if (locked_p(mutex)) {
+        fiber = rb_fiberptr_self(mutex->fiber); // rb_fiber_t* doesn't move along with fiber object
+        if (fiber) rb_gc_mark_movable(fiber);
+        rb_gc_mark_movable(mutex->thread);
+    }
+}
+
+static void
+mutex_compact(void *ptr)
+{
+    rb_mutex_t *mutex = ptr;
+    if (locked_p(mutex)) {
+        mutex->thread = rb_gc_location(mutex->thread);
+    }
+}
+
 static void
 mutex_free(void *ptr)
 {
     rb_mutex_t *mutex = ptr;
-    if (mutex->fiber) {
-        /* rb_warn("free locked mutex"); */
-        const char *err = rb_mutex_unlock_th(mutex, rb_fiber_threadptr(mutex->fiber), mutex->fiber);
+    if (locked_p(mutex)) {
+        const char *err = rb_mutex_unlock_th(mutex, rb_thread_ptr(mutex->thread), mutex->fiber);
         if (err) rb_bug("%s", err);
     }
     ruby_xfree(ptr);
@@ -143,7 +168,7 @@ mutex_memsize(const void *ptr)
 
 static const rb_data_type_t mutex_data_type = {
     "mutex",
-    {mutex_mark, mutex_free, mutex_memsize,},
+    {mutex_mark, mutex_free, mutex_memsize, mutex_compact,},
     0, 0, RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_FREE_IMMEDIATELY
 };
 
@@ -204,12 +229,13 @@ rb_mutex_locked_p(VALUE self)
 {
     rb_mutex_t *mutex = mutex_ptr(self);
 
-    return RBOOL(mutex->fiber);
+    return RBOOL(locked_p(mutex));
 }
 
 static void
 thread_mutex_insert(rb_thread_t *thread, rb_mutex_t *mutex)
 {
+    RUBY_ASSERT(!mutex->next_mutex);
     if (thread->keeping_mutexes) {
         mutex->next_mutex = thread->keeping_mutexes;
     }
@@ -234,10 +260,24 @@ thread_mutex_remove(rb_thread_t *thread, rb_mutex_t *mutex)
 }
 
 static void
-mutex_locked(rb_thread_t *th, VALUE self)
+mutex_set_owner(VALUE self, rb_thread_t *th, rb_fiber_t *fiber)
 {
     rb_mutex_t *mutex = mutex_ptr(self);
 
+    mutex->thread = th->self;
+    mutex->fiber = fiber;
+    RB_OBJ_WRITTEN(self, Qundef, th->self);
+    if (fiber) {
+        RB_OBJ_WRITTEN(self, Qundef, rb_fiberptr_self(fiber));
+    }
+}
+
+static void
+mutex_locked(rb_thread_t *th, rb_fiber_t *fiber, VALUE self)
+{
+    rb_mutex_t *mutex = mutex_ptr(self);
+
+    mutex_set_owner(self, th, fiber);
     thread_mutex_insert(th, mutex);
 }
 
@@ -258,9 +298,8 @@ rb_mutex_trylock(VALUE self)
 
         rb_fiber_t *fiber = GET_EC()->fiber_ptr;
         rb_thread_t *th = GET_THREAD();
-        mutex->fiber = fiber;
 
-        mutex_locked(th, self);
+        mutex_locked(th, fiber, self);
         return Qtrue;
     }
     else {
@@ -328,7 +367,7 @@ do_mutex_lock(VALUE self, int interruptible_p)
                 rb_ensure(call_rb_fiber_scheduler_block, self, delete_from_waitq, (VALUE)&sync_waiter);
 
                 if (!mutex->fiber) {
-                    mutex->fiber = fiber;
+                    mutex_set_owner(self, th, fiber);
                 }
             }
             else {
@@ -358,6 +397,7 @@ do_mutex_lock(VALUE self, int interruptible_p)
                 rb_ractor_sleeper_threads_inc(th->ractor);
                 rb_check_deadlock(th->ractor);
 
+                RUBY_ASSERT(!th->locking_mutex);
                 th->locking_mutex = self;
 
                 ccan_list_add_tail(&mutex->waitq, &sync_waiter.node);
@@ -368,12 +408,11 @@ do_mutex_lock(VALUE self, int interruptible_p)
 
                 // unlocked by another thread while sleeping
                 if (!mutex->fiber) {
-                    mutex->fiber = fiber;
+                    mutex_set_owner(self, th, fiber);
                 }
 
                 rb_ractor_sleeper_threads_dec(th->ractor);
                 th->status = prev_status;
-                th->locking_mutex = Qfalse;
                 th->locking_mutex = Qfalse;
 
                 RUBY_DEBUG_LOG("%p wakeup", mutex);
@@ -382,10 +421,13 @@ do_mutex_lock(VALUE self, int interruptible_p)
             if (interruptible_p) {
                 /* release mutex before checking for interrupts...as interrupt checking
                  * code might call rb_raise() */
-                if (mutex->fiber == fiber) mutex->fiber = 0;
+                if (mutex->fiber == fiber) {
+                    mutex->thread = Qfalse;
+                    mutex->fiber = NULL;
+                }
                 RUBY_VM_CHECK_INTS_BLOCKING(th->ec); /* may release mutex */
                 if (!mutex->fiber) {
-                    mutex->fiber = fiber;
+                    mutex_set_owner(self, th, fiber);
                 }
             }
             else {
@@ -404,7 +446,7 @@ do_mutex_lock(VALUE self, int interruptible_p)
         }
 
         if (saved_ints) th->ec->interrupt_flag = saved_ints;
-        if (mutex->fiber == fiber) mutex_locked(th, self);
+        if (mutex->fiber == fiber) mutex_locked(th, fiber, self);
     }
 
     RUBY_DEBUG_LOG("%p locked", mutex);
@@ -695,12 +737,12 @@ struct rb_szqueue {
 } RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_END();
 
 static void
-queue_mark(void *ptr)
+queue_mark_and_move(void *ptr)
 {
     struct rb_queue *q = ptr;
 
     /* no need to mark threads in waitq, they are on stack */
-    rb_gc_mark(q->que);
+    rb_gc_mark_and_move((VALUE *)UNALIGNED_MEMBER_PTR(q, que));
 }
 
 static size_t
@@ -711,7 +753,7 @@ queue_memsize(const void *ptr)
 
 static const rb_data_type_t queue_data_type = {
     "queue",
-    {queue_mark, RUBY_TYPED_DEFAULT_FREE, queue_memsize,},
+    {queue_mark_and_move, RUBY_TYPED_DEFAULT_FREE, queue_memsize, queue_mark_and_move},
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY|RUBY_TYPED_WB_PROTECTED
 };
 
@@ -771,11 +813,11 @@ queue_timeout2hrtime(VALUE timeout)
 }
 
 static void
-szqueue_mark(void *ptr)
+szqueue_mark_and_move(void *ptr)
 {
     struct rb_szqueue *sq = ptr;
 
-    queue_mark(&sq->q);
+    queue_mark_and_move(&sq->q);
 }
 
 static size_t
@@ -786,7 +828,7 @@ szqueue_memsize(const void *ptr)
 
 static const rb_data_type_t szqueue_data_type = {
     "sized_queue",
-    {szqueue_mark, RUBY_TYPED_DEFAULT_FREE, szqueue_memsize,},
+    {szqueue_mark_and_move, RUBY_TYPED_DEFAULT_FREE, szqueue_memsize, szqueue_mark_and_move},
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY|RUBY_TYPED_WB_PROTECTED
 };
 
@@ -1430,27 +1472,81 @@ struct rb_condvar {
  *
  *  ConditionVariable objects augment class Mutex. Using condition variables,
  *  it is possible to suspend while in the middle of a critical section until a
- *  resource becomes available.
+ *  condition is met, such as a resource becomes available.
+ *
+ *  Due to non-deterministic scheduling and spurious wake-ups, users of
+ *  condition variables should always use a separate boolean predicate (such as
+ *  reading from a boolean variable) to check if the condition is actually met
+ *  before starting to wait, and should wait in a loop, re-checking the
+ *  condition every time the ConditionVariable is waken up.  The idiomatic way
+ *  of using condition variables is calling the +wait+ method in an +until+
+ *  loop with the predicate as the loop condition.
+ *
+ *    condvar.wait(mutex) until condition_is_met
+ *
+ *  In the example below, we use the boolean variable +resource_available+
+ *  (which is protected by +mutex+) to indicate the availability of the
+ *  resource, and use +condvar+ to wait for that variable to become true.  Note
+ *  that:
+ *
+ *  1.  Thread +b+ may be scheduled before thread +a1+ and +a2+, and may run so
+ *      fast that it have already made the resource available before either
+ *      +a1+ or +a2+ starts. Therefore, +a1+ and +a2+ should check if
+ *      +resource_available+ is already true before starting to wait.
+ *  2.  The +wait+ method may spuriously wake up without signalling. Therefore,
+ *      thread +a1+ and +a2+ should recheck +resource_available+ after the
+ *      +wait+ method returns, and go back to wait if the condition is not
+ *      actually met.
+ *  3.  It is possible that thread +a2+ starts right after thread +a1+ is waken
+ *      up by +b+.  Thread +a2+ may have acquired the +mutex+ and consumed the
+ *      resource before thread +a1+ acquires the +mutex+.  This necessitates
+ *      rechecking after +wait+, too.
  *
  *  Example:
  *
  *    mutex = Thread::Mutex.new
- *    resource = Thread::ConditionVariable.new
  *
- *    a = Thread.new {
- *	 mutex.synchronize {
- *	   # Thread 'a' now needs the resource
- *	   resource.wait(mutex)
- *	   # 'a' can now have the resource
- *	 }
+ *    resource_available = false
+ *    condvar = Thread::ConditionVariable.new
+ *
+ *    a1 = Thread.new {
+ *      # Thread 'a1' waits for the resource to become available and consumes
+ *      # the resource.
+ *      mutex.synchronize {
+ *        condvar.wait(mutex) until resource_available
+ *        # After the loop, 'resource_available' is guaranteed to be true.
+ *
+ *        resource_available = false
+ *        puts "a1 consumed the resource"
+ *      }
+ *    }
+ *
+ *    a2 = Thread.new {
+ *      # Thread 'a2' behaves like 'a1'.
+ *      mutex.synchronize {
+ *        condvar.wait(mutex) until resource_available
+ *        resource_available = false
+ *        puts "a2 consumed the resource"
+ *      }
  *    }
  *
  *    b = Thread.new {
- *	 mutex.synchronize {
- *	   # Thread 'b' has finished using the resource
- *	   resource.signal
- *	 }
+ *      # Thread 'b' periodically makes the resource available.
+ *      loop {
+ *        mutex.synchronize {
+ *          resource_available = true
+ *
+ *          # Notify one waiting thread if any.  It is possible that neither
+ *          # 'a1' nor 'a2 is waiting on 'condvar' at this moment.  That's OK.
+ *          condvar.signal
+ *        }
+ *        sleep 1
+ *      }
  *    }
+ *
+ *    # Eventually both 'a1' and 'a2' will have their resources, albeit in an
+ *    # unspecified order.
+ *    [a1, a2].each {|th| th.join}
  */
 
 static size_t
@@ -1530,6 +1626,8 @@ do_sleep(VALUE args)
  *
  * If +timeout+ is given, this method returns after +timeout+ seconds passed,
  * even if no other thread doesn't signal.
+ *
+ * This method may wake up spuriously due to underlying implementation details.
  *
  * Returns the slept result on +mutex+.
  */

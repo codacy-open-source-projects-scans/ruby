@@ -199,6 +199,9 @@ class Gem::BasicSpecification
     File.expand_path(File.join(gems_dir, full_name, "data", name))
   end
 
+  extend Gem::Deprecate
+  rubygems_deprecate :datadir, :none, "4.1"
+
   ##
   # Full path of the target library file.
   # If the file is not in this gem, return nil.
@@ -254,6 +257,13 @@ class Gem::BasicSpecification
 
   def platform
     raise NotImplementedError
+  end
+
+  def installable_on_platform?(target_platform) # :nodoc:
+    return true if [Gem::Platform::RUBY, nil, target_platform].include?(platform)
+    return true if Gem::Platform.new(platform) === target_platform
+
+    false
   end
 
   def raw_require_paths # :nodoc:

@@ -11,7 +11,7 @@ RSpec.describe "bundle install with specific platforms" do
       setup_multiplatform_gem
       install_gemfile(google_protobuf)
       allow(Bundler::SharedHelpers).to receive(:find_gemfile).and_return(bundled_app_gemfile)
-      expect(the_bundle.locked_gems.platforms).to include(pl("x86_64-darwin-15"))
+      expect(the_bundle.locked_platforms).to include("universal-darwin")
       expect(the_bundle).to include_gem("google-protobuf 3.0.0.alpha.5.0.5.1 universal-darwin")
       expect(the_bundle.locked_gems.specs.map(&:full_name)).to include(
         "google-protobuf-3.0.0.alpha.5.0.5.1-universal-darwin"
@@ -91,7 +91,7 @@ RSpec.describe "bundle install with specific platforms" do
            #{Bundler::VERSION}
       L
 
-      # force strict usage of the lock file by setting frozen mode
+      # force strict usage of the lockfile by setting frozen mode
       bundle "config set --local frozen true"
 
       # make sure the platform that got actually installed with the old bundler is used
@@ -336,7 +336,6 @@ RSpec.describe "bundle install with specific platforms" do
          #{Bundler::VERSION}
     L
 
-    bundle "config set --local cache_all true"
     bundle "cache --all-platforms"
 
     expect(err).to be_empty
@@ -351,7 +350,7 @@ RSpec.describe "bundle install with specific platforms" do
       G
       allow(Bundler::SharedHelpers).to receive(:find_gemfile).and_return(bundled_app_gemfile)
 
-      expect(the_bundle.locked_gems.platforms).to include(pl("x86_64-darwin-15"))
+      expect(the_bundle.locked_platforms).to include("universal-darwin")
       expect(the_bundle).to include_gems("facter 2.4.6 universal-darwin", "CFPropertyList 1.0")
       expect(the_bundle.locked_gems.specs.map(&:full_name)).to include("CFPropertyList-1.0",
                                                                        "facter-2.4.6-universal-darwin")
@@ -367,12 +366,12 @@ RSpec.describe "bundle install with specific platforms" do
       simulate_platform "x86_64-darwin-15" do
         setup_multiplatform_gem
         install_gemfile(google_protobuf)
-        bundle "lock --add-platform=#{x64_mingw32}"
+        bundle "lock --add-platform=x64-mingw-ucrt"
 
-        expect(the_bundle.locked_gems.platforms).to include(x64_mingw32, pl("x86_64-darwin-15"))
+        expect(the_bundle.locked_platforms).to include("x64-mingw-ucrt", "universal-darwin")
         expect(the_bundle.locked_gems.specs.map(&:full_name)).to include(*%w[
           google-protobuf-3.0.0.alpha.5.0.5.1-universal-darwin
-          google-protobuf-3.0.0.alpha.5.0.5.1-x64-mingw32
+          google-protobuf-3.0.0.alpha.5.0.5.1-x64-mingw-ucrt
         ])
       end
     end
@@ -381,9 +380,9 @@ RSpec.describe "bundle install with specific platforms" do
       simulate_platform "x86_64-darwin-15" do
         setup_multiplatform_gem
         install_gemfile(google_protobuf)
-        bundle "lock --add-platform=#{java}"
+        bundle "lock --add-platform=java"
 
-        expect(the_bundle.locked_gems.platforms).to include(java, pl("x86_64-darwin-15"))
+        expect(the_bundle.locked_platforms).to include("java", "universal-darwin")
         expect(the_bundle.locked_gems.specs.map(&:full_name)).to include(
           "google-protobuf-3.0.0.alpha.5.0.5.1",
           "google-protobuf-3.0.0.alpha.5.0.5.1-universal-darwin"
@@ -392,7 +391,23 @@ RSpec.describe "bundle install with specific platforms" do
     end
   end
 
-  it "installs sorbet-static, which does not provide a pure ruby variant, just fine", :truffleruby do
+  it "installs sorbet-static, which does not provide a pure ruby variant, in absence of a lockfile, just fine", :truffleruby do
+    skip "does not apply to Windows" if Gem.win_platform?
+
+    build_repo2 do
+      build_gem("sorbet-static", "0.5.6403") {|s| s.platform = Bundler.local_platform }
+    end
+
+    gemfile <<~G
+      source "https://gem.repo2"
+
+      gem "sorbet-static", "0.5.6403"
+    G
+
+    bundle "install --verbose"
+  end
+
+  it "installs sorbet-static, which does not provide a pure ruby variant, in presence of a lockfile, just fine", :truffleruby do
     skip "does not apply to Windows" if Gem.win_platform?
 
     build_repo2 do
@@ -752,6 +767,80 @@ RSpec.describe "bundle install with specific platforms" do
     L
   end
 
+  it "automatically fixes the lockfile when adding a gem that introduces dependencies with no ruby platform variants transitively" do
+    simulate_platform "x86_64-linux" do
+      build_repo4 do
+        build_gem "nokogiri", "1.18.2"
+
+        build_gem "nokogiri", "1.18.2" do |s|
+          s.platform = "x86_64-linux"
+        end
+
+        build_gem("sorbet", "0.5.11835") do |s|
+          s.add_dependency "sorbet-static", "= 0.5.11835"
+        end
+
+        build_gem "sorbet-static", "0.5.11835" do |s|
+          s.platform = "x86_64-linux"
+        end
+      end
+
+      gemfile <<~G
+        source "https://gem.repo4"
+
+        gem "nokogiri"
+        gem "sorbet"
+      G
+
+      lockfile <<~L
+        GEM
+          remote: https://gem.repo4/
+          specs:
+            nokogiri (1.18.2)
+            nokogiri (1.18.2-x86_64-linux)
+
+        PLATFORMS
+          ruby
+          x86_64-linux
+
+        DEPENDENCIES
+          nokogiri
+
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
+
+      bundle "lock"
+
+      checksums = checksums_section_when_enabled do |c|
+        c.checksum gem_repo4, "nokogiri", "1.18.2", "x86_64-linux"
+        c.checksum gem_repo4, "sorbet", "0.5.11835"
+        c.checksum gem_repo4, "sorbet-static", "0.5.11835", "x86_64-linux"
+      end
+
+      expect(lockfile).to eq <<~L
+        GEM
+          remote: https://gem.repo4/
+          specs:
+            nokogiri (1.18.2)
+            nokogiri (1.18.2-x86_64-linux)
+            sorbet (0.5.11835)
+              sorbet-static (= 0.5.11835)
+            sorbet-static (0.5.11835-x86_64-linux)
+
+        PLATFORMS
+          x86_64-linux
+
+        DEPENDENCIES
+          nokogiri
+          sorbet
+        #{checksums}
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
+    end
+  end
+
   it "automatically fixes the lockfile if multiple platforms locked, but no valid versions of direct dependencies for all of them" do
     simulate_platform "x86_64-linux" do
       build_repo4 do
@@ -1000,7 +1089,7 @@ RSpec.describe "bundle install with specific platforms" do
 
       gem "nokogiri"
 
-      gem "tzinfo", "~> 1.2", platforms: %i[mingw mswin x64_mingw jruby]
+      gem "tzinfo", "~> 1.2", platforms: %i[windows jruby]
     G
 
     checksums = checksums_section_when_enabled do |c|
@@ -1077,7 +1166,7 @@ RSpec.describe "bundle install with specific platforms" do
           myrack (3.0.7)
 
       PLATFORMS
-        #{lockfile_platforms("ruby", generic_local_platform, defaults: [])}
+        #{lockfile_platforms(generic_default_locked_platform || local_platform, defaults: ["ruby"])}
 
       DEPENDENCIES
         concurrent-ruby
@@ -1121,7 +1210,7 @@ RSpec.describe "bundle install with specific platforms" do
     bundle :install
   end
 
-  it "automatically fixes the lockfile if the specific platform is locked and we move to a newer ruby version for which a native package is not available" do
+  it "automatically adds the ruby variant to the lockfile if the specific platform is locked and we move to a newer ruby version for which a native package is not available" do
     #
     # Given an existing application using native gems (e.g., nokogiri)
     # And a lockfile generated with a stable ruby version
@@ -1167,6 +1256,7 @@ RSpec.describe "bundle install with specific platforms" do
 
       checksums = checksums_section_when_enabled do |c|
         c.checksum gem_repo4, "nokogiri", "1.14.0"
+        c.checksum gem_repo4, "nokogiri", "1.14.0", "x86_64-linux"
       end
 
       expect(lockfile).to eq(<<~L)
@@ -1174,6 +1264,7 @@ RSpec.describe "bundle install with specific platforms" do
           remote: https://gem.repo4/
           specs:
             nokogiri (1.14.0)
+            nokogiri (1.14.0-x86_64-linux)
 
         PLATFORMS
           x86_64-linux
@@ -1252,7 +1343,7 @@ RSpec.describe "bundle install with specific platforms" do
           s.platform = "arm-linux"
         end
         build_gem "nokogiri", "1.14.0" do |s|
-          s.platform = "x64-mingw32"
+          s.platform = "x64-mingw-ucrt"
         end
         build_gem "nokogiri", "1.14.0" do |s|
           s.platform = "java"
@@ -1340,7 +1431,7 @@ RSpec.describe "bundle install with specific platforms" do
     end
   end
 
-  it "does not fail when a platform variant is incompatible with the current ruby and another equivalent platform specific variant is part of the resolution", rubygems: ">= 3.3.21" do
+  it "does not fail when a platform variant is incompatible with the current ruby and another equivalent platform specific variant is part of the resolution" do
     build_repo4 do
       build_gem "nokogiri", "1.15.5"
 
@@ -1486,7 +1577,7 @@ RSpec.describe "bundle install with specific platforms" do
     end
   end
 
-  it "adds current musl platform, when there are also gnu variants", rubygems: ">= 3.3.21" do
+  it "adds current musl platform, when there are also gnu variants" do
     build_repo4 do
       build_gem "rcee_precompiled", "0.5.0" do |s|
         s.platform = "x86_64-linux-gnu"
@@ -1699,17 +1790,59 @@ RSpec.describe "bundle install with specific platforms" do
     end
   end
 
+  it "does not remove platform specific gems from lockfile when using a ruby version that does not match their ruby requirements, since they may be useful in other rubies" do
+    build_repo4 do
+      build_gem("google-protobuf", "3.25.5")
+      build_gem("google-protobuf", "3.25.5") do |s|
+        s.required_ruby_version = "< #{current_ruby_minor}.dev"
+        s.platform = "x86_64-linux"
+      end
+    end
+
+    gemfile <<~G
+      source "https://gem.repo4"
+
+      gem "google-protobuf", "~> 3.0"
+    G
+
+    original_lockfile = <<~L
+      GEM
+        remote: https://gem.repo4/
+        specs:
+          google-protobuf (3.25.5)
+          google-protobuf (3.25.5-x86_64-linux)
+
+      PLATFORMS
+        ruby
+        x86_64-linux
+
+      DEPENDENCIES
+        google-protobuf (~> 3.0)
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    L
+
+    lockfile original_lockfile
+
+    simulate_platform "x86_64-linux" do
+      bundle "lock --update"
+    end
+
+    expect(lockfile).to eq(original_lockfile)
+  end
+
   private
 
   def setup_multiplatform_gem
     build_repo2 do
       build_gem("google-protobuf", "3.0.0.alpha.5.0.5.1")
       build_gem("google-protobuf", "3.0.0.alpha.5.0.5.1") {|s| s.platform = "x86_64-linux" }
-      build_gem("google-protobuf", "3.0.0.alpha.5.0.5.1") {|s| s.platform = "x64-mingw32" }
+      build_gem("google-protobuf", "3.0.0.alpha.5.0.5.1") {|s| s.platform = "x64-mingw-ucrt" }
       build_gem("google-protobuf", "3.0.0.alpha.5.0.5.1") {|s| s.platform = "universal-darwin" }
 
       build_gem("google-protobuf", "3.0.0.alpha.5.0.5") {|s| s.platform = "x86_64-linux" }
-      build_gem("google-protobuf", "3.0.0.alpha.5.0.5") {|s| s.platform = "x64-mingw32" }
+      build_gem("google-protobuf", "3.0.0.alpha.5.0.5") {|s| s.platform = "x64-mingw-ucrt" }
       build_gem("google-protobuf", "3.0.0.alpha.5.0.5")
 
       build_gem("google-protobuf", "3.0.0.alpha.5.0.4") {|s| s.platform = "universal-darwin" }

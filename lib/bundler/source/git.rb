@@ -238,7 +238,7 @@ module Bundler
       # across different projects, this cache will be shared.
       # When using local git repos, this is set to the local repo.
       def cache_path
-        @cache_path ||= if Bundler.feature_flag.global_gem_cache?
+        @cache_path ||= if Bundler.settings[:global_gem_cache]
           Bundler.user_cache
         else
           Bundler.bundle_path.join("cache", "bundler")
@@ -268,7 +268,7 @@ module Bundler
       private
 
       def cache_to(custom_path, try_migrate: false)
-        return unless Bundler.feature_flag.cache_all?
+        return unless Bundler.settings[:cache_all]
 
         app_cache_path = app_cache_path(custom_path)
 
@@ -282,6 +282,7 @@ module Bundler
         FileUtils.rm_rf(app_cache_path)
         git_proxy.checkout if migrate || requires_checkout?
         git_proxy.copy_to(app_cache_path, @submodules)
+        serialize_gemspecs_in(app_cache_path)
       end
 
       def checkout
@@ -359,7 +360,11 @@ module Bundler
       end
 
       def locked_revision_checked_out?
-        locked_revision && locked_revision == revision && install_path.exist?
+        locked_revision && locked_revision == revision && installed?
+      end
+
+      def installed?
+        git_proxy.installed_to?(install_path)
       end
 
       def base_name
@@ -411,7 +416,6 @@ module Bundler
       def fetch
         git_proxy.checkout
       rescue GitError => e
-        raise unless Bundler.feature_flag.allow_offline_install?
         Bundler.ui.warn "Using cached git data because of network errors:\n#{e}"
       end
 

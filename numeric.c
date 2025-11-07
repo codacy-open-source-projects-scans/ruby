@@ -829,7 +829,7 @@ rb_int_zero_p(VALUE num)
  *  Of the Core and Standard Library classes,
  *  Integer, Float, Rational, and Complex use this implementation.
  *
- * Related: #zero?
+ *  Related: #zero?
  *
  */
 
@@ -926,11 +926,11 @@ num_negative_p(VALUE num)
  *
  *  You can convert certain objects to Floats with:
  *
- *  - \Method #Float.
+ *  - Method #Float.
  *
  *  == What's Here
  *
- *  First, what's elsewhere. \Class \Float:
+ *  First, what's elsewhere. Class \Float:
  *
  *  - Inherits from
  *    {class Numeric}[rdoc-ref:Numeric@What-27s+Here]
@@ -1521,7 +1521,7 @@ rb_float_pow(VALUE x, VALUE y)
  *    1.eql?(Rational(1, 1)) # => false
  *    1.eql?(Complex(1, 0))  # => false
  *
- *  \Method +eql?+ is different from <tt>==</tt> in that +eql?+ requires matching types,
+ *  Method +eql?+ is different from <tt>==</tt> in that +eql?+ requires matching types,
  *  while <tt>==</tt> does not.
  *
  */
@@ -3539,14 +3539,14 @@ rb_num2ull(VALUE val)
  *
  * You can convert certain objects to Integers with:
  *
- * - \Method #Integer.
+ * - Method #Integer.
  *
  * An attempt to add a singleton method to an instance of this class
  * causes an exception to be raised.
  *
  * == What's Here
  *
- * First, what's elsewhere. \Class \Integer:
+ * First, what's elsewhere. Class \Integer:
  *
  * - Inherits from
  *   {class Numeric}[rdoc-ref:Numeric@What-27s+Here]
@@ -5115,8 +5115,8 @@ fix_xor(VALUE x, VALUE y)
  *
  */
 
-static VALUE
-int_xor(VALUE x, VALUE y)
+VALUE
+rb_int_xor(VALUE x, VALUE y)
 {
     if (FIXNUM_P(x)) {
         return fix_xor(x, y);
@@ -5289,9 +5289,22 @@ generate_mask(VALUE len)
 }
 
 static VALUE
+int_aref2(VALUE num, VALUE beg, VALUE len)
+{
+    if (RB_TYPE_P(num, T_BIGNUM)) {
+        return rb_big_aref2(num, beg, len);
+    }
+    else {
+        num = rb_int_rshift(num, beg);
+        VALUE mask = generate_mask(len);
+        return rb_int_and(num, mask);
+    }
+}
+
+static VALUE
 int_aref1(VALUE num, VALUE arg)
 {
-    VALUE orig_num = num, beg, end;
+    VALUE beg, end;
     int excl;
 
     if (rb_range_values(arg, &beg, &end, &excl)) {
@@ -5311,22 +5324,19 @@ int_aref1(VALUE num, VALUE arg)
                 return INT2FIX(0);
             }
         }
-        num = rb_int_rshift(num, beg);
 
         int cmp = compare_indexes(beg, end);
         if (!NIL_P(end) && cmp < 0) {
             VALUE len = rb_int_minus(end, beg);
             if (!excl) len = rb_int_plus(len, INT2FIX(1));
-            VALUE mask = generate_mask(len);
-            num = rb_int_and(num, mask);
+            return int_aref2(num, beg, len);
         }
         else if (cmp == 0) {
             if (excl) return INT2FIX(0);
-            num = orig_num;
             arg = beg;
             goto one_bit;
         }
-        return num;
+        return rb_int_rshift(num, beg);
     }
 
 one_bit:
@@ -5337,15 +5347,6 @@ one_bit:
         return rb_big_aref(num, arg);
     }
     return Qnil;
-}
-
-static VALUE
-int_aref2(VALUE num, VALUE beg, VALUE len)
-{
-    num = rb_int_rshift(num, beg);
-    VALUE mask = generate_mask(len);
-    num = rb_int_and(num, mask);
-    return num;
 }
 
 /*
@@ -5978,7 +5979,11 @@ prefix##_isqrt(argtype n) \
         while ((t = n/x) < (argtype)x) x = (rettype)((x + t) >> 1); \
         return x; \
     } \
-    return (rettype)sqrt(argtype##_TO_DOUBLE(n)); \
+    rettype x = (rettype)sqrt(argtype##_TO_DOUBLE(n)); \
+    /* libm sqrt may returns a larger approximation than actual. */ \
+    /* Our isqrt always returns a smaller approximation. */ \
+    if (x * x > n) x--; \
+    return x; \
 }
 
 #if SIZEOF_LONG*CHAR_BIT > DBL_MANT_DIG
@@ -6190,7 +6195,7 @@ int_s_try_convert(VALUE self, VALUE num)
  *
  * == What's Here
  *
- * First, what's elsewhere. \Class \Numeric:
+ * First, what's elsewhere. Class \Numeric:
  *
  * - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
  * - Includes {module Comparable}[rdoc-ref:Comparable@What-27s+Here].
@@ -6362,7 +6367,7 @@ Init_Numeric(void)
 
     rb_define_method(rb_cInteger, "&", rb_int_and, 1);
     rb_define_method(rb_cInteger, "|", int_or,  1);
-    rb_define_method(rb_cInteger, "^", int_xor, 1);
+    rb_define_method(rb_cInteger, "^", rb_int_xor, 1);
     rb_define_method(rb_cInteger, "[]", int_aref, -1);
 
     rb_define_method(rb_cInteger, "<<", rb_int_lshift, 1);
@@ -6450,7 +6455,7 @@ Init_Numeric(void)
      *
      *	If the platform supports denormalized numbers,
      *	there are numbers between zero and Float::MIN.
-     *	0.0.next_float returns the smallest positive floating point number
+     *	+0.0.next_float+ returns the smallest positive floating point number
      *	including denormalized numbers.
      */
     rb_define_const(rb_cFloat, "MIN", DBL2NUM(DBL_MIN));

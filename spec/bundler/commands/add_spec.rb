@@ -88,25 +88,25 @@ RSpec.describe "bundle add" do
   describe "with --require" do
     it "adds the require param for the gem" do
       bundle "add 'foo' --require=foo/engine"
-      expect(bundled_app_gemfile.read).to match(%r{gem "foo",(?: .*,) :require => "foo\/engine"})
+      expect(bundled_app_gemfile.read).to match(%r{gem "foo",(?: .*,) require: "foo\/engine"})
     end
 
     it "converts false to a boolean" do
       bundle "add 'foo' --require=false"
-      expect(bundled_app_gemfile.read).to match(/gem "foo",(?: .*,) :require => false/)
+      expect(bundled_app_gemfile.read).to match(/gem "foo",(?: .*,) require: false/)
     end
   end
 
   describe "with --group" do
     it "adds dependency for the specified group" do
       bundle "add 'foo' --group='development'"
-      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", :group => :development/)
+      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", group: :development/)
       expect(the_bundle).to include_gems "foo 2.0"
     end
 
     it "adds dependency to more than one group" do
       bundle "add 'foo' --group='development, test'"
-      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", :groups => \[:development, :test\]/)
+      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", groups: \[:development, :test\]/)
       expect(the_bundle).to include_gems "foo 2.0"
     end
   end
@@ -115,7 +115,7 @@ RSpec.describe "bundle add" do
     it "adds dependency with specified source" do
       bundle "add 'foo' --source='https://gem.repo2'"
 
-      expect(bundled_app_gemfile.read).to match(%r{gem "foo", "~> 2.0", :source => "https://gem.repo2"})
+      expect(bundled_app_gemfile.read).to match(%r{gem "foo", "~> 2.0", source: "https://gem.repo2"})
       expect(the_bundle).to include_gems "foo 2.0"
     end
   end
@@ -124,7 +124,7 @@ RSpec.describe "bundle add" do
     it "adds dependency with specified path" do
       bundle "add 'foo' --path='#{lib_path("foo-2.0")}'"
 
-      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", :path => "#{lib_path("foo-2.0")}"/)
+      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", path: "#{lib_path("foo-2.0")}"/)
       expect(the_bundle).to include_gems "foo 2.0"
     end
   end
@@ -133,7 +133,7 @@ RSpec.describe "bundle add" do
     it "adds dependency with specified git source" do
       bundle "add foo --git=#{lib_path("foo-2.0")}"
 
-      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", :git => "#{lib_path("foo-2.0")}"/)
+      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", git: "#{lib_path("foo-2.0")}"/)
       expect(the_bundle).to include_gems "foo 2.0"
     end
   end
@@ -146,7 +146,7 @@ RSpec.describe "bundle add" do
     it "adds dependency with specified git source and branch" do
       bundle "add foo --git=#{lib_path("foo-2.0")} --branch=test"
 
-      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", :git => "#{lib_path("foo-2.0")}", :branch => "test"/)
+      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2.0", git: "#{lib_path("foo-2.0")}", branch: "test"/)
       expect(the_bundle).to include_gems "foo 2.0"
     end
   end
@@ -155,32 +155,53 @@ RSpec.describe "bundle add" do
     it "adds dependency with specified git source and branch" do
       bundle "add foo --git=#{lib_path("foo-2.0")} --ref=#{revision_for(lib_path("foo-2.0"))}"
 
-      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2\.0", :git => "#{lib_path("foo-2.0")}", :ref => "#{revision_for(lib_path("foo-2.0"))}"/)
+      expect(bundled_app_gemfile.read).to match(/gem "foo", "~> 2\.0", git: "#{lib_path("foo-2.0")}", ref: "#{revision_for(lib_path("foo-2.0"))}"/)
       expect(the_bundle).to include_gems "foo 2.0"
     end
   end
 
   describe "with --github" do
+    before do
+      build_git "rake", "13.0"
+      git("config --global url.file://#{lib_path("rake-13.0")}.insteadOf https://github.com/ruby/rake.git")
+    end
+
     it "adds dependency with specified github source" do
       bundle "add rake --github=ruby/rake"
 
-      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", :github => "ruby\/rake"})
+      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", github: "ruby\/rake"})
     end
-  end
 
-  describe "with --github and --branch" do
     it "adds dependency with specified github source and branch" do
-      bundle "add rake --github=ruby/rake --branch=master"
+      bundle "add rake --github=ruby/rake --branch=main"
 
-      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", :github => "ruby\/rake", :branch => "master"})
+      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", github: "ruby\/rake", branch: "main"})
     end
-  end
 
-  describe "with --github and --ref" do
     it "adds dependency with specified github source and ref" do
-      bundle "add rake --github=ruby/rake --ref=5c60da8"
+      ref = revision_for(lib_path("rake-13.0"))
+      bundle "add rake --github=ruby/rake --ref=#{ref}"
 
-      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", :github => "ruby\/rake", :ref => "5c60da8"})
+      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", github: "ruby\/rake", ref: "#{ref}"})
+    end
+
+    it "adds dependency with specified github source and glob" do
+      bundle "add rake --github=ruby/rake --glob='./*.gemspec'"
+
+      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", github: "ruby\/rake", glob: "\.\/\*\.gemspec"})
+    end
+
+    it "adds dependency with specified github source, branch and glob" do
+      bundle "add rake --github=ruby/rake --branch=main --glob='./*.gemspec'"
+
+      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", github: "ruby\/rake", branch: "main", glob: "\.\/\*\.gemspec"})
+    end
+
+    it "adds dependency with specified github source, ref and glob" do
+      ref = revision_for(lib_path("rake-13.0"))
+      bundle "add rake --github=ruby/rake --ref=#{ref} --glob='./*.gemspec'"
+
+      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", github: "ruby\/rake", ref: "#{ref}", glob: "\.\/\*\.gemspec"})
     end
   end
 
@@ -188,7 +209,7 @@ RSpec.describe "bundle add" do
     it "adds dependency with specified git source" do
       bundle "add foo --git=#{lib_path("foo-2.0")} --glob='./*.gemspec'"
 
-      expect(bundled_app_gemfile.read).to match(%r{gem "foo", "~> 2.0", :git => "#{lib_path("foo-2.0")}", :glob => "\./\*\.gemspec"})
+      expect(bundled_app_gemfile.read).to match(%r{gem "foo", "~> 2.0", git: "#{lib_path("foo-2.0")}", glob: "\./\*\.gemspec"})
       expect(the_bundle).to include_gems "foo 2.0"
     end
   end
@@ -201,7 +222,7 @@ RSpec.describe "bundle add" do
     it "adds dependency with specified git source and branch" do
       bundle "add foo --git=#{lib_path("foo-2.0")} --branch=test --glob='./*.gemspec'"
 
-      expect(bundled_app_gemfile.read).to match(%r{gem "foo", "~> 2.0", :git => "#{lib_path("foo-2.0")}", :branch => "test", :glob => "\./\*\.gemspec"})
+      expect(bundled_app_gemfile.read).to match(%r{gem "foo", "~> 2.0", git: "#{lib_path("foo-2.0")}", branch: "test", glob: "\./\*\.gemspec"})
       expect(the_bundle).to include_gems "foo 2.0"
     end
   end
@@ -210,32 +231,8 @@ RSpec.describe "bundle add" do
     it "adds dependency with specified git source and branch" do
       bundle "add foo --git=#{lib_path("foo-2.0")} --ref=#{revision_for(lib_path("foo-2.0"))} --glob='./*.gemspec'"
 
-      expect(bundled_app_gemfile.read).to match(%r{gem "foo", "~> 2\.0", :git => "#{lib_path("foo-2.0")}", :ref => "#{revision_for(lib_path("foo-2.0"))}", :glob => "\./\*\.gemspec"})
+      expect(bundled_app_gemfile.read).to match(%r{gem "foo", "~> 2\.0", git: "#{lib_path("foo-2.0")}", ref: "#{revision_for(lib_path("foo-2.0"))}", glob: "\./\*\.gemspec"})
       expect(the_bundle).to include_gems "foo 2.0"
-    end
-  end
-
-  describe "with --github and --glob" do
-    it "adds dependency with specified github source" do
-      bundle "add rake --github=ruby/rake --glob='./*.gemspec'"
-
-      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", :github => "ruby\/rake", :glob => "\.\/\*\.gemspec"})
-    end
-  end
-
-  describe "with --github and --branch --and glob" do
-    it "adds dependency with specified github source and branch" do
-      bundle "add rake --github=ruby/rake --branch=master --glob='./*.gemspec'"
-
-      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", :github => "ruby\/rake", :branch => "master", :glob => "\.\/\*\.gemspec"})
-    end
-  end
-
-  describe "with --github and --ref and --glob" do
-    it "adds dependency with specified github source and ref" do
-      bundle "add rake --github=ruby/rake --ref=5c60da8 --glob='./*.gemspec'"
-
-      expect(bundled_app_gemfile.read).to match(%r{gem "rake", "~> 13\.\d+", :github => "ruby\/rake", :ref => "5c60da8", :glob => "\.\/\*\.gemspec"})
     end
   end
 
@@ -250,7 +247,7 @@ RSpec.describe "bundle add" do
 
   it "using combination of short form options works like long form" do
     bundle "add 'foo' -s='https://gem.repo2' -g='development' -v='~>1.0'"
-    expect(bundled_app_gemfile.read).to include %(gem "foo", "~> 1.0", :group => :development, :source => "https://gem.repo2")
+    expect(bundled_app_gemfile.read).to include %(gem "foo", "~> 1.0", group: :development, source: "https://gem.repo2")
     expect(the_bundle).to include_gems "foo 1.1"
   end
 

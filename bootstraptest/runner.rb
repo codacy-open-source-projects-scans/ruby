@@ -163,7 +163,7 @@ def main
   BT.tty = nil
   BT.quiet = false
   BT.timeout = 180
-  BT.timeout_scale = (defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled? ? 3 : 1) # for --jit-wait
+  BT.timeout_scale = 1
   if (ts = (ENV["RUBY_TEST_TIMEOUT_SCALE"] || ENV["RUBY_TEST_SUBPROCESS_TIMEOUT_SCALE"]).to_i) > 1
     BT.timeout_scale *= ts
   end
@@ -412,7 +412,7 @@ module Launchable
           }
         )
         @@duration = 0
-        @@failure_log.clear
+        @@failure_log = ''
       end
       @@last_test_name = relative_path
       @@duration += t
@@ -625,6 +625,8 @@ class Assertion < Struct.new(:src, :path, :lineno, :proc)
     end
   end
 
+  class Timeout < StandardError; end
+
   def get_result_string(opt = '', timeout: BT.timeout, **argh)
     if BT.ruby
       timeout = BT.apply_timeout_scale(timeout)
@@ -634,7 +636,11 @@ class Assertion < Struct.new(:src, :path, :lineno, :proc)
         out = IO.popen("#{BT.ruby} -W0 #{opt} #{filename}", **kw)
         pid = out.pid
         th = Thread.new {out.read.tap {Process.waitpid(pid); out.close}}
-        th.value if th.join(timeout)
+        if th.join(timeout)
+          th.value
+        else
+          Timeout.new("timed out after #{timeout} seconds")
+        end
       ensure
         raise Interrupt if $? and $?.signaled? && $?.termsig == Signal.list["INT"]
 
@@ -891,9 +897,8 @@ def yjit_enabled?
   ENV.key?('RUBY_YJIT_ENABLE') || ENV.fetch('RUN_OPTS', '').include?('yjit') || BT.ruby.include?('yjit')
 end
 
-def rjit_enabled?
-  # Don't check `RubyVM::RJIT.enabled?`. On btest-bruby, target Ruby != runner Ruby.
-  ENV.fetch('RUN_OPTS', '').include?('rjit')
+def zjit_enabled?
+  ENV.key?('RUBY_ZJIT_ENABLE') || ENV.fetch('RUN_OPTS', '').include?('zjit') || BT.ruby.include?('zjit')
 end
 
 exit main

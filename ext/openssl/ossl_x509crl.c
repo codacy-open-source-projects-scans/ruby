@@ -64,8 +64,9 @@ ossl_x509crl_new(X509_CRL *crl)
     VALUE obj;
 
     obj = NewX509CRL(cX509CRL);
-    tmp = crl ? X509_CRL_dup(crl) : X509_CRL_new();
-    if(!tmp) ossl_raise(eX509CRLError, NULL);
+    tmp = X509_CRL_dup(crl);
+    if (!tmp)
+        ossl_raise(eX509CRLError, "X509_CRL_dup");
     SetX509CRL(obj, tmp);
 
     return obj;
@@ -117,6 +118,7 @@ ossl_x509crl_initialize(int argc, VALUE *argv, VALUE self)
     return self;
 }
 
+/* :nodoc: */
 static VALUE
 ossl_x509crl_copy(VALUE self, VALUE other)
 {
@@ -169,6 +171,7 @@ ossl_x509crl_get_signature_algorithm(VALUE self)
 {
     X509_CRL *crl;
     const X509_ALGOR *alg;
+    const ASN1_OBJECT *obj;
     BIO *out;
 
     GetX509CRL(self, crl);
@@ -176,7 +179,8 @@ ossl_x509crl_get_signature_algorithm(VALUE self)
 	ossl_raise(eX509CRLError, NULL);
     }
     X509_CRL_get0_signature(crl, NULL, &alg);
-    if (!i2a_ASN1_OBJECT(out, alg->algorithm)) {
+    X509_ALGOR_get0(&obj, NULL, NULL, alg);
+    if (!i2a_ASN1_OBJECT(out, obj)) {
 	BIO_free(out);
 	ossl_raise(eX509CRLError, NULL);
     }
@@ -274,21 +278,19 @@ ossl_x509crl_get_revoked(VALUE self)
 {
     X509_CRL *crl;
     int i, num;
-    X509_REVOKED *rev;
-    VALUE ary, revoked;
+    STACK_OF(X509_REVOKED) *sk;
+    VALUE ary;
 
     GetX509CRL(self, crl);
-    num = sk_X509_REVOKED_num(X509_CRL_get_REVOKED(crl));
-    if (num < 0) {
-	OSSL_Debug("num < 0???");
-	return rb_ary_new();
-    }
-    ary = rb_ary_new2(num);
+    sk = X509_CRL_get_REVOKED(crl);
+    if (!sk)
+        return rb_ary_new();
+
+    num = sk_X509_REVOKED_num(sk);
+    ary = rb_ary_new_capa(num);
     for(i=0; i<num; i++) {
-	/* NO DUP - don't free! */
-	rev = sk_X509_REVOKED_value(X509_CRL_get_REVOKED(crl), i);
-	revoked = ossl_x509revoked_new(rev);
-	rb_ary_push(ary, revoked);
+	X509_REVOKED *rev = sk_X509_REVOKED_value(sk, i);
+	rb_ary_push(ary, ossl_x509revoked_new(rev));
     }
 
     return ary;
@@ -347,17 +349,14 @@ ossl_x509crl_sign(VALUE self, VALUE key, VALUE digest)
     X509_CRL *crl;
     EVP_PKEY *pkey;
     const EVP_MD *md;
+    VALUE md_holder;
 
     GetX509CRL(self, crl);
     pkey = GetPrivPKeyPtr(key); /* NO NEED TO DUP */
-    if (NIL_P(digest)) {
-	md = NULL; /* needed for some key types, e.g. Ed25519 */
-    } else {
-	md = ossl_evp_get_digestbyname(digest);
-    }
-    if (!X509_CRL_sign(crl, pkey, md)) {
-	ossl_raise(eX509CRLError, NULL);
-    }
+    /* NULL needed for some key types, e.g. Ed25519 */
+    md = NIL_P(digest) ? NULL : ossl_evp_md_fetch(digest, &md_holder);
+    if (!X509_CRL_sign(crl, pkey, md))
+        ossl_raise(eX509CRLError, "X509_CRL_sign");
 
     return self;
 }
@@ -449,11 +448,7 @@ ossl_x509crl_get_extensions(VALUE self)
 
     GetX509CRL(self, crl);
     count = X509_CRL_get_ext_count(crl);
-    if (count < 0) {
-	OSSL_Debug("count < 0???");
-	return rb_ary_new();
-    }
-    ary = rb_ary_new2(count);
+    ary = rb_ary_new_capa(count);
     for (i=0; i<count; i++) {
 	ext = X509_CRL_get_ext(crl, i); /* NO DUP - don't free! */
 	rb_ary_push(ary, ossl_x509ext_new(ext));

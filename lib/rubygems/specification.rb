@@ -488,8 +488,6 @@ class Gem::Specification < Gem::BasicSpecification
     end
 
     @platform = @new_platform.to_s
-
-    invalidate_memoized_attributes
   end
 
   ##
@@ -1002,7 +1000,7 @@ class Gem::Specification < Gem::BasicSpecification
   def self.find_in_unresolved_tree(path)
     unresolved_specs.each do |spec|
       spec.traverse do |_from_spec, _dep, to_spec, trail|
-        if to_spec.has_conflicts? || to_spec.conficts_when_loaded_with?(trail)
+        if to_spec.has_conflicts? || to_spec.conflicts_when_loaded_with?(trail)
           :next
         else
           return trail.reverse if to_spec.contains_requirable_file? path
@@ -1322,7 +1320,7 @@ class Gem::Specification < Gem::BasicSpecification
     spec.instance_variable_set :@description,               array[13]
     spec.instance_variable_set :@homepage,                  array[14]
     spec.instance_variable_set :@has_rdoc,                  array[15]
-    spec.instance_variable_set :@licenses,                  [array[17]]
+    spec.instance_variable_set :@licenses,                  array[17]
     spec.instance_variable_set :@metadata,                  array[18]
     spec.instance_variable_set :@loaded,                    false
     spec.instance_variable_set :@activated,                 false
@@ -1415,13 +1413,11 @@ class Gem::Specification < Gem::BasicSpecification
         raise e
       end
 
-      begin
-        specs = spec_dep.to_specs.uniq(&:full_name)
-      rescue Gem::MissingSpecError => e
-        raise Gem::MissingSpecError.new(e.name, e.requirement, "at: #{spec_file}")
-      end
+      specs = spec_dep.matching_specs(true).uniq(&:full_name)
 
-      if specs.size == 1
+      if specs.size == 0
+        raise Gem::MissingSpecError.new(spec_dep.name, spec_dep.requirement, "at: #{spec_file}")
+      elsif specs.size == 1
         specs.first.activate
       else
         name = spec_dep.name
@@ -1622,14 +1618,14 @@ class Gem::Specification < Gem::BasicSpecification
   # spec's cached gem.
 
   def cache_dir
-    @cache_dir ||= File.join base_dir, "cache"
+    File.join base_dir, "cache"
   end
 
   ##
   # Returns the full path to the cached gem for this spec.
 
   def cache_file
-    @cache_file ||= File.join cache_dir, "#{full_name}.gem"
+    File.join cache_dir, "#{full_name}.gem"
   end
 
   ##
@@ -1651,7 +1647,7 @@ class Gem::Specification < Gem::BasicSpecification
   ##
   # return true if there will be conflict when spec if loaded together with the list of specs.
 
-  def conficts_when_loaded_with?(list_of_specs) # :nodoc:
+  def conflicts_when_loaded_with?(list_of_specs) # :nodoc:
     result = list_of_specs.any? do |spec|
       spec.runtime_dependencies.any? {|dep| (dep.name == name) && !satisfies_requirement?(dep) }
     end
@@ -1759,7 +1755,7 @@ class Gem::Specification < Gem::BasicSpecification
   #
   #   [depending_gem, dependency, [list_of_gems_that_satisfy_dependency]]
 
-  def dependent_gems(check_dev=true)
+  def dependent_gems(check_dev = true)
     out = []
     Gem::Specification.each do |spec|
       deps = check_dev ? spec.dependencies : spec.runtime_dependencies
@@ -1817,16 +1813,8 @@ class Gem::Specification < Gem::BasicSpecification
   def encode_with(coder) # :nodoc:
     coder.add "name", @name
     coder.add "version", @version
-    platform = case @new_platform
-               when nil, "" then
-                 "ruby"
-               when String then
-                 @new_platform
-               else
-                 @new_platform.to_s
-    end
-    coder.add "platform", platform
-    coder.add "original_platform", @original_platform.to_s if platform != @original_platform.to_s
+    coder.add "platform", platform.to_s
+    coder.add "original_platform", original_platform.to_s if platform.to_s != original_platform.to_s
 
     attributes = @@attributes.map(&:to_s) - %w[name version platform]
     attributes.each do |name|
@@ -1911,10 +1899,6 @@ class Gem::Specification < Gem::BasicSpecification
     spec.test_files = nil
 
     spec
-  end
-
-  def full_name
-    @full_name ||= super
   end
 
   ##
@@ -2054,17 +2038,6 @@ class Gem::Specification < Gem::BasicSpecification
     end
   end
 
-  ##
-  # Expire memoized instance variables that can incorrectly generate, replace
-  # or miss files due changes in certain attributes used to compute them.
-
-  def invalidate_memoized_attributes
-    @full_name = nil
-    @cache_file = nil
-  end
-
-  private :invalidate_memoized_attributes
-
   def inspect # :nodoc:
     if $DEBUG
       super
@@ -2103,8 +2076,6 @@ class Gem::Specification < Gem::BasicSpecification
   def internal_init # :nodoc:
     super
     @bin_dir       = nil
-    @cache_dir     = nil
-    @cache_file    = nil
     @doc_dir       = nil
     @ri_dir        = nil
     @spec_dir      = nil
@@ -2154,11 +2125,11 @@ class Gem::Specification < Gem::BasicSpecification
       @files.concat(@extra_rdoc_files)
     end
 
-    @files            = @files.uniq if @files
-    @extensions       = @extensions.uniq if @extensions
-    @test_files       = @test_files.uniq if @test_files
-    @executables      = @executables.uniq if @executables
-    @extra_rdoc_files = @extra_rdoc_files.uniq if @extra_rdoc_files
+    @files            = @files.uniq.sort if @files
+    @extensions       = @extensions.uniq.sort if @extensions
+    @test_files       = @test_files.uniq.sort if @test_files
+    @executables      = @executables.uniq.sort if @executables
+    @extra_rdoc_files = @extra_rdoc_files.uniq.sort if @extra_rdoc_files
   end
 
   ##
@@ -2616,9 +2587,6 @@ class Gem::Specification < Gem::BasicSpecification
 
   def version=(version)
     @version = Gem::Version.create(version)
-    return if @version.nil?
-
-    invalidate_memoized_attributes
   end
 
   def stubbed?

@@ -71,6 +71,11 @@
 
 #if OSSL_OPENSSL_PREREQ(3, 0, 0)
 # define OSSL_USE_PROVIDER
+# include <openssl/provider.h>
+#endif
+
+#if OSSL_OPENSSL_PREREQ(3, 0, 0)
+# define OSSL_HAVE_IMMUTABLE_PKEY
 #endif
 
 /*

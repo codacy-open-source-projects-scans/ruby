@@ -22,6 +22,7 @@
 #include "method.h"
 #include "iseq.h"
 #include "vm_core.h"
+#include "ractor_core.h"
 #include "yjit.h"
 
 const rb_cref_t *rb_vm_cref_in_context(VALUE self, VALUE cbase);
@@ -297,10 +298,8 @@ rb_binding_alloc(VALUE klass)
     return obj;
 }
 
-
-/* :nodoc: */
 static VALUE
-binding_dup(VALUE self)
+binding_copy(VALUE self)
 {
     VALUE bindval = rb_binding_alloc(rb_cBinding);
     rb_binding_t *src, *dst;
@@ -309,15 +308,21 @@ binding_dup(VALUE self)
     rb_vm_block_copy(bindval, &dst->block, &src->block);
     RB_OBJ_WRITE(bindval, &dst->pathobj, src->pathobj);
     dst->first_lineno = src->first_lineno;
-    return rb_obj_dup_setup(self, bindval);
+    return bindval;
+}
+
+/* :nodoc: */
+static VALUE
+binding_dup(VALUE self)
+{
+    return rb_obj_dup_setup(self, binding_copy(self));
 }
 
 /* :nodoc: */
 static VALUE
 binding_clone(VALUE self)
 {
-    VALUE bindval = binding_dup(self);
-    return rb_obj_clone_setup(self, bindval, Qnil);
+    return rb_obj_clone_setup(self, binding_copy(self), Qnil);
 }
 
 VALUE
@@ -414,11 +419,11 @@ get_local_variable_ptr(const rb_env_t **envp, ID lid)
             }
 
             const rb_iseq_t *iseq = env->iseq;
-            unsigned int i;
 
             VM_ASSERT(rb_obj_is_iseq((VALUE)iseq));
 
-            for (i=0; i<ISEQ_BODY(iseq)->local_table_size; i++) {
+            const unsigned int local_table_size = ISEQ_BODY(iseq)->local_table_size;
+            for (unsigned int i=0; i<local_table_size; i++) {
                 if (ISEQ_BODY(iseq)->local_table[i] == lid) {
                     if (ISEQ_BODY(iseq)->local_iseq == iseq &&
                             ISEQ_BODY(iseq)->param.flags.has_block &&
@@ -431,7 +436,9 @@ get_local_variable_ptr(const rb_env_t **envp, ID lid)
                     }
 
                     *envp = env;
-                    return &env->env[i];
+                    unsigned int last_lvar = env->env_size+VM_ENV_INDEX_LAST_LVAR
+                        - 1 /* errinfo */;
+                    return &env->env[last_lvar - (local_table_size - i)];
                 }
             }
         }
@@ -501,6 +508,12 @@ bind_local_variables(VALUE bindval)
     return rb_vm_env_local_variables(env);
 }
 
+int
+rb_numparam_id_p(ID id)
+{
+    return (tNUMPARAM_1 << ID_SCOPE_SHIFT) <= id && id < ((tNUMPARAM_1 + 9) << ID_SCOPE_SHIFT);
+}
+
 /*
  *  call-seq:
  *     binding.local_variable_get(symbol) -> obj
@@ -527,6 +540,10 @@ bind_local_variable_get(VALUE bindval, VALUE sym)
     const rb_env_t *env;
 
     if (!lid) goto undefined;
+    if (rb_numparam_id_p(lid)) {
+        rb_name_err_raise("numbered parameter '%1$s' is not a local variable",
+                          bindval, ID2SYM(lid));
+    }
 
     GetBindingPtr(bindval, bind);
 
@@ -576,6 +593,10 @@ bind_local_variable_set(VALUE bindval, VALUE sym, VALUE val)
     const rb_env_t *env;
 
     if (!lid) lid = rb_intern_str(sym);
+    if (rb_numparam_id_p(lid)) {
+        rb_name_err_raise("numbered parameter '%1$s' is not a local variable",
+                          bindval, ID2SYM(lid));
+    }
 
     GetBindingPtr(bindval, bind);
     env = VM_ENV_ENVVAL_PTR(vm_block_ep(&bind->block));
@@ -693,12 +714,15 @@ rb_func_proc_dup(VALUE src_obj)
     VALUE proc_obj = TypedData_Make_Struct(rb_obj_class(src_obj), cfunc_proc_t, &proc_data_type, proc);
 
     memcpy(&proc->basic, src_proc, sizeof(rb_proc_t));
+    RB_OBJ_WRITTEN(proc_obj, Qundef, proc->basic.block.as.captured.self);
+    RB_OBJ_WRITTEN(proc_obj, Qundef, proc->basic.block.as.captured.code.val);
 
+    const VALUE *src_ep = src_proc->block.as.captured.ep;
     VALUE *ep = *(VALUE **)&proc->basic.block.as.captured.ep = proc->env + VM_ENV_DATA_SIZE - 1;
-    ep[VM_ENV_DATA_INDEX_FLAGS]   = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_FLAGS];
-    ep[VM_ENV_DATA_INDEX_ME_CREF] = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_ME_CREF];
-    ep[VM_ENV_DATA_INDEX_SPECVAL] = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_SPECVAL];
-    ep[VM_ENV_DATA_INDEX_ENV]     = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_ENV];
+    ep[VM_ENV_DATA_INDEX_FLAGS]   = src_ep[VM_ENV_DATA_INDEX_FLAGS];
+    ep[VM_ENV_DATA_INDEX_ME_CREF] = src_ep[VM_ENV_DATA_INDEX_ME_CREF];
+    ep[VM_ENV_DATA_INDEX_SPECVAL] = src_ep[VM_ENV_DATA_INDEX_SPECVAL];
+    RB_OBJ_WRITE(proc_obj, &ep[VM_ENV_DATA_INDEX_ENV], src_ep[VM_ENV_DATA_INDEX_ENV]);
 
     return proc_obj;
 }
@@ -719,11 +743,6 @@ sym_proc_new(VALUE klass, VALUE sym)
 struct vm_ifunc *
 rb_vm_ifunc_new(rb_block_call_func_t func, const void *data, int min_argc, int max_argc)
 {
-    union {
-        struct vm_ifunc_argc argc;
-        VALUE packed;
-    } arity;
-
     if (min_argc < UNLIMITED_ARGUMENTS ||
 #if SIZEOF_INT * 2 > SIZEOF_VALUE
         min_argc >= (int)(1U << (SIZEOF_VALUE * CHAR_BIT) / 2) ||
@@ -740,23 +759,15 @@ rb_vm_ifunc_new(rb_block_call_func_t func, const void *data, int min_argc, int m
         rb_raise(rb_eRangeError, "maximum argument number out of range: %d",
                  max_argc);
     }
-    arity.argc.min = min_argc;
-    arity.argc.max = max_argc;
     rb_execution_context_t *ec = GET_EC();
 
     struct vm_ifunc *ifunc = IMEMO_NEW(struct vm_ifunc, imemo_ifunc, (VALUE)rb_vm_svar_lep(ec, ec->cfp));
     ifunc->func = func;
     ifunc->data = data;
-    ifunc->argc = arity.argc;
+    ifunc->argc.min = min_argc;
+    ifunc->argc.max = max_argc;
 
     return ifunc;
-}
-
-VALUE
-rb_func_proc_new(rb_block_call_func_t func, VALUE val)
-{
-    struct vm_ifunc *ifunc = rb_vm_ifunc_proc_new(func, (void *)val);
-    return cfunc_proc_new(rb_cProc, (VALUE)ifunc);
 }
 
 VALUE
@@ -1170,10 +1181,10 @@ rb_block_pair_yield_optimizable(void)
     min = rb_vm_block_min_max_arity(&block, &max);
 
     switch (vm_block_type(&block)) {
-      case block_handler_type_symbol:
+      case block_type_symbol:
         return 0;
 
-      case block_handler_type_proc:
+      case block_type_proc:
         {
             VALUE procval = block_handler;
             rb_proc_t *proc;
@@ -1183,7 +1194,7 @@ rb_block_pair_yield_optimizable(void)
             return min > 1;
         }
 
-      case block_handler_type_ifunc:
+      case block_type_ifunc:
         {
             const struct vm_ifunc *ifunc = block.as.captured.code.ifunc;
             if (ifunc->flags & IFUNC_YIELD_OPTIMIZABLE) return 1;
@@ -1210,10 +1221,10 @@ rb_block_arity(void)
     block_setup(&block, block_handler);
 
     switch (vm_block_type(&block)) {
-      case block_handler_type_symbol:
+      case block_type_symbol:
         return -1;
 
-      case block_handler_type_proc:
+      case block_type_proc:
         return rb_proc_arity(block_handler);
 
       default:
@@ -1364,14 +1375,20 @@ proc_eq(VALUE self, VALUE other)
 static VALUE
 iseq_location(const rb_iseq_t *iseq)
 {
-    VALUE loc[2];
+    VALUE loc[5];
+    int i = 0;
 
     if (!iseq) return Qnil;
     rb_iseq_check(iseq);
-    loc[0] = rb_iseq_path(iseq);
-    loc[1] = RB_INT2NUM(ISEQ_BODY(iseq)->location.first_lineno);
+    loc[i++] = rb_iseq_path(iseq);
+    const rb_code_location_t *cl = &ISEQ_BODY(iseq)->location.code_location;
+    loc[i++] = RB_INT2NUM(cl->beg_pos.lineno);
+    loc[i++] = RB_INT2NUM(cl->beg_pos.column);
+    loc[i++] = RB_INT2NUM(cl->end_pos.lineno);
+    loc[i++] = RB_INT2NUM(cl->end_pos.column);
+    RUBY_ASSERT_ALWAYS(i == numberof(loc));
 
-    return rb_ary_new4(2, loc);
+    return rb_ary_new_from_values(i, loc);
 }
 
 VALUE
@@ -1382,10 +1399,17 @@ rb_iseq_location(const rb_iseq_t *iseq)
 
 /*
  * call-seq:
- *    prc.source_location  -> [String, Integer]
+ *    prc.source_location  -> [String, Integer, Integer, Integer, Integer]
  *
- * Returns the Ruby source filename and line number containing this proc
- * or +nil+ if this proc was not defined in Ruby (i.e. native).
+ * Returns the location where the Proc was defined.
+ * The returned Array contains:
+ *   (1) the Ruby source filename
+ *   (2) the line number where the definition starts
+ *   (3) the column number where the definition starts
+ *   (4) the line number where the definition ends
+ *   (5) the column number where the definitions ends
+ *
+ * This method will return +nil+ if the Proc was not defined in Ruby (i.e. native).
  */
 
 VALUE
@@ -1495,6 +1519,7 @@ rb_hash_proc(st_index_t hash, VALUE prc)
     return hash;
 }
 
+static VALUE sym_proc_cache = Qfalse;
 
 /*
  *  call-seq:
@@ -1513,29 +1538,33 @@ rb_hash_proc(st_index_t hash, VALUE prc)
 VALUE
 rb_sym_to_proc(VALUE sym)
 {
-    static VALUE sym_proc_cache = Qfalse;
     enum {SYM_PROC_CACHE_SIZE = 67};
-    VALUE proc;
-    long index;
-    ID id;
 
-    if (!sym_proc_cache) {
-        sym_proc_cache = rb_ary_hidden_new(SYM_PROC_CACHE_SIZE * 2);
-        rb_vm_register_global_object(sym_proc_cache);
-        rb_ary_store(sym_proc_cache, SYM_PROC_CACHE_SIZE*2 - 1, Qnil);
-    }
+    if (rb_ractor_main_p()) {
+        if (!sym_proc_cache) {
+            sym_proc_cache = rb_ary_hidden_new(SYM_PROC_CACHE_SIZE);
+            rb_ary_store(sym_proc_cache, SYM_PROC_CACHE_SIZE - 1, Qnil);
+        }
 
-    id = SYM2ID(sym);
-    index = (id % SYM_PROC_CACHE_SIZE) << 1;
+        ID id = SYM2ID(sym);
+        long index = (id % SYM_PROC_CACHE_SIZE);
+        VALUE procval = RARRAY_AREF(sym_proc_cache, index);
+        if (RTEST(procval)) {
+            rb_proc_t *proc;
+            GetProcPtr(procval, proc);
 
-    if (RARRAY_AREF(sym_proc_cache, index) == sym) {
-        return RARRAY_AREF(sym_proc_cache, index + 1);
+            if (proc->block.as.symbol == sym) {
+                return procval;
+            }
+        }
+
+        procval = sym_proc_new(rb_cProc, sym);
+        RARRAY_ASET(sym_proc_cache, index, procval);
+
+        return RB_GC_GUARD(procval);
     }
     else {
-        proc = sym_proc_new(rb_cProc, ID2SYM(id));
-        RARRAY_ASET(sym_proc_cache, index, sym);
-        RARRAY_ASET(sym_proc_cache, index + 1, proc);
-        return proc;
+        return sym_proc_new(rb_cProc, sym);
     }
 }
 
@@ -1787,7 +1816,7 @@ method_entry_defined_class(const rb_method_entry_t *me)
  *
  * Document-class: Method
  *
- *  Method objects are created by Object#method, and are associated
+ *  +Method+ objects are created by Object#method, and are associated
  *  with a particular object (not just with a class).  They may be
  *  used to invoke the method within the object, and as a block
  *  associated with an iterator.  They may also be unbound from one
@@ -1997,6 +2026,26 @@ method_owner(VALUE obj)
     return data->owner;
 }
 
+/*
+ *  call-see:
+ *    meth.box   -> box or nil
+ *
+ *  Returns the Ruby::Box where +meth+ is defined in.
+ */
+static VALUE
+method_box(VALUE obj)
+{
+    struct METHOD *data;
+    const rb_box_t *box;
+
+    TypedData_Get_Struct(obj, struct METHOD, &method_data_type, data);
+    box = data->me->def->box;
+    if (!box) return Qnil;
+    if (box->box_object) return box->box_object;
+    rb_bug("Unexpected box on the method definition: %p", (void*) box);
+    UNREACHABLE_RETURN(Qnil);
+}
+
 void
 rb_method_name_error(VALUE klass, VALUE str)
 {
@@ -2046,7 +2095,7 @@ obj_method(VALUE obj, VALUE vid, int scope)
  *     obj.method(sym)    -> method
  *
  *  Looks up the named method as a receiver in <i>obj</i>, returning a
- *  Method object (or raising NameError). The Method object acts as a
+ *  +Method+ object (or raising NameError). The +Method+ object acts as a
  *  closure in <i>obj</i>'s object instance, so instance variables and
  *  the value of <code>self</code> remain available.
  *
@@ -2067,7 +2116,7 @@ obj_method(VALUE obj, VALUE vid, int scope)
  *     m = l.method("hello")
  *     m.call   #=> "Hello, @iv = Fred"
  *
- *  Note that Method implements <code>to_proc</code> method, which
+ *  Note that +Method+ implements <code>to_proc</code> method, which
  *  means it can be used with iterators.
  *
  *     [ 1, 2, 3 ].each(&method(:puts)) # => prints 3 lines to stdout
@@ -2566,7 +2615,7 @@ rb_method_call_with_block(int argc, const VALUE *argv, VALUE method, VALUE passe
  *
  * Document-class: UnboundMethod
  *
- *  Ruby supports two forms of objectified methods. Class Method is
+ *  Ruby supports two forms of objectified methods. Class +Method+ is
  *  used to represent methods that are associated with a particular
  *  object: these method objects are bound to that object. Bound
  *  method objects for an object can be created using Object#method.
@@ -3029,10 +3078,17 @@ rb_method_entry_location(const rb_method_entry_t *me)
 
 /*
  * call-seq:
- *    meth.source_location  -> [String, Integer]
+ *    meth.source_location  -> [String, Integer, Integer, Integer, Integer]
  *
- * Returns the Ruby source filename and line number containing this method
- * or nil if this method was not defined in Ruby (i.e. native).
+ * Returns the location where the method was defined.
+ * The returned Array contains:
+ *   (1) the Ruby source filename
+ *   (2) the line number where the definition starts
+ *   (3) the column number where the definition starts
+ *   (4) the line number where the definition ends
+ *   (5) the column number where the definitions ends
+ *
+ * This method will return +nil+ if the method was not defined in Ruby (i.e. native).
  */
 
 VALUE
@@ -3272,9 +3328,10 @@ method_inspect(VALUE method)
         for (int i = 0; i < RARRAY_LEN(params); i++) {
             pair = RARRAY_AREF(params, i);
             kind = RARRAY_AREF(pair, 0);
-            name = RARRAY_AREF(pair, 1);
-            // FIXME: in tests it turns out that kind, name = [:req] produces name to be false. Why?..
-            if (NIL_P(name) || name == Qfalse) {
+            if (RARRAY_LEN(pair) > 1) {
+                name = RARRAY_AREF(pair, 1);
+            }
+            else {
                 // FIXME: can it be reduced to switch/case?
                 if (kind == req || kind == opt) {
                     name = rb_str_new2("_");
@@ -3287,6 +3344,9 @@ method_inspect(VALUE method)
                 }
                 else if (kind == nokey) {
                     name = rb_str_new2("nil");
+                }
+                else {
+                    name = Qnil;
                 }
             }
 
@@ -3407,7 +3467,7 @@ extern VALUE rb_find_defined_class_by_owner(VALUE current_class, VALUE target_ow
  * call-seq:
  *   meth.super_method  -> method
  *
- * Returns a Method of superclass which would be called when super is used
+ * Returns a +Method+ of superclass which would be called when super is used
  * or nil if there is no method on superclass.
  */
 
@@ -3952,12 +4012,13 @@ proc_ruby2_keywords(VALUE procval)
     switch (proc->block.type) {
       case block_type_iseq:
         if (ISEQ_BODY(proc->block.as.captured.code.iseq)->param.flags.has_rest &&
+                !ISEQ_BODY(proc->block.as.captured.code.iseq)->param.flags.has_post &&
                 !ISEQ_BODY(proc->block.as.captured.code.iseq)->param.flags.has_kw &&
                 !ISEQ_BODY(proc->block.as.captured.code.iseq)->param.flags.has_kwrest) {
             ISEQ_BODY(proc->block.as.captured.code.iseq)->param.flags.ruby2_keywords = 1;
         }
         else {
-            rb_warn("Skipping set of ruby2_keywords flag for proc (proc accepts keywords or proc does not accept argument splat)");
+            rb_warn("Skipping set of ruby2_keywords flag for proc (proc accepts keywords or post arguments or proc does not accept argument splat)");
         }
         break;
       default:
@@ -4201,7 +4262,6 @@ proc_ruby2_keywords(VALUE procval)
  * a proc by the <code>&</code> operator, and therefore can be
  * consumed by iterators.
  *
-
  *      class Greeter
  *        def initialize(greeting)
  *          @greeting = greeting
@@ -4217,8 +4277,8 @@ proc_ruby2_keywords(VALUE procval)
  *      ["Bob", "Jane"].map(&hi)    #=> ["Hi, Bob!", "Hi, Jane!"]
  *      ["Bob", "Jane"].map(&hey)   #=> ["Hey, Bob!", "Hey, Jane!"]
  *
- * Of the Ruby core classes, this method is implemented by Symbol,
- * Method, and Hash.
+ * Of the Ruby core classes, this method is implemented by +Symbol+,
+ * +Method+, and +Hash+.
  *
  *      :to_s.to_proc.call(1)           #=> "1"
  *      [1, 2].map(&:to_s)              #=> ["1", "2"]
@@ -4301,7 +4361,7 @@ proc_ruby2_keywords(VALUE procval)
  *      [1, 2, 3].each { |x| p it }
  *      # syntax error found (SyntaxError)
  *      # [1, 2, 3].each { |x| p it }
- *      #                        ^~ `it` is not allowed when an ordinary parameter is defined
+ *      #                        ^~ 'it' is not allowed when an ordinary parameter is defined
  *
  * But if a local name (variable or method) is available, it would be used:
  *
@@ -4318,7 +4378,7 @@ proc_ruby2_keywords(VALUE procval)
  *
  *     p = proc { it**2 }
  *     l = lambda { it**2 }
- *     p.parameters     # => [[:opt, nil]]
+ *     p.parameters     # => [[:opt]]
  *     p.arity          # => 1
  *     l.parameters     # => [[:req]]
  *     l.arity          # => 1
@@ -4349,7 +4409,7 @@ proc_ruby2_keywords(VALUE procval)
  * Numbered parameters can't be mixed with +it+ either:
  *
  *     [10, 20, 30].map { _1 + it }
- *     # SyntaxError: `it` is not allowed when a numbered parameter is already used
+ *     # SyntaxError: 'it' is not allowed when a numbered parameter is already used
  *
  * To avoid conflicts, naming local variables or method
  * arguments +_1+, +_2+ and so on, causes an error.
@@ -4374,7 +4434,6 @@ proc_ruby2_keywords(VALUE procval)
  *     #                    ^~
  *
  */
-
 
 void
 Init_Proc(void)
@@ -4459,6 +4518,8 @@ Init_Proc(void)
     rb_define_method(rb_mKernel, "public_method", rb_obj_public_method, 1);
     rb_define_method(rb_mKernel, "singleton_method", rb_obj_singleton_method, 1);
 
+    rb_define_method(rb_cMethod, "box", method_box, 0);
+
     /* UnboundMethod */
     rb_cUnboundMethod = rb_define_class("UnboundMethod", rb_cObject);
     rb_undef_alloc_func(rb_cUnboundMethod);
@@ -4530,6 +4591,8 @@ Init_Proc(void)
 void
 Init_Binding(void)
 {
+    rb_gc_register_address(&sym_proc_cache);
+
     rb_cBinding = rb_define_class("Binding", rb_cObject);
     rb_undef_alloc_func(rb_cBinding);
     rb_undef_method(CLASS_OF(rb_cBinding), "new");

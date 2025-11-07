@@ -103,6 +103,7 @@ ossl_x509req_initialize(int argc, VALUE *argv, VALUE self)
     return self;
 }
 
+/* :nodoc: */
 static VALUE
 ossl_x509req_copy(VALUE self, VALUE other)
 {
@@ -259,6 +260,7 @@ ossl_x509req_get_signature_algorithm(VALUE self)
 {
     X509_REQ *req;
     const X509_ALGOR *alg;
+    const ASN1_OBJECT *obj;
     BIO *out;
 
     GetX509Req(self, req);
@@ -267,7 +269,8 @@ ossl_x509req_get_signature_algorithm(VALUE self)
 	ossl_raise(eX509ReqError, NULL);
     }
     X509_REQ_get0_signature(req, NULL, &alg);
-    if (!i2a_ASN1_OBJECT(out, alg->algorithm)) {
+    X509_ALGOR_get0(&obj, NULL, NULL, alg);
+    if (!i2a_ASN1_OBJECT(out, obj)) {
 	BIO_free(out);
 	ossl_raise(eX509ReqError, NULL);
     }
@@ -286,7 +289,7 @@ ossl_x509req_get_public_key(VALUE self)
 	ossl_raise(eX509ReqError, NULL);
     }
 
-    return ossl_pkey_new(pkey); /* NO DUP - OK */
+    return ossl_pkey_wrap(pkey);
 }
 
 static VALUE
@@ -309,17 +312,14 @@ ossl_x509req_sign(VALUE self, VALUE key, VALUE digest)
     X509_REQ *req;
     EVP_PKEY *pkey;
     const EVP_MD *md;
+    VALUE md_holder;
 
     GetX509Req(self, req);
     pkey = GetPrivPKeyPtr(key); /* NO NEED TO DUP */
-    if (NIL_P(digest)) {
-        md = NULL; /* needed for some key types, e.g. Ed25519 */
-    } else {
-        md = ossl_evp_get_digestbyname(digest);
-    }
-    if (!X509_REQ_sign(req, pkey, md)) {
-	ossl_raise(eX509ReqError, NULL);
-    }
+    /* NULL needed for some key types, e.g. Ed25519 */
+    md = NIL_P(digest) ? NULL : ossl_evp_md_fetch(digest, &md_holder);
+    if (!X509_REQ_sign(req, pkey, md))
+        ossl_raise(eX509ReqError, "X509_REQ_sign");
 
     return self;
 }

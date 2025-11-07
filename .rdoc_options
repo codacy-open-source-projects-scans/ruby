@@ -9,4 +9,17 @@ rdoc_include:
 - doc
 
 exclude:
-- lib/irb
+- \.gemspec\z
+
+autolink_excluded_words:
+- Class
+- Method
+- Module
+- Process
+- RDoc
+- Ruby
+- Set
+- ZJIT
+- YJIT
+
+canonical_root: https://docs.ruby-lang.org/en/master

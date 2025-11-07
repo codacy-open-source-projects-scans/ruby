@@ -191,8 +191,8 @@ ossl_x509store_set_vfy_cb(VALUE self, VALUE cb)
 
     GetX509Store(self, store);
     rb_iv_set(self, "@verify_callback", cb);
-    // We don't need to trigger a write barrier because `rb_iv_set` did it.
     X509_STORE_set_ex_data(store, store_ex_verify_cb_idx, (void *)cb);
+    RB_OBJ_WRITTEN(self, Qundef, cb);
 
     return cb;
 }
@@ -212,10 +212,6 @@ ossl_x509store_initialize(int argc, VALUE *argv, VALUE self)
     GetX509Store(self, store);
     if (argc != 0)
         rb_warn("OpenSSL::X509::Store.new does not take any arguments");
-#if !defined(HAVE_OPAQUE_OPENSSL)
-    /* [Bug #405] [Bug #1678] [Bug #3000]; already fixed? */
-    store->ex_data.sk = NULL;
-#endif
     X509_STORE_set_verify_cb(store, x509store_verify_cb);
     ossl_x509store_set_vfy_cb(self, Qnil);
 
@@ -332,11 +328,7 @@ ossl_x509store_set_time(VALUE self, VALUE time)
     X509_VERIFY_PARAM *param;
 
     GetX509Store(self, store);
-#ifdef HAVE_X509_STORE_GET0_PARAM
     param = X509_STORE_get0_param(store);
-#else
-    param = store->param;
-#endif
     X509_VERIFY_PARAM_set_time(param, NUM2LONG(rb_Integer(time)));
     return time;
 }
@@ -365,15 +357,6 @@ ossl_x509store_add_file(VALUE self, VALUE file)
         ossl_raise(eX509StoreError, "X509_STORE_add_lookup");
     if (X509_LOOKUP_load_file(lookup, path, X509_FILETYPE_PEM) != 1)
         ossl_raise(eX509StoreError, "X509_LOOKUP_load_file");
-#if OPENSSL_VERSION_NUMBER < 0x10101000 || defined(LIBRESSL_VERSION_NUMBER)
-    /*
-     * X509_load_cert_crl_file() which is called from X509_LOOKUP_load_file()
-     * did not check the return value of X509_STORE_add_{cert,crl}(), leaking
-     * "cert already in hash table" errors on the error queue, if duplicate
-     * certificates are found. This will be fixed by OpenSSL 1.1.1.
-     */
-    ossl_clear_error();
-#endif
 
     return self;
 }
@@ -628,6 +611,7 @@ ossl_x509stctx_verify(VALUE self)
     GetX509StCtx(self, ctx);
     VALUE cb = rb_iv_get(self, "@verify_callback");
     X509_STORE_CTX_set_ex_data(ctx, stctx_ex_verify_cb_idx, (void *)cb);
+    RB_OBJ_WRITTEN(self, Qundef, cb);
 
     switch (X509_verify_cert(ctx)) {
       case 1:
@@ -752,10 +736,14 @@ static VALUE
 ossl_x509stctx_get_curr_cert(VALUE self)
 {
     X509_STORE_CTX *ctx;
+    X509 *x509;
 
     GetX509StCtx(self, ctx);
+    x509 = X509_STORE_CTX_get_current_cert(ctx);
+    if (!x509)
+        return Qnil;
 
-    return ossl_x509_new(X509_STORE_CTX_get_current_cert(ctx));
+    return ossl_x509_new(x509);
 }
 
 /*

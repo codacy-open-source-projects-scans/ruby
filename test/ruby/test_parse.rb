@@ -186,6 +186,15 @@ class TestParse < Test::Unit::TestCase
       end;
     end
 
+    c = Class.new
+    c.freeze
+    assert_valid_syntax("#{<<~"begin;"}\n#{<<~'end;'}") do
+      begin;
+        c::FOO &= p 1
+        ::FOO &= p 1
+      end;
+    end
+
     assert_syntax_error("#{<<~"begin;"}\n#{<<~'end;'}", /Can't set variable/) do
       begin;
         $1 &= 1
@@ -466,6 +475,12 @@ class TestParse < Test::Unit::TestCase
     assert_parse_error(%q[def (:"#{42}").foo; end], msg)
     assert_parse_error(%q[def ([]).foo; end], msg)
     assert_parse_error(%q[def ([1]).foo; end], msg)
+    assert_parse_error(%q[def (__FILE__).foo; end], msg)
+    assert_parse_error(%q[def (__LINE__).foo; end], msg)
+    assert_parse_error(%q[def (__ENCODING__).foo; end], msg)
+    assert_parse_error(%q[def __FILE__.foo; end], msg)
+    assert_parse_error(%q[def __LINE__.foo; end], msg)
+    assert_parse_error(%q[def __ENCODING__.foo; end], msg)
   end
 
   def test_flip_flop
@@ -648,6 +663,8 @@ class TestParse < Test::Unit::TestCase
     assert_equal("\u{1234}", eval('?\u{1234}'))
     assert_equal("\u{1234}", eval('?\u1234'))
     assert_syntax_error('?\u{41 42}', 'Multiple codepoints at single character literal')
+    assert_syntax_error("?and", /unexpected '\?'/)
+    assert_syntax_error("?\u1234and", /unexpected '\?'/)
     e = assert_syntax_error('"#{?\u123}"', 'invalid Unicode escape')
     assert_not_match(/end-of-input/, e.message)
 
@@ -1611,9 +1628,6 @@ x = __ENCODING__
   end
 
   def test_shareable_constant_value_hash_with_keyword_splat
-    # Prism compiler does not support keyword splat in Ractor constant [Bug #20916]
-    omit if ParserSupport.prism_enabled?
-
     a, b = eval_separately("#{<<~"begin;"}\n#{<<~'end;'}")
     begin;
       # shareable_constant_value: experimental_everything
@@ -1722,6 +1736,15 @@ x = __ENCODING__
       def o.freeze; self; end
       C = [o]
     end;
+  end
+
+  def test_shareable_constant_value_massign
+    a = eval_separately("#{<<~"begin;"}\n#{<<~'end;'}")
+    begin;
+      # shareable_constant_value: experimental_everything
+      A, = 1
+    end;
+    assert_equal(1, a)
   end
 
   def test_if_after_class

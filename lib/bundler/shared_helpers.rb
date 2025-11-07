@@ -115,28 +115,25 @@ module Bundler
       raise NoSpaceOnDeviceError.new(path, action)
     rescue Errno::ENOTSUP
       raise OperationNotSupportedError.new(path, action)
+    rescue Errno::EPERM
+      raise OperationNotPermittedError.new(path, action)
+    rescue Errno::EROFS
+      raise ReadOnlyFileSystemError.new(path, action)
     rescue Errno::EEXIST, Errno::ENOENT
       raise
     rescue SystemCallError => e
       raise GenericSystemCallError.new(e, "There was an error #{[:create, :write].include?(action) ? "creating" : "accessing"} `#{path}`.")
     end
 
-    def major_deprecation(major_version, message, removed_message: nil, print_caller_location: false)
-      if print_caller_location
-        caller_location = caller_locations(2, 2).first
-        suffix = " (called at #{caller_location.path}:#{caller_location.lineno})"
-        message += suffix
-        removed_message += suffix if removed_message
-      end
+    def feature_deprecated!(message)
+      return unless prints_major_deprecations?
 
-      bundler_major_version = Bundler.bundler_major_version
-      if bundler_major_version > major_version
-        require_relative "errors"
-        raise DeprecatedError, "[REMOVED] #{removed_message || message}"
-      end
-
-      return unless bundler_major_version >= major_version && prints_major_deprecations?
       Bundler.ui.warn("[DEPRECATED] #{message}")
+    end
+
+    def feature_removed!(message)
+      require_relative "errors"
+      raise RemovedError, "[REMOVED] #{message}"
     end
 
     def print_major_deprecations!
@@ -382,7 +379,6 @@ module Bundler
     end
 
     def prints_major_deprecations?
-      require_relative "../bundler"
       return false if Bundler.settings[:silence_deprecations]
       require_relative "deprecate"
       return false if Bundler::Deprecate.skip

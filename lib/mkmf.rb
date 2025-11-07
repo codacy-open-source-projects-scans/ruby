@@ -419,7 +419,7 @@ MESSAGE
 
     # disable ASAN leak reporting - conftest programs almost always don't bother
     # to free their memory.
-    envs['ASAN_OPTIONS'] = "detect_leaks=0" unless ENV.key?('ASAN_OPTIONS')
+    envs['LSAN_OPTIONS'] = "detect_leaks=0" unless ENV.key?('LSAN_OPTIONS')
 
     return envs, expand[commands]
   end
@@ -604,9 +604,9 @@ MSG
     yield(opt, opts)
   end
 
-  def try_link0(src, opt = "", **opts, &b) # :nodoc:
+  def try_link0(src, opt = "", ldflags: "", **opts, &b) # :nodoc:
     exe = CONFTEST+$EXEEXT
-    cmd = link_command("", opt)
+    cmd = link_command(ldflags, opt)
     if $universal
       require 'tmpdir'
       Dir.mktmpdir("mkmf_", oldtmpdir = ENV["TMPDIR"]) do |tmpdir|
@@ -750,7 +750,7 @@ MSG
 
   # :nodoc:
   def try_ldflags(flags, werror: $mswin, **opts)
-    try_link(MAIN_DOES_NOTHING, flags, werror: werror, **opts)
+    try_link(MAIN_DOES_NOTHING, "", ldflags: flags, werror: werror, **opts)
   end
 
   # :startdoc:
@@ -860,7 +860,7 @@ int main() {printf("%"PRI_CONFTEST_PREFIX"#{neg ? 'd' : 'u'}\\n", conftest_const
         v
       }
       unless strvars.empty?
-        prepare << "char " << strvars.map {|v| "#{v}[1024]"}.join(", ") << "; "
+        prepare << "char " << strvars.map {|v| %[#{v}[1024] = ""]}.join(", ") << "; "
       end
     when nil
       call = ""
@@ -1968,7 +1968,7 @@ SRC
       if pkgconfig = with_config("#{pkg}-config") and find_executable0(pkgconfig)
       # if and only if package specific config command is given
       elsif ($PKGCONFIG ||=
-             (pkgconfig = with_config("pkg-config") {config_string("PKG_CONFIG") || "pkg-config"}) &&
+             (pkgconfig = with_config("pkg-config") {config_string("PKG_CONFIG") || ENV["PKG_CONFIG"] || "pkg-config"}) &&
              find_executable0(pkgconfig) && pkgconfig) and
            xsystem([*envs, $PKGCONFIG, "--exists", pkg])
         # default to pkg-config command
@@ -1984,7 +1984,20 @@ SRC
           opts = Array(opts).map { |o| "--#{o}" }
           opts = xpopen([*envs, pkgconfig, *opts, *args], err:[:child, :out], &:read)
           Logging.open {puts opts.each_line.map{|s|"=> #{s.inspect}"}}
-          opts.strip if $?.success?
+          if $?.success?
+            opts = opts.strip
+            libarg, libpath = LIBARG, LIBPATHFLAG.strip
+            opts = opts.shellsplit.map { |s|
+              if s.start_with?('-l')
+                libarg % s[2..]
+              elsif s.start_with?('-L')
+                libpath % s[2..]
+              else
+                s
+              end
+            }.quote.join(" ")
+            opts
+          end
         }
       end
       orig_ldflags = $LDFLAGS
@@ -2368,6 +2381,19 @@ RULES
   # directory, i.e. the current directory.  It is included as part of the
   # +VPATH+ and added to the list of +INCFLAGS+.
   #
+  # Yields the configuration part of the makefile to be generated, as an array
+  # of strings, if the block is given.  The returned value will be used the
+  # new configuration part.
+  #
+  #   create_makefile('foo') {|conf|
+  #     [
+  #       *conf,
+  #       "MACRO_YOU_NEED = something",
+  #     ]
+  #   }
+  #
+  # If "depend" file exist in the source directory, that content will be
+  # included in the generated makefile, with formatted by depend_rules method.
   def create_makefile(target, srcprefix = nil)
     $target = target
     libpath = $DEFLIBPATH|$LIBPATH
@@ -2484,16 +2510,19 @@ TIMESTAMP_DIR = #{$extout && $extmk ? '$(extout)/.timestamp' : '.'}
     sodir = $extout ? '$(TARGET_SO_DIR)' : '$(RUBYARCHDIR)'
     n = '$(TARGET_SO_DIR)$(TARGET)'
     cleanobjs = ["$(OBJS)"]
+    cleanlibs = []
     if $extmk
       %w[bc i s].each {|ex| cleanobjs << "$(OBJS:.#{$OBJEXT}=.#{ex})"}
     end
     if target
       config_string('cleanobjs') {|t| cleanobjs << t.gsub(/\$\*/, "$(TARGET)#{deffile ? '-$(arch)': ''}")}
+      cleanlibs << '$(TARGET_SO)'
     end
+    config_string('cleanlibs') {|t| cleanlibs << t.gsub(/\$\*/) {n}}
     conf << "\
 TARGET_SO_DIR =#{$extout ? " $(RUBYARCHDIR)/" : ''}
 TARGET_SO     = $(TARGET_SO_DIR)$(DLLIB)
-CLEANLIBS     = #{'$(TARGET_SO) ' if target}#{config_string('cleanlibs') {|t| t.gsub(/\$\*/) {n}}}
+CLEANLIBS     = #{cleanlibs.join(' ')}
 CLEANOBJS     = #{cleanobjs.join(' ')} *.bak
 TARGET_SO_DIR_TIMESTAMP = #{timestamp_file(sodir, target_prefix)}
 " #"
@@ -2565,7 +2594,7 @@ static: #{$extmk && !$static ? "all" : %[$(STATIC_LIB)#{$extout ? " install-rb" 
           dest = "#{dir}/#{File.basename(f)}"
           mfile.print("do-install-rb#{sfx}: #{dest}\n")
           mfile.print("#{dest}: #{f} #{timestamp_file(dir, target_prefix)}\n")
-          mfile.print("\t$(Q) $(#{$extout ? 'COPY' : 'INSTALL_DATA'}) #{f} $(@D)\n")
+          mfile.print("\t$(Q) $(#{$extout ? 'COPY' : 'INSTALL_DATA'}) #{f} $@\n")
           if defined?($installed_list) and !$extout
             mfile.print("\t@echo #{dest}>>$(INSTALLED_LIST)\n")
           end

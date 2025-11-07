@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+# :markup: markdown
 
 # The Prism Ruby parser.
 #
@@ -36,6 +37,26 @@ module Prism
   private_constant :LexCompat
   private_constant :LexRipper
 
+  # Raised when requested to parse as the currently running Ruby version but Prism has no support for it.
+  class CurrentVersionError < ArgumentError
+    # Initialize a new exception for the given ruby version string.
+    def initialize(version)
+      message = +"invalid version: Requested to parse as `version: 'current'`; "
+      segments =
+        if version.match?(/\A\d+\.\d+.\d+\z/)
+          version.split(".").map(&:to_i)
+        end
+
+      if segments && ((segments[0] < 3) || (segments[0] == 3 && segments[1] < 3))
+        message << " #{version} is below the minimum supported syntax."
+      else
+        message << " #{version} is unknown. Please update the `prism` gem."
+      end
+
+      super(message)
+    end
+  end
+
   # :call-seq:
   #   Prism::lex_compat(source, **options) -> LexCompat::Result
   #
@@ -59,15 +80,16 @@ module Prism
   end
 
   # :call-seq:
-  #   Prism::load(source, serialized) -> ParseResult
+  #   Prism::load(source, serialized, freeze) -> ParseResult
   #
   # Load the serialized AST using the source as a reference into a tree.
-  def self.load(source, serialized)
-    Serialize.load(source, serialized)
+  def self.load(source, serialized, freeze = false)
+    Serialize.load_parse(source, serialized, freeze)
   end
 end
 
 require_relative "prism/polyfill/byteindex"
+require_relative "prism/polyfill/warn"
 require_relative "prism/node"
 require_relative "prism/node_ext"
 require_relative "prism/parse_result"

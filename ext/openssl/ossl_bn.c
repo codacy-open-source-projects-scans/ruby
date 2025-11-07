@@ -61,10 +61,9 @@ ossl_bn_new(const BIGNUM *bn)
     VALUE obj;
 
     obj = NewBN(cBN);
-    newbn = bn ? BN_dup(bn) : BN_new();
-    if (!newbn) {
-	ossl_raise(eBNError, NULL);
-    }
+    newbn = BN_dup(bn);
+    if (!newbn)
+        ossl_raise(eBNError, "BN_dup");
     SetBN(obj, newbn);
 
     return obj;
@@ -929,6 +928,7 @@ BIGNUM_NUM(num_bytes)
  */
 BIGNUM_NUM(num_bits)
 
+/* :nodoc: */
 static VALUE
 ossl_bn_copy(VALUE self, VALUE other)
 {

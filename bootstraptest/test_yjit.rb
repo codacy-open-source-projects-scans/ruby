@@ -37,14 +37,18 @@ assert_equal "ok", %q{
 }
 
 # test discarding extra yield arguments
-assert_equal "2210150001501015", %q{
+assert_equal "22131300500015901015", %q{
   def splat_kw(ary) = yield *ary, a: 1
 
   def splat(ary) = yield *ary
 
-  def kw = yield 1, 2, a: 0
+  def kw = yield 1, 2, a: 3
+
+  def kw_only = yield a: 0
 
   def simple = yield 0, 1
+
+  def none = yield
 
   def calls
     [
@@ -52,12 +56,16 @@ assert_equal "2210150001501015", %q{
       splat([1, 1, 2]) { |y, opt = raise| opt + y},
       splat_kw([0, 1]) { |a:| a },
       kw { |a:| a },
-      kw { |a| a },
+      kw { |one| one },
+      kw { |one, a:| a },
+      kw_only { |a:| a },
+      kw_only { |a: 1| a },
       simple { 5.itself },
       simple { |a| a },
       simple { |opt = raise| opt },
       simple { |*rest| rest },
       simple { |opt_kw: 5| opt_kw },
+      none { |a: 9| a },
       # autosplat ineractions
       [0, 1, 2].yield_self { |a, b| [a, b] },
       [0, 1, 2].yield_self { |a, opt = raise| [a, opt] },
@@ -106,7 +114,7 @@ assert_equal '[:ae, :ae]', %q{
   end
 
   [test(Array.new 5), test([])]
-} unless rjit_enabled? # Not yet working on RJIT
+}
 
 # regression test for arity check with splat and send
 assert_equal '[:ae, :ae]', %q{
@@ -166,7 +174,7 @@ assert_equal 'ok', %q{
     GC.compact
   end
   :ok
-} unless rjit_enabled? # Not yet working on RJIT
+}
 
 # regression test for overly generous guard elision
 assert_equal '[0, :sum, 0, :sum]', %q{
@@ -212,7 +220,7 @@ assert_equal 'Sub', %q{
   call(Sub.new('o')).class
 }
 
-# String#dup with FL_EXIVAR
+# String#dup with generic ivars
 assert_equal '["str", "ivar"]', %q{
   def str_dup(str) = str.dup
   str = "str"
@@ -303,7 +311,7 @@ assert_equal '[:ok]', %q{
   # Used to crash due to GC run in rb_ensure_iv_list_size()
   # not marking the newly allocated [:ok].
   RegressionTest.new.extender.itself
-} unless rjit_enabled? # Skip on RJIT since this uncovers a crash
+}
 
 assert_equal 'true', %q{
   # regression test for tracking type of locals for too long
@@ -457,91 +465,6 @@ assert_normal_exit %q{
     if r != 777
       raise "error"
     end
-  end
-}
-
-assert_equal '0', %q{
-  # This is a regression test for incomplete invalidation from
-  # opt_setinlinecache. This test might be brittle, so
-  # feel free to remove it in the future if it's too annoying.
-  # This test assumes --yjit-call-threshold=2.
-  module M
-    Foo = 1
-    def foo
-      Foo
-    end
-
-    def pin_self_type_then_foo
-      _ = @foo
-      foo
-    end
-
-    def only_ints
-      1 + self
-      foo
-    end
-  end
-
-  class Integer
-    include M
-  end
-
-  class Sub
-    include M
-  end
-
-  foo_method = M.instance_method(:foo)
-
-  dbg = ->(message) do
-    return # comment this out to get printouts
-
-    $stderr.puts RubyVM::YJIT.disasm(foo_method)
-    $stderr.puts message
-  end
-
-  2.times { 42.only_ints }
-
-  dbg["There should be two versions of getinlineache"]
-
-  module M
-    remove_const(:Foo)
-  end
-
-  dbg["There should be no getinlinecaches"]
-
-  2.times do
-    42.only_ints
-  rescue NameError => err
-    _ = "caught name error #{err}"
-  end
-
-  dbg["There should be one version of getinlineache"]
-
-  2.times do
-    Sub.new.pin_self_type_then_foo
-  rescue NameError
-    _ = 'second specialization'
-  end
-
-  dbg["There should be two versions of getinlineache"]
-
-  module M
-    Foo = 1
-  end
-
-  dbg["There should still be two versions of getinlineache"]
-
-  42.only_ints
-
-  dbg["There should be no getinlinecaches"]
-
-  # Find name of the first VM instruction in M#foo.
-  insns = RubyVM::InstructionSequence.of(foo_method).to_a
-  if defined?(RubyVM::YJIT.blocks_for) && (insns.last.find { Array === _1 }&.first == :opt_getinlinecache)
-    RubyVM::YJIT.blocks_for(RubyVM::InstructionSequence.of(foo_method))
-      .filter { _1.iseq_start_index == 0 }.count
-  else
-    0 # skip the test
   end
 }
 
@@ -1407,7 +1330,7 @@ assert_equal '[42, :default]', %q{
   ]
 }
 
-# Test default value block for Hash with opt_aref_with
+# Test default value block for Hash
 assert_equal "false", <<~RUBY, frozen_string_literal: false
   def index_with_string(h)
     h["foo"]
@@ -2057,7 +1980,7 @@ assert_equal '[97, :nil, 97, :nil, :raised]', %q{
   getbyte("a", 0)
 
   [getbyte("a", 0), getbyte("a", 1), getbyte("a", -1), getbyte("a", -2), getbyte("a", "a")]
-} unless rjit_enabled? # Not yet working on RJIT
+}
 
 # Basic test for String#setbyte
 assert_equal 'AoZ', %q{
@@ -2755,7 +2678,7 @@ assert_equal '[1, 2]', %q{
 
   expandarray_redefined_nilclass
   expandarray_redefined_nilclass
-} unless rjit_enabled?
+}
 
 assert_equal '[1, 2, nil]', %q{
   def expandarray_rhs_too_small
@@ -2867,7 +2790,7 @@ assert_equal '[[:c_return, :String, :string_alias, "events_to_str"]]', %q{
   events.compiled(events)
 
   events
-} unless rjit_enabled? # RJIT calls extra Ruby methods
+}
 
 # test enabling a TracePoint that targets a particular line in a C method call
 assert_equal '[true]', %q{
@@ -2949,7 +2872,7 @@ assert_equal '[[:c_call, :itself]]', %q{
   tp.enable { shouldnt_compile }
 
   events
-} unless rjit_enabled? # RJIT calls extra Ruby methods
+}
 
 # test enabling c_return tracing before compiling
 assert_equal '[[:c_return, :itself, main]]', %q{
@@ -2964,7 +2887,7 @@ assert_equal '[[:c_return, :itself, main]]', %q{
   tp.enable { shouldnt_compile }
 
   events
-} unless rjit_enabled? # RJIT calls extra Ruby methods
+}
 
 # test c_call invalidation
 assert_equal '[[:c_call, :itself]]', %q{
@@ -3010,15 +2933,16 @@ assert_equal '[:itself]', %q{
     itself
   end
 
-  tracing_ractor = Ractor.new do
+  port = Ractor::Port.new
+  tracing_ractor = Ractor.new port do |port|
     # 1: start tracing
     events = []
     tp = TracePoint.new(:c_call) { events << _1.method_id }
     tp.enable
-    Ractor.yield(nil)
+    port << nil
 
     # 3: run compiled method on tracing ractor
-    Ractor.yield(nil)
+    port << nil
     traced_method
 
     events
@@ -3026,13 +2950,13 @@ assert_equal '[:itself]', %q{
     tp&.disable
   end
 
-  tracing_ractor.take
+  port.receive
 
   # 2: compile on non tracing ractor
   traced_method
 
-  tracing_ractor.take
-  tracing_ractor.take
+  port.receive
+  tracing_ractor.value
 }
 
 # Try to hit a lazy branch stub while another ractor enables tracing
@@ -3046,17 +2970,18 @@ assert_equal '42', %q{
     end
   end
 
-  ractor = Ractor.new do
+  port = Ractor::Port.new
+  ractor = Ractor.new port do |port|
     compiled(false)
-    Ractor.yield(nil)
+    port << nil
     compiled(41)
   end
 
   tp = TracePoint.new(:line) { itself }
-  ractor.take
+  port.receive
   tp.enable
 
-  ractor.take
+  ractor.value
 }
 
 # Test equality with changing types
@@ -3132,7 +3057,7 @@ assert_equal '42',  %q{
   A.foo
   A.foo
 
-  Ractor.new { A.foo }.take
+  Ractor.new { A.foo }.value
 }
 
 assert_equal '["plain", "special", "sub", "plain"]', %q{
@@ -3659,6 +3584,74 @@ assert_equal 'new', %q{
   test
 }
 
+# Bug #21257 (infinite jmp)
+assert_equal 'ok', %q{
+  Good = :ok
+
+  def first
+    second
+  end
+
+  def second
+    ::Good
+  end
+
+  # Make `second` side exit on its first instruction
+  trace = TracePoint.new(:line) { }
+  trace.enable(target: method(:second))
+
+  first
+  # Recompile now that the constant cache is populated, so we get a fallthrough from `first` to `second`
+  # (this is need to reproduce with --yjit-call-threshold=1)
+  RubyVM::YJIT.code_gc if defined?(RubyVM::YJIT)
+  first
+
+  # Trigger a constant cache miss in rb_vm_opt_getconstant_path (in `second`) next time it's called
+  module InvalidateConstantCache
+    Good = nil
+  end
+
+  RubyVM::YJIT.simulate_oom! if defined?(RubyVM::YJIT)
+
+  first
+  first
+}
+
+assert_equal 'ok', %q{
+  # Multiple incoming branches into second
+  Good = :ok
+
+  def incoming_one
+    second
+  end
+
+  def incoming_two
+    second
+  end
+
+  def second
+    ::Good
+  end
+
+  # Make `second` side exit on its first instruction
+  trace = TracePoint.new(:line) { }
+  trace.enable(target: method(:second))
+
+  incoming_one
+  # Recompile now that the constant cache is populated, so we get a fallthrough from `incoming_one` to `second`
+  # (this is need to reproduce with --yjit-call-threshold=1)
+  RubyVM::YJIT.code_gc if defined?(RubyVM::YJIT)
+  incoming_one
+  incoming_two
+
+  # Trigger a constant cache miss in rb_vm_opt_getconstant_path (in `second`) next time it's called
+  module InvalidateConstantCache
+    Good = nil
+  end
+
+  incoming_one
+}
+
 assert_equal 'ok', %q{
   # Try to compile new method while OOM
   def foo
@@ -3781,36 +3774,6 @@ assert_equal '3,12', %q{
 
   # Make sure it's returning '3,12' instead of e.g. '3,false'
   pt_inspect(p)
-}
-
-# Regression test for deadlock between branch_stub_hit and ractor_receive_if
-assert_equal '10', %q{
-  r = Ractor.new Ractor.current do |main|
-    main << 1
-    main << 2
-    main << 3
-    main << 4
-    main << 5
-    main << 6
-    main << 7
-    main << 8
-    main << 9
-    main << 10
-  end
-
-  a = []
-  a << Ractor.receive_if{|msg| msg == 10}
-  a << Ractor.receive_if{|msg| msg == 9}
-  a << Ractor.receive_if{|msg| msg == 8}
-  a << Ractor.receive_if{|msg| msg == 7}
-  a << Ractor.receive_if{|msg| msg == 6}
-  a << Ractor.receive_if{|msg| msg == 5}
-  a << Ractor.receive_if{|msg| msg == 4}
-  a << Ractor.receive_if{|msg| msg == 3}
-  a << Ractor.receive_if{|msg| msg == 2}
-  a << Ractor.receive_if{|msg| msg == 1}
-
-  a.length
 }
 
 # checktype
@@ -4486,7 +4449,7 @@ assert_equal 'true', %q{
   rescue ArgumentError
     true
   end
-} unless rjit_enabled? # Not yet working on RJIT
+}
 
 # Regression test: register allocator on expandarray
 assert_equal '[]', %q{
@@ -4901,7 +4864,7 @@ assert_equal '0', %q{
   end
 
   foo # try again
-} unless rjit_enabled? # doesn't work on RJIT
+}
 
 # test integer left shift with constant rhs
 assert_equal [0x80000000000, 'a+', :ok].inspect, %q{
@@ -5009,7 +4972,7 @@ assert_equal '[[true, false, false], [true, true, false], [true, :error, :error]
   end
 
   results << test
-} unless rjit_enabled? # Not yet working on RJIT
+}
 
 # test FalseClass#=== before and after redefining FalseClass#==
 assert_equal '[[true, false, false], [true, false, true], [true, :error, :error]]', %q{
@@ -5044,7 +5007,7 @@ assert_equal '[[true, false, false], [true, false, true], [true, :error, :error]
   end
 
   results << test
-} unless rjit_enabled? # Not yet working on RJIT
+}
 
 # test NilClass#=== before and after redefining NilClass#==
 assert_equal '[[true, false, false], [true, false, true], [true, :error, :error]]', %q{
@@ -5079,7 +5042,7 @@ assert_equal '[[true, false, false], [true, false, true], [true, :error, :error]
   end
 
   results << test
-} unless rjit_enabled? # Not yet working on RJIT
+}
 
 # test struct accessors fire c_call events
 assert_equal '[[:c_call, :x=], [:c_call, :x]]', %q{
@@ -5339,3 +5302,70 @@ assert_equal '["x", "Y", "c", "A", "t", "A", "b", "C", "d"]', <<~'RUBY'
 
   Swap.new("xy").swap + Swap.new("cat").reverse_odd + Swap.new("abcd").reverse_even
 RUBY
+
+assert_normal_exit %{
+  class Bug20997
+    def foo(&) = self.class.name(&)
+
+    new.foo
+  end
+}
+
+# This used to trigger a "try to mark T_NONE"
+# due to an uninitialized local in foo.
+assert_normal_exit %{
+  def foo(...)
+    _local_that_should_nil_on_call = GC.start
+  end
+
+  def test_bug21021
+    puts [], [], [], [], [], []
+    foo []
+  end
+
+  GC.stress = true
+  test_bug21021
+}
+
+assert_equal 'nil', %{
+  def foo(...)
+    _a = _b = _c = binding.local_variable_get(:_c)
+
+    _c
+  end
+
+  # [Bug #21021]
+  def test_local_fill_in_forwardable
+    puts [], [], [], [], []
+    foo []
+  end
+
+  test_local_fill_in_forwardable.inspect
+}
+
+# Test defined?(yield) and block_given? in non-method context.
+# It's good that the body of this runs at true top level and isn't wrapped in a block.
+assert_equal 'false', %{
+  RESULT = []
+  RESULT << defined?(yield)
+  RESULT << block_given?
+
+  1.times do
+    RESULT << defined?(yield)
+    RESULT << block_given?
+  end
+
+  module ModuleContext
+    1.times do
+      RESULT << defined?(yield)
+      RESULT << block_given?
+    end
+  end
+
+  class << self
+    RESULT << defined?(yield)
+    RESULT << block_given?
+  end
+
+  RESULT.any?
+}

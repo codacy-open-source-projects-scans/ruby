@@ -16,7 +16,7 @@ rubygems_version: "1.0"
 name: keyedlist
 version: !ruby/object:Gem::Version
   version: 0.4.0
-date: 2004-03-28 15:37:49.828000 +02:00
+date: 1980-01-02 00:00:00 UTC
 platform:
 summary: A Hash which automatically computes keys.
 require_paths:
@@ -75,7 +75,7 @@ end
   def assert_date(date)
     assert_kind_of Time, date
     assert_equal [0, 0, 0], [date.hour, date.min, date.sec]
-    assert_operator (Gem::Specification::TODAY..Time.now), :cover?, date
+    assert_equal Time.at(Gem::DEFAULT_SOURCE_DATE_EPOCH).utc, date
   end
 
   def setup
@@ -564,7 +564,6 @@ end
   #         [B] ~> 1.0
   #
   # and should resolve using b-1.0
-  # TODO: move these to specification
 
   def test_self_activate_over
     a = util_spec "a", "1.0", "b" => ">= 1.0", "c" => "= 1.0"
@@ -651,6 +650,17 @@ end
     assert_raise Gem::LoadError do
       gem "b", "= 2.0"
     end
+  end
+
+  def test_self_activate_missing_deps_does_not_raise_nested_exceptions
+    a = util_spec "a", "1.0", "b" => ">= 1.0"
+    install_specs a
+
+    e = assert_raise Gem::MissingSpecError do
+      a.activate
+    end
+
+    refute e.cause
   end
 
   def test_self_all_equals
@@ -1019,7 +1029,7 @@ dependencies: []
 
     gem = "mingw"
     v   = "1.1.1"
-    platforms = ["x86-mingw32", "x64-mingw32"]
+    platforms = ["x86-mingw32", "x64-mingw-ucrt"]
 
     # create specs
     platforms.each do |plat|
@@ -2492,7 +2502,31 @@ end
     assert_equal @a1, same_spec
   end
 
-  def test_to_yaml_platform_empty_string
+  def test_to_yaml_platform
+    yaml_str = @a1.to_yaml
+
+    assert_match(/^platform: ruby$/, yaml_str)
+    refute_match(/^original_platform: /, yaml_str)
+  end
+
+  def test_to_yaml_platform_no_specific_platform
+    a = Gem::Specification.new do |s|
+      s.name        = "a"
+      s.version     = "1.0"
+      s.author      = "A User"
+      s.email       = "example@example.com"
+      s.homepage    = "http://example.com"
+      s.summary     = "this is a summary"
+      s.description = "This is a test description"
+    end
+
+    yaml_str = a.to_yaml
+
+    assert_match(/^platform: ruby$/, yaml_str)
+    refute_match(/^original_platform: /, yaml_str)
+  end
+
+  def test_to_yaml_platform_original_platform_empty_string
     @a1.instance_variable_set :@original_platform, ""
 
     assert_match(/^platform: ruby$/, @a1.to_yaml)
@@ -2510,7 +2544,7 @@ end
     assert_equal "powerpc-darwin7.9.0", same_spec.original_platform
   end
 
-  def test_to_yaml_platform_nil
+  def test_to_yaml_platform_original_platform_nil
     @a1.instance_variable_set :@original_platform, nil
 
     assert_match(/^platform: ruby$/, @a1.to_yaml)
@@ -2637,27 +2671,7 @@ end
         @a1.validate
       end
 
-      expected = <<-EXPECTED
-#{w}:  prerelease dependency on b (>= 1.0.rc1) is not recommended
-#{w}:  prerelease dependency on c (>= 2.0.rc2, development) is not recommended
-#{w}:  open-ended dependency on i (>= 1.2) is not recommended
-  if i is semantically versioned, use:
-    add_runtime_dependency "i", "~> 1.2"
-#{w}:  open-ended dependency on j (>= 1.2.3) is not recommended
-  if j is semantically versioned, use:
-    add_runtime_dependency "j", "~> 1.2", ">= 1.2.3"
-#{w}:  open-ended dependency on k (> 1.2) is not recommended
-  if k is semantically versioned, use:
-    add_runtime_dependency "k", "~> 1.2", "> 1.2"
-#{w}:  open-ended dependency on l (> 1.2.3) is not recommended
-  if l is semantically versioned, use:
-    add_runtime_dependency "l", "~> 1.2", "> 1.2.3"
-#{w}:  open-ended dependency on o (>= 0) is not recommended
-  use a bounded requirement, such as "~> x.y"
-#{w}:  See https://guides.rubygems.org/specification-reference/ for help
-      EXPECTED
-
-      assert_equal expected, @ui.error, "warning"
+      assert_equal "", @ui.error, "warning"
     end
   end
 
