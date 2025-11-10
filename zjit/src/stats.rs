@@ -146,6 +146,8 @@ make_counters! {
         exit_guard_int_equals_failure,
         exit_guard_shape_failure,
         exit_guard_not_frozen_failure,
+        exit_guard_less_failure,
+        exit_guard_greater_eq_failure,
         exit_patchpoint_bop_redefined,
         exit_patchpoint_method_redefined,
         exit_patchpoint_stable_constant_names,
@@ -159,12 +161,14 @@ make_counters! {
         exit_stackoverflow,
         exit_block_param_proxy_modified,
         exit_block_param_proxy_not_iseq_or_ifunc,
+        exit_too_many_keyword_parameters,
     }
 
     // Send fallback counters that are summed as dynamic_send_count
     dynamic_send {
         // send_fallback_: Fallback reasons for send-ish instructions
         send_fallback_send_without_block_polymorphic,
+        send_fallback_send_without_block_megamorphic,
         send_fallback_send_without_block_no_profiles,
         send_fallback_send_without_block_cfunc_not_variadic,
         send_fallback_send_without_block_cfunc_array_variadic,
@@ -172,6 +176,7 @@ make_counters! {
         send_fallback_send_without_block_not_optimized_optimized_method_type,
         send_fallback_send_without_block_direct_too_many_args,
         send_fallback_send_polymorphic,
+        send_fallback_send_megamorphic,
         send_fallback_send_no_profiles,
         send_fallback_send_not_optimized_method_type,
         send_fallback_ccall_with_frame_too_many_args,
@@ -389,12 +394,15 @@ pub fn side_exit_counter(reason: crate::hir::SideExitReason) -> Counter {
         GuardBitEquals(_)             => exit_guard_bit_equals_failure,
         GuardShape(_)                 => exit_guard_shape_failure,
         GuardNotFrozen                => exit_guard_not_frozen_failure,
+        GuardLess                     => exit_guard_less_failure,
+        GuardGreaterEq                => exit_guard_greater_eq_failure,
         CalleeSideExit                => exit_callee_side_exit,
         ObjToStringFallback           => exit_obj_to_string_fallback,
         Interrupt                     => exit_interrupt,
         StackOverflow                 => exit_stackoverflow,
         BlockParamProxyModified       => exit_block_param_proxy_modified,
         BlockParamProxyNotIseqOrIfunc => exit_block_param_proxy_not_iseq_or_ifunc,
+        TooManyKeywordParameters      => exit_too_many_keyword_parameters,
         PatchPoint(Invariant::BOPRedefined { .. })
                                       => exit_patchpoint_bop_redefined,
         PatchPoint(Invariant::MethodRedefined { .. })
@@ -422,6 +430,7 @@ pub fn send_fallback_counter(reason: crate::hir::SendFallbackReason) -> Counter 
     use crate::stats::Counter::*;
     match reason {
         SendWithoutBlockPolymorphic               => send_fallback_send_without_block_polymorphic,
+        SendWithoutBlockMegamorphic               => send_fallback_send_without_block_megamorphic,
         SendWithoutBlockNoProfiles                => send_fallback_send_without_block_no_profiles,
         SendWithoutBlockCfuncNotVariadic          => send_fallback_send_without_block_cfunc_not_variadic,
         SendWithoutBlockCfuncArrayVariadic        => send_fallback_send_without_block_cfunc_array_variadic,
@@ -430,6 +439,7 @@ pub fn send_fallback_counter(reason: crate::hir::SendFallbackReason) -> Counter 
                                                   => send_fallback_send_without_block_not_optimized_optimized_method_type,
         SendWithoutBlockDirectTooManyArgs         => send_fallback_send_without_block_direct_too_many_args,
         SendPolymorphic                           => send_fallback_send_polymorphic,
+        SendMegamorphic                           => send_fallback_send_megamorphic,
         SendNoProfiles                            => send_fallback_send_no_profiles,
         ComplexArgPass                            => send_fallback_one_or_more_complex_arg_pass,
         BmethodNonIseqProc                        => send_fallback_bmethod_non_iseq_proc,
