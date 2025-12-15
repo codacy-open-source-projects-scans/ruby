@@ -5416,3 +5416,37 @@ assert_equal 'foo', %{
 
   10.times.map { foo.dup }.last
 }
+
+# regression test for [Bug #21772]
+# local variable type tracking desync
+assert_normal_exit %q{
+  def some_method = 0
+
+  def test_body(key)
+    some_method
+    key = key.to_s # setting of local relevant
+
+    key == "symbol"
+  end
+
+  def jit_caller = test_body("session_id")
+
+  jit_caller # first iteration, non-escaped environment
+  alias some_method binding # induce environment escape
+  test_body(:symbol)
+}
+
+# regression test for missing check in identity method inlining
+assert_normal_exit %q{
+  # Use dead code (if false) to create a local
+  # without initialization instructions.
+  def foo(a)
+    if false
+      x = nil
+    end
+    x
+  end
+  def test = foo(1)
+  test
+  test
+}

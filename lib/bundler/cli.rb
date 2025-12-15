@@ -69,7 +69,7 @@ module Bundler
 
       # lock --lockfile works differently than install --lockfile
       unless current_cmd == "lock"
-        custom_lockfile = options[:lockfile] || Bundler.settings[:lockfile]
+        custom_lockfile = options[:lockfile] || ENV["BUNDLE_LOCKFILE"] || Bundler.settings[:lockfile]
         if custom_lockfile && !custom_lockfile.empty?
           Bundler::SharedHelpers.set_env "BUNDLE_LOCKFILE", File.expand_path(custom_lockfile)
           reset_settings = true
@@ -120,20 +120,31 @@ module Bundler
       self.class.send(:class_options_help, shell)
     end
 
+    desc "install_or_cli_help", "Deprecated alias of install", hide: true
+    def install_or_cli_help
+      Bundler.ui.warn <<~MSG
+        `bundle install_or_cli_help` is a deprecated alias of `bundle install`.
+        It might be called due to the 'default_cli_command' being set to 'install_or_cli_help',
+        if so fix that by running `bundle config set default_cli_command install --global`.
+      MSG
+      invoke_other_command("install")
+    end
+
     def self.default_command(meth = nil)
       return super if meth
 
-      default_cli_command = Bundler.settings[:default_cli_command]
-      return default_cli_command if default_cli_command
+      unless Bundler.settings[:default_cli_command]
+        Bundler.ui.info <<~MSG
+          In a future version of Bundler, running `bundle` without argument will no longer run `bundle install`.
+          Instead, the `cli_help` command will be displayed. Please use `bundle install` explicitly for scripts like CI/CD.
+          You can use the future behavior now with `bundle config set default_cli_command cli_help --global`,
+          or you can continue to use the current behavior with `bundle config set default_cli_command install --global`.
+          This message will be removed after a default_cli_command value is set.
 
-      Bundler.ui.warn(<<~MSG)
-        In the next version of Bundler, running `bundle` without argument will no longer run `bundle install`.
-        Instead, the `help` command will be displayed.
+        MSG
+      end
 
-        If you'd like to keep the previous behaviour please run `bundle config set default_cli_command install --global`.
-      MSG
-
-      "install"
+      Bundler.settings[:default_cli_command] || "install"
     end
 
     class_option "no-color", type: :boolean, desc: "Disable colorization in output"
@@ -274,9 +285,14 @@ module Bundler
       end
 
       require_relative "cli/install"
+      options = self.options.dup
+      options["lockfile"] ||= ENV["BUNDLE_LOCKFILE"]
       Bundler.settings.temporary(no_install: false) do
-        Install.new(options.dup).run
+        Install.new(options).run
       end
+    rescue GemfileNotFound => error
+      invoke_other_command("cli_help")
+      raise error # re-raise to show the error and get a failing exit status
     end
 
     map aliases_for("install")
@@ -721,6 +737,19 @@ module Bundler
     def current_command
       _, _, config = @_initializer
       config[:current_command]
+    end
+
+    def invoke_other_command(name)
+      _, _, config = @_initializer
+      original_command = config[:current_command]
+      command = self.class.all_commands[name]
+      config[:current_command] = command
+      send(name)
+    ensure
+      config[:current_command] = original_command
+    end
+
+    def current_command=(command)
     end
 
     def print_command

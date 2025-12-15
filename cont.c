@@ -2201,7 +2201,7 @@ rb_fiber_storage_set(VALUE self, VALUE value)
  *  Returns the value of the fiber storage variable identified by +key+.
  *
  *  The +key+ must be a symbol, and the value is set by Fiber#[]= or
- *  Fiber#store.
+ *  Fiber#storage.
  *
  *  See also Fiber::[]=.
  */
@@ -2907,6 +2907,7 @@ void
 rb_fiber_close(rb_fiber_t *fiber)
 {
     fiber_status_set(fiber, FIBER_TERMINATED);
+    rb_ec_close(&fiber->cont.saved_ec);
 }
 
 static void
@@ -3370,6 +3371,8 @@ rb_fiber_atfork(rb_thread_t *th)
             th->root_fiber = th->ec->fiber_ptr;
         }
         th->root_fiber->prev = 0;
+        th->root_fiber->blocking = 1;
+        th->blocking = 1;
     }
 }
 #endif
