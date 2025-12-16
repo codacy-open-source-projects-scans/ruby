@@ -82,6 +82,11 @@ Note: We're only listing outstanding class updates.
     * A deprecated behavior, process creation by `Kernel#open` with a
       leading `|`, was removed.  [[Feature #19630]]
 
+* Array
+
+    * `Array#rfind` has been added as a more efficient alternative to `array.reverse_each.find` [[Feature #21678]]
+    * `Array#find` has been added as a more efficient override of `Enumerable#find` [[Feature #21678]]
+
 * Binding
 
     * `Binding#local_variables` does no longer include numbered parameters.
@@ -200,10 +205,8 @@ Note: We're only listing outstanding class updates.
     * `Set` is now a core class, instead of an autoloaded stdlib class.
       [[Feature #21216]]
 
-    * `Set#inspect` now returns a string suitable for `eval`, using the
-      `Set[]` syntax (e.g., `Set[1, 2, 3]` instead of
-      `#<Set: {1, 2, 3}>`). This makes it consistent with other core
-      collection classes like Array and Hash. [[Feature #21389]]
+    * `Set#inspect` now uses a simpler displays, similar to literal arrays.
+      (e.g., `Set[1, 2, 3]` instead of `#<Set: {1, 2, 3}>`). [[Feature #21389]]
 
     * Passing arguments to `Set#to_set` and `Enumerable#to_set` is now deprecated.
       [[Feature #21390]]
@@ -275,7 +278,7 @@ The following default gems are updated.
 * date 3.5.1
 * digest 3.2.1
 * english 0.8.1
-* erb 6.0.0
+* erb 6.0.1
 * etc 1.4.6
 * fcntl 1.3.0
 * fileutils 1.8.0
@@ -286,7 +289,7 @@ The following default gems are updated.
 * ipaddr 1.2.8
 * json 2.18.0
 * net-http 0.8.0
-* openssl 4.0.0.pre
+* openssl 4.0.0
 * optparse 0.8.1
 * pp 0.6.3
 * prism 1.6.0
@@ -478,4 +481,5 @@ A lot of work has gone into making Ractors more stable, performant, and usable. 
 [Feature #21550]: https://bugs.ruby-lang.org/issues/21550
 [Feature #21557]: https://bugs.ruby-lang.org/issues/21557
 [Bug #21654]:     https://bugs.ruby-lang.org/issues/21654
+[Feature #21678]: https://bugs.ruby-lang.org/issues/21678
 [Feature #21701]: https://bugs.ruby-lang.org/issues/21701
