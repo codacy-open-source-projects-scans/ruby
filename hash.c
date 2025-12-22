@@ -4888,10 +4888,9 @@ hash_le(VALUE hash1, VALUE hash2)
 
 /*
  *  call-seq:
- *    self <= other_hash -> true or false
+ *    self <= other -> true or false
  *
- *  Returns +true+ if the entries of +self+ are a subset of the entries of +other_hash+,
- *  +false+ otherwise:
+ *  Returns whether the entries of +self+ are a subset of the entries of +other+:
  *
  *    h0 = {foo: 0, bar: 1}
  *    h1 = {foo: 0, bar: 1, baz: 2}
@@ -4915,10 +4914,9 @@ rb_hash_le(VALUE hash, VALUE other)
 
 /*
  *  call-seq:
- *    self < other_hash -> true or false
+ *    self < other -> true or false
  *
- *  Returns +true+ if the entries of +self+ are a proper subset of the entries of +other_hash+,
- *  +false+ otherwise:
+ *  Returns whether the entries of +self+ are a proper subset of the entries of +other+:
  *
  *    h = {foo: 0, bar: 1}
  *    h < {foo: 0, bar: 1, baz: 2} # => true   # Proper subset.

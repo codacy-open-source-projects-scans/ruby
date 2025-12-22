@@ -1418,10 +1418,34 @@ io_flush_buffer_sync(void *arg)
     return (VALUE)-1;
 }
 
+static inline VALUE
+io_flush_buffer_fiber_scheduler(VALUE scheduler, rb_io_t *fptr)
+{
+    VALUE ret = rb_fiber_scheduler_io_write_memory(scheduler, fptr->self, fptr->wbuf.ptr+fptr->wbuf.off, fptr->wbuf.len, 0);
+    if (!UNDEF_P(ret)) {
+        ssize_t result = rb_fiber_scheduler_io_result_apply(ret);
+        if (result > 0) {
+            fptr->wbuf.off += result;
+            fptr->wbuf.len -= result;
+        }
+        return result >= 0 ? (VALUE)0 : (VALUE)-1;
+    }
+    return ret;
+}
+
 static VALUE
 io_flush_buffer_async(VALUE arg)
 {
     rb_io_t *fptr = (rb_io_t *)arg;
+
+    VALUE scheduler = rb_fiber_scheduler_current();
+    if (scheduler != Qnil) {
+        VALUE result = io_flush_buffer_fiber_scheduler(scheduler, fptr);
+        if (!UNDEF_P(result)) {
+            return result;
+        }
+    }
+
     return rb_io_blocking_region_wait(fptr, io_flush_buffer_sync, fptr, RUBY_IO_WRITABLE);
 }
 
@@ -2635,9 +2659,6 @@ io_fillbuf(rb_io_t *fptr)
         fptr->rbuf.len = 0;
         fptr->rbuf.capa = IO_RBUF_CAPA_FOR(fptr);
         fptr->rbuf.ptr = ALLOC_N(char, fptr->rbuf.capa);
-#ifdef _WIN32
-        fptr->rbuf.capa--;
-#endif
     }
     if (fptr->rbuf.len == 0) {
       retry:
@@ -3305,10 +3326,6 @@ io_shift_cbuf(rb_io_t *fptr, int len, VALUE *strp)
 static int
 io_setstrbuf(VALUE *str, long len)
 {
-#ifdef _WIN32
-    if (len > 0)
-        len = (len + 1) & ~1L;	/* round up for wide char */
-#endif
     if (NIL_P(*str)) {
         *str = rb_str_new(0, len);
         return TRUE;

@@ -9,6 +9,7 @@
 #include "internal/file.h"
 #include "internal/gc.h"
 #include "internal/hash.h"
+#include "internal/io.h"
 #include "internal/load.h"
 #include "internal/st.h"
 #include "internal/variable.h"
@@ -276,10 +277,15 @@ box_entry_free(void *ptr)
 static size_t
 box_entry_memsize(const void *ptr)
 {
+    size_t size = sizeof(rb_box_t);
     const rb_box_t *box = (const rb_box_t *)ptr;
-    return sizeof(rb_box_t) + \
-        rb_st_memsize(box->loaded_features_index) + \
-        rb_st_memsize(box->loading_table);
+    if (box->loaded_features_index) {
+        size += rb_st_memsize(box->loaded_features_index);
+    }
+    if (box->loading_table) {
+        size += rb_st_memsize(box->loading_table);
+    }
+    return size;
 }
 
 static const rb_data_type_t rb_box_data_type = {
@@ -622,8 +628,14 @@ copy_ext_file(const char *src_path, const char *dst_path)
 # else
     const int bin = 0;
 # endif
-    const int src_fd = open(src_path, O_RDONLY|bin);
+# ifdef O_CLOEXEC
+    const int cloexec = O_CLOEXEC;
+# else
+    const int cloexec = 0;
+# endif
+    const int src_fd = open(src_path, O_RDONLY|cloexec|bin);
     if (src_fd < 0) return COPY_ERROR_SRC_OPEN;
+    if (!cloexec) rb_maygvl_fd_fix_cloexec(src_fd);
 
     struct stat src_st;
     if (fstat(src_fd, &src_st)) {
@@ -631,11 +643,12 @@ copy_ext_file(const char *src_path, const char *dst_path)
         return COPY_ERROR_SRC_STAT;
     }
 
-    const int dst_fd = open(dst_path, O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|bin, S_IRWXU);
+    const int dst_fd = open(dst_path, O_WRONLY|O_CREAT|O_EXCL|cloexec|bin, S_IRWXU);
     if (dst_fd < 0) {
         close(src_fd);
         return COPY_ERROR_DST_OPEN;
     }
+    if (!cloexec) rb_maygvl_fd_fix_cloexec(dst_fd);
 
     enum copy_error_type ret = COPY_ERROR_NONE;
 
@@ -746,6 +759,7 @@ rb_box_cleanup_local_extension(VALUE cleanup)
 #ifndef _WIN32
     if (p) box_ext_cleanup_free(p);
 #endif
+    (void)p;
 }
 
 static int
