@@ -638,6 +638,7 @@ typedef struct gc_function_map {
     void (*declare_weak_references)(void *objspace_ptr, VALUE obj);
     bool (*handle_weak_references_alive_p)(void *objspace_ptr, VALUE obj);
     // Compaction
+    void (*register_pinning_obj)(void *objspace_ptr, VALUE obj);
     bool (*object_moved_p)(void *objspace_ptr, VALUE obj);
     VALUE (*location)(void *objspace_ptr, VALUE value);
     // Write barriers
@@ -813,6 +814,7 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(declare_weak_references);
     load_modular_gc_func(handle_weak_references_alive_p);
     // Compaction
+    load_modular_gc_func(register_pinning_obj);
     load_modular_gc_func(object_moved_p);
     load_modular_gc_func(location);
     // Write barriers
@@ -894,6 +896,7 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_declare_weak_references rb_gc_functions.declare_weak_references
 # define rb_gc_impl_handle_weak_references_alive_p rb_gc_functions.handle_weak_references_alive_p
 // Compaction
+# define rb_gc_impl_register_pinning_obj rb_gc_functions.register_pinning_obj
 # define rb_gc_impl_object_moved_p rb_gc_functions.object_moved_p
 # define rb_gc_impl_location rb_gc_functions.location
 // Write barriers
@@ -1049,6 +1052,12 @@ rb_wb_protected_newobj_of(rb_execution_context_t *ec, VALUE klass, VALUE flags, 
     return newobj_of(rb_ec_ractor_ptr(ec), klass, flags, shape_id, TRUE, size);
 }
 
+void
+rb_gc_register_pinning_obj(VALUE obj)
+{
+    rb_gc_impl_register_pinning_obj(rb_gc_get_objspace(), obj);
+}
+
 #define UNEXPECTED_NODE(func) \
     rb_bug(#func"(): GC does not handle T_NODE 0x%x(%p) 0x%"PRIxVALUE, \
            BUILTIN_TYPE(obj), (void*)(obj), RBASIC(obj)->flags)
@@ -1069,6 +1078,8 @@ rb_data_object_wrap(VALUE klass, void *datap, RUBY_DATA_FUNC dmark, RUBY_DATA_FU
     if (klass) rb_data_object_check(klass);
     VALUE obj = newobj_of(GET_RACTOR(), klass, T_DATA, ROOT_SHAPE_ID, !dmark, sizeof(struct RTypedData));
 
+    rb_gc_register_pinning_obj(obj);
+
     struct RData *data = (struct RData *)obj;
     data->dmark = dmark;
     data->dfree = dfree;
@@ -1085,6 +1096,10 @@ rb_data_object_zalloc(VALUE klass, size_t size, RUBY_DATA_FUNC dmark, RUBY_DATA_
     return obj;
 }
 
+#define RTYPEDDATA_EMBEDDED_P rbimpl_typeddata_embedded_p
+#define RB_DATA_TYPE_EMBEDDABLE_P(type) ((type)->flags & RUBY_TYPED_EMBEDDABLE)
+#define RTYPEDDATA_EMBEDDABLE_P(obj) RB_DATA_TYPE_EMBEDDABLE_P(RTYPEDDATA_TYPE(obj))
+
 static VALUE
 typed_data_alloc(VALUE klass, VALUE typed_flag, void *datap, const rb_data_type_t *type, size_t size)
 {
@@ -1092,6 +1107,8 @@ typed_data_alloc(VALUE klass, VALUE typed_flag, void *datap, const rb_data_type_
     if (klass) rb_data_object_check(klass);
     bool wb_protected = (type->flags & RUBY_FL_WB_PROTECTED) || !type->function.dmark;
     VALUE obj = newobj_of(GET_RACTOR(), klass, T_DATA | RUBY_TYPED_FL_IS_TYPED_DATA, ROOT_SHAPE_ID, wb_protected, size);
+
+    rb_gc_register_pinning_obj(obj);
 
     struct RTypedData *data = (struct RTypedData *)obj;
     data->fields_obj = 0;
@@ -1104,7 +1121,7 @@ typed_data_alloc(VALUE klass, VALUE typed_flag, void *datap, const rb_data_type_
 VALUE
 rb_data_typed_object_wrap(VALUE klass, void *datap, const rb_data_type_t *type)
 {
-    if (UNLIKELY(type->flags & RUBY_TYPED_EMBEDDABLE)) {
+    if (UNLIKELY(RB_DATA_TYPE_EMBEDDABLE_P(type))) {
         rb_raise(rb_eTypeError, "Cannot wrap an embeddable TypedData");
     }
 
@@ -1114,7 +1131,7 @@ rb_data_typed_object_wrap(VALUE klass, void *datap, const rb_data_type_t *type)
 VALUE
 rb_data_typed_object_zalloc(VALUE klass, size_t size, const rb_data_type_t *type)
 {
-    if (type->flags & RUBY_TYPED_EMBEDDABLE) {
+    if (RB_DATA_TYPE_EMBEDDABLE_P(type)) {
         if (!(type->flags & RUBY_TYPED_FREE_IMMEDIATELY)) {
             rb_raise(rb_eTypeError, "Embeddable TypedData must be freed immediately");
         }
@@ -1140,7 +1157,7 @@ rb_objspace_data_type_memsize(VALUE obj)
         const rb_data_type_t *type = RTYPEDDATA_TYPE(obj);
         const void *ptr = RTYPEDDATA_GET_DATA(obj);
 
-        if (RTYPEDDATA_TYPE(obj)->flags & RUBY_TYPED_EMBEDDABLE && !RTYPEDDATA_EMBEDDED_P(obj)) {
+        if (RTYPEDDATA_EMBEDDABLE_P(obj) && !RTYPEDDATA_EMBEDDED_P(obj)) {
 #ifdef HAVE_MALLOC_USABLE_SIZE
             size += malloc_usable_size((void *)ptr);
 #endif
@@ -1272,7 +1289,7 @@ rb_data_free(void *objspace, VALUE obj)
             }
             else if (free_immediately) {
                 (*dfree)(data);
-                if (RTYPEDDATA_TYPE(obj)->flags & RUBY_TYPED_EMBEDDABLE && !RTYPEDDATA_EMBEDDED_P(obj)) {
+                if (RTYPEDDATA_EMBEDDABLE_P(obj) && !RTYPEDDATA_EMBEDDED_P(obj)) {
                     xfree(data);
                 }
 
@@ -3159,6 +3176,14 @@ gc_mark_classext_iclass(rb_classext_t *ext, bool prime, VALUE box_value, void *a
 }
 
 #define TYPED_DATA_REFS_OFFSET_LIST(d) (size_t *)(uintptr_t)RTYPEDDATA_TYPE(d)->function.dmark
+
+void
+rb_gc_move_obj_during_marking(VALUE from, VALUE to)
+{
+    if (rb_obj_gen_fields_p(to)) {
+        rb_mark_generic_ivar(from);
+    }
+}
 
 void
 rb_gc_mark_children(void *objspace, VALUE obj)
