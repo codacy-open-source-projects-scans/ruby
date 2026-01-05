@@ -79,6 +79,7 @@ typedef struct MMTk_RubyUpcalls {
     void (*update_finalizer_table)(void);
     bool (*special_const_p)(MMTk_ObjectReference object);
     void (*mutator_thread_panic_handler)(void);
+    void (*gc_thread_panic_handler)(void);
 } MMTk_RubyUpcalls;
 
 typedef struct MMTk_RawVecOfObjRef {
@@ -122,7 +123,7 @@ void mmtk_post_alloc(MMTk_Mutator *mutator,
                      size_t bytes,
                      MMTk_AllocationSemantics semantics);
 
-void mmtk_add_obj_free_candidate(MMTk_ObjectReference object);
+void mmtk_add_obj_free_candidate(MMTk_ObjectReference object, bool can_parallel_free);
 
 void mmtk_declare_weak_references(MMTk_ObjectReference object);
 

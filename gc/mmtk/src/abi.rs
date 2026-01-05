@@ -1,8 +1,12 @@
 use crate::api::RubyMutator;
-use crate::{extra_assert, Ruby};
+use crate::extra_assert;
+use crate::Ruby;
 use libc::c_int;
 use mmtk::scheduler::GCWorker;
-use mmtk::util::{Address, ObjectReference, VMMutatorThread, VMWorkerThread};
+use mmtk::util::Address;
+use mmtk::util::ObjectReference;
+use mmtk::util::VMMutatorThread;
+use mmtk::util::VMWorkerThread;
 
 // For the C binding
 pub const OBJREF_OFFSET: usize = 8;
@@ -319,6 +323,7 @@ pub struct RubyUpcalls {
     pub update_finalizer_table: extern "C" fn(),
     pub special_const_p: extern "C" fn(object: ObjectReference) -> bool,
     pub mutator_thread_panic_handler: extern "C" fn(),
+    pub gc_thread_panic_handler: extern "C" fn(),
 }
 
 unsafe impl Sync for RubyUpcalls {}

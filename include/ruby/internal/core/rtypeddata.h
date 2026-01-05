@@ -109,14 +109,17 @@
 /** @cond INTERNAL_MACRO */
 #define RTYPEDDATA_P                 RTYPEDDATA_P
 #define RTYPEDDATA_TYPE              RTYPEDDATA_TYPE
+#define TYPED_DATA_EMBEDDED          ((VALUE)1)
+#define TYPED_DATA_PTR_MASK          (~(TYPED_DATA_EMBEDDED))
+/** @endcond */
+
+/**
+ * Macros to see if each corresponding flag is defined.
+ */
 #define RUBY_TYPED_FREE_IMMEDIATELY  RUBY_TYPED_FREE_IMMEDIATELY
 #define RUBY_TYPED_FROZEN_SHAREABLE  RUBY_TYPED_FROZEN_SHAREABLE
 #define RUBY_TYPED_WB_PROTECTED      RUBY_TYPED_WB_PROTECTED
 #define RUBY_TYPED_PROMOTED1         RUBY_TYPED_PROMOTED1
-/** @endcond */
-
-#define TYPED_DATA_EMBEDDED ((VALUE)1)
-#define TYPED_DATA_PTR_MASK (~(TYPED_DATA_EMBEDDED))
 
 /**
  * @private
@@ -259,11 +262,9 @@ struct rb_data_type_struct {
         RUBY_DATA_FUNC dcompact;
 
         /**
-         * This field  is reserved for future  extension.  For now, it  must be
-         * filled with zeros.
+         * @internal
          */
-        void *reserved[1]; /* For future extension.
-                              This array *must* be filled with ZERO. */
+        void (*handle_weak_references)(void *);
     } function;
 
     /**
@@ -482,6 +483,17 @@ RBIMPL_ATTR_NONNULL(())
 void rb_unexpected_typeddata(const rb_data_type_t *actual, const rb_data_type_t *expected);
 RBIMPL_SYMBOL_EXPORT_END()
 
+#if RUBY_DEBUG
+# define RBIMPL_TYPEDDATA_PRECONDITION(obj, unreachable) \
+    while (RB_UNLIKELY(!RB_TYPE_P(obj, RUBY_T_DATA))) { \
+        rb_unexpected_object_type(obj, "Data"); \
+        unreachable; \
+    }
+#else
+# define RBIMPL_TYPEDDATA_PRECONDITION(obj, unreachable) \
+    RBIMPL_ASSERT_NOTHING
+#endif
+
 /**
  * Converts sval, a pointer to your struct, into a Ruby object.
  *
@@ -510,7 +522,7 @@ RBIMPL_SYMBOL_EXPORT_END()
  */
 #define TypedData_Make_Struct0(result, klass, type, size, data_type, sval) \
     VALUE result = rb_data_typed_object_zalloc(klass, size, data_type);    \
-    (sval) = RBIMPL_CAST((type *)RTYPEDDATA_GET_DATA(result)); \
+    (sval) = RBIMPL_CAST((type *)rbimpl_typeddata_get_data(result)); \
     RBIMPL_CAST(/*suppress unused variable warnings*/(void)(sval))
 
 /**
@@ -550,13 +562,6 @@ RBIMPL_SYMBOL_EXPORT_END()
 static inline bool
 rbimpl_typeddata_embedded_p(VALUE obj)
 {
-#if RUBY_DEBUG
-    if (RB_UNLIKELY(!RB_TYPE_P(obj, RUBY_T_DATA))) {
-        Check_Type(obj, RUBY_T_DATA);
-        RBIMPL_UNREACHABLE_RETURN(false);
-    }
-#endif
-
     return (RTYPEDDATA(obj)->type) & TYPED_DATA_EMBEDDED;
 }
 
@@ -564,23 +569,26 @@ RBIMPL_ATTR_DEPRECATED_INTERNAL_ONLY()
 static inline bool
 RTYPEDDATA_EMBEDDED_P(VALUE obj)
 {
+    RBIMPL_TYPEDDATA_PRECONDITION(obj, RBIMPL_UNREACHABLE_RETURN(false));
+
     return rbimpl_typeddata_embedded_p(obj);
+}
+
+static inline void *
+rbimpl_typeddata_get_data(VALUE obj)
+{
+    /* We reuse the data pointer in embedded TypedData. */
+    return rbimpl_typeddata_embedded_p(obj) ?
+        RBIMPL_CAST((void *)&RTYPEDDATA_DATA(obj)) :
+        RTYPEDDATA_DATA(obj);
 }
 
 static inline void *
 RTYPEDDATA_GET_DATA(VALUE obj)
 {
-#if RUBY_DEBUG
-    if (RB_UNLIKELY(!RB_TYPE_P(obj, RUBY_T_DATA))) {
-        Check_Type(obj, RUBY_T_DATA);
-        RBIMPL_UNREACHABLE_RETURN(NULL);
-    }
-#endif
+    RBIMPL_TYPEDDATA_PRECONDITION(obj, RBIMPL_UNREACHABLE_RETURN(NULL));
 
-    /* We reuse the data pointer in embedded TypedData. */
-    return rbimpl_typeddata_embedded_p(obj) ?
-        RBIMPL_CAST((void *)&RTYPEDDATA_DATA(obj)) :
-        RTYPEDDATA_DATA(obj);
+    return rbimpl_typeddata_get_data(obj);
 }
 
 RBIMPL_ATTR_PURE()
@@ -636,12 +644,7 @@ RBIMPL_ATTR_ARTIFICIAL()
 static inline bool
 RTYPEDDATA_P(VALUE obj)
 {
-#if RUBY_DEBUG
-    if (RB_UNLIKELY(! RB_TYPE_P(obj, RUBY_T_DATA))) {
-        Check_Type(obj, RUBY_T_DATA);
-        RBIMPL_UNREACHABLE_RETURN(false);
-    }
-#endif
+    RBIMPL_TYPEDDATA_PRECONDITION(obj, RBIMPL_UNREACHABLE_RETURN(false));
 
     return rbimpl_rtypeddata_p(obj);
 }
@@ -659,12 +662,7 @@ RBIMPL_ATTR_RETURNS_NONNULL()
 static inline const rb_data_type_t *
 RTYPEDDATA_TYPE(VALUE obj)
 {
-#if RUBY_DEBUG
-    if (RB_UNLIKELY(! RTYPEDDATA_P(obj))) {
-        rb_unexpected_type(obj, RUBY_T_DATA);
-        RBIMPL_UNREACHABLE_RETURN(NULL);
-    }
-#endif
+    RBIMPL_TYPEDDATA_PRECONDITION(obj, RBIMPL_UNREACHABLE_RETURN(NULL));
 
     VALUE type = RTYPEDDATA(obj)->type & TYPED_DATA_PTR_MASK;
     const rb_data_type_t *ptr = RBIMPL_CAST((const rb_data_type_t *)type);

@@ -14,8 +14,11 @@ use std::sync::Mutex;
 use std::thread::ThreadId;
 
 use abi::RubyUpcalls;
-use binding::{RubyBinding, RubyBindingFast, RubyConfiguration};
-use mmtk::vm::slot::{SimpleSlot, UnimplementedMemorySlice};
+use binding::RubyBinding;
+use binding::RubyBindingFast;
+use binding::RubyConfiguration;
+use mmtk::vm::slot::SimpleSlot;
+use mmtk::vm::slot::UnimplementedMemorySlice;
 use mmtk::vm::VMBinding;
 use mmtk::MMTK;
 use once_cell::sync::OnceCell;
@@ -123,8 +126,6 @@ fn handle_gc_thread_panic(panic_info: &PanicHookInfo) {
             eprintln!("Unknown backtrace status: {s:?}");
         }
     }
-
-    std::process::abort();
 }
 
 pub(crate) fn set_panic_hook() {
@@ -137,6 +138,8 @@ pub(crate) fn set_panic_hook() {
     std::panic::set_hook(Box::new(move |panic_info| {
         if is_gc_thread(std::thread::current().id()) {
             handle_gc_thread_panic(panic_info);
+
+            (crate::binding().upcalls().gc_thread_panic_handler)();
         } else {
             old_hook(panic_info);
             (crate::MUTATOR_THREAD_PANIC_HANDLER
