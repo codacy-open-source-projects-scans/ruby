@@ -162,7 +162,7 @@ rb_obj_setup(VALUE obj, VALUE klass, VALUE type)
  *
  * Returns +true+ or +false+.
  *
- * Like Object#==, if +object+ is an instance of Object
+ * Like Object#==, if +other+ is an instance of \Object
  * (and not an instance of one of its many subclasses).
  *
  * This method is commonly overridden by those subclasses,
@@ -200,14 +200,18 @@ rb_eql(VALUE obj1, VALUE obj2)
 
 /**
  *  call-seq:
- *     obj == other        -> true or false
- *     obj.equal?(other)   -> true or false
- *     obj.eql?(other)     -> true or false
+ *     self == other -> true or false
+ *     equal?(other) -> true or false
+ *     eql?(other) -> true or false
  *
- *  Equality --- At the Object level, #== returns <code>true</code>
- *  only if +obj+ and +other+ are the same object.  Typically, this
- *  method is overridden in descendant classes to provide
- *  class-specific meaning.
+ *  Returns whether +self+ and +other+ are the same object:
+ *
+ *    object = Object.new
+ *    object == object     # => true
+ *    object == Object.new # => false
+ *
+ *  Here in class \Object, #==, #equal?, and #eql? are the same method.
+ *  A subclass may override #== to provide class-specific meaning.
  *
  *  Unlike #==, the #equal? method should never be overridden by
  *  subclasses as it is used to determine object identity (that is,
@@ -1892,11 +1896,12 @@ rb_mod_freeze(VALUE mod)
 
 /*
  *  call-seq:
- *     mod === obj    -> true or false
+ *     self === other -> true or false
  *
- *  Case Equality---Returns <code>true</code> if <i>obj</i> is an
- *  instance of <i>mod</i> or an instance of one of <i>mod</i>'s descendants.
- *  Of limited use for modules, but can be used in <code>case</code> statements
+ *  Returns whether +other+ is an instance of +self+,
+ *  or is an instance of a subclass of +self+.
+ *
+ *  Of limited use for modules, but can be used in +case+ statements
  *  to classify objects by class.
  */
 
