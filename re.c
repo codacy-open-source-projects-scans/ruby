@@ -2213,12 +2213,12 @@ match_ary_aref(VALUE match, VALUE idx, VALUE result)
 
 /*
  *  call-seq:
- *    matchdata[index] -> string or nil
- *    matchdata[start, length] -> array
- *    matchdata[range] -> array
- *    matchdata[name] -> string or nil
+ *    self[offset] -> string or nil
+ *    self[offset, size] -> array
+ *    self[range] -> array
+ *    self[name] -> string or nil
  *
- *  When arguments +index+, +start and +length+, or +range+ are given,
+ *  When arguments +offset+, +offset+ and +size+, or +range+ are given,
  *  returns match and captures in the style of Array#[]:
  *
  *    m = /(.)(.)(\d+)(\d)/.match("THX1138.")
@@ -3663,12 +3663,11 @@ reg_match_pos(VALUE re, VALUE *strp, long pos, VALUE* set_match)
 
 /*
  *  call-seq:
- *    regexp =~ string -> integer or nil
+ *    self =~ other -> integer or nil
  *
  *  Returns the integer index (in characters) of the first match
- *  for +self+ and +string+, or +nil+ if none;
- *  also sets the
- *  {rdoc-ref:Regexp global variables}[rdoc-ref:Regexp@Global+Variables]:
+ *  for +self+ and +other+, or +nil+ if none;
+ *  updates {Regexp-related global variables}[rdoc-ref:Regexp@Global+Variables].
  *
  *    /at/ =~ 'input data' # => 7
  *    $~                   # => #<MatchData "at">
