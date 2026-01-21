@@ -377,17 +377,19 @@ pub enum Insn {
     /// Pop a register from the C stack
     CPop { out: Opnd },
 
-    /// Pop all of the caller-save registers and the flags from the C stack
-    CPopAll,
-
     /// Pop a register from the C stack and store it into another register
     CPopInto(Opnd),
+
+    /// Pop a pair of registers from the C stack and store it into a pair of registers.
+    /// The registers are popped from left to right.
+    CPopPairInto(Opnd, Opnd),
 
     /// Push a register onto the C stack
     CPush(Opnd),
 
-    /// Push all of the caller-save registers and the flags to the C stack
-    CPushAll,
+    /// Push a pair of registers onto the C stack.
+    /// The registers are pushed from left to right.
+    CPushPair(Opnd, Opnd),
 
     // C function call with N arguments (variadic)
     CCall {
@@ -614,10 +616,10 @@ impl Insn {
             Insn::Comment(_) => "Comment",
             Insn::Cmp { .. } => "Cmp",
             Insn::CPop { .. } => "CPop",
-            Insn::CPopAll => "CPopAll",
             Insn::CPopInto(_) => "CPopInto",
+            Insn::CPopPairInto(_, _) => "CPopPairInto",
             Insn::CPush(_) => "CPush",
-            Insn::CPushAll => "CPushAll",
+            Insn::CPushPair(_, _) => "CPushPair",
             Insn::CCall { .. } => "CCall",
             Insn::CRet(_) => "CRet",
             Insn::CSelE { .. } => "CSelE",
@@ -851,8 +853,6 @@ impl<'a> Iterator for InsnOpndIterator<'a> {
             Insn::Breakpoint |
             Insn::Comment(_) |
             Insn::CPop { .. } |
-            Insn::CPopAll |
-            Insn::CPushAll |
             Insn::PadPatchPoint |
             Insn::PosMarker(_) => None,
 
@@ -875,6 +875,8 @@ impl<'a> Iterator for InsnOpndIterator<'a> {
             },
             Insn::Add { left: opnd0, right: opnd1, .. } |
             Insn::And { left: opnd0, right: opnd1, .. } |
+            Insn::CPushPair(opnd0, opnd1) |
+            Insn::CPopPairInto(opnd0, opnd1) |
             Insn::Cmp { left: opnd0, right: opnd1 } |
             Insn::CSelE { truthy: opnd0, falsy: opnd1, .. } |
             Insn::CSelG { truthy: opnd0, falsy: opnd1, .. } |
@@ -1020,8 +1022,6 @@ impl<'a> InsnOpndMutIterator<'a> {
             Insn::Breakpoint |
             Insn::Comment(_) |
             Insn::CPop { .. } |
-            Insn::CPopAll |
-            Insn::CPushAll |
             Insn::FrameSetup { .. } |
             Insn::FrameTeardown { .. } |
             Insn::PadPatchPoint |
@@ -1046,6 +1046,8 @@ impl<'a> InsnOpndMutIterator<'a> {
             },
             Insn::Add { left: opnd0, right: opnd1, .. } |
             Insn::And { left: opnd0, right: opnd1, .. } |
+            Insn::CPushPair(opnd0, opnd1) |
+            Insn::CPopPairInto(opnd0, opnd1) |
             Insn::Cmp { left: opnd0, right: opnd1 } |
             Insn::CSelE { truthy: opnd0, falsy: opnd1, .. } |
             Insn::CSelG { truthy: opnd0, falsy: opnd1, .. } |
@@ -1604,9 +1606,19 @@ impl Assembler
                 saved_regs = pool.live_regs();
 
                 // Save live registers
-                for &(reg, _) in saved_regs.iter() {
-                    asm.cpush(Opnd::Reg(reg));
-                    pool.dealloc_opnd(&Opnd::Reg(reg));
+                for pair in saved_regs.chunks(2) {
+                    match *pair {
+                        [(reg0, _), (reg1, _)] => {
+                            asm.cpush_pair(Opnd::Reg(reg0), Opnd::Reg(reg1));
+                            pool.dealloc_opnd(&Opnd::Reg(reg0));
+                            pool.dealloc_opnd(&Opnd::Reg(reg1));
+                        }
+                        [(reg, _)] => {
+                            asm.cpush(Opnd::Reg(reg));
+                            pool.dealloc_opnd(&Opnd::Reg(reg));
+                        }
+                        _ => unreachable!("chunks(2)")
+                    }
                 }
                 // On x86_64, maintain 16-byte stack alignment
                 if cfg!(target_arch = "x86_64") && saved_regs.len() % 2 == 1 {
@@ -1737,9 +1749,19 @@ impl Assembler
                     asm.cpop_into(Opnd::Reg(saved_regs.last().unwrap().0));
                 }
                 // Restore saved registers
-                for &(reg, vreg_idx) in saved_regs.iter().rev() {
-                    asm.cpop_into(Opnd::Reg(reg));
-                    pool.take_reg(&reg, vreg_idx);
+                for pair in saved_regs.chunks(2).rev() {
+                    match *pair {
+                        [(reg, vreg_idx)] => {
+                            asm.cpop_into(Opnd::Reg(reg));
+                            pool.take_reg(&reg, vreg_idx);
+                        }
+                        [(reg0, vreg_idx0), (reg1, vreg_idx1)] => {
+                            asm.cpop_pair_into(Opnd::Reg(reg1), Opnd::Reg(reg0));
+                            pool.take_reg(&reg1, vreg_idx1);
+                            pool.take_reg(&reg0, vreg_idx0);
+                        }
+                        _ => unreachable!("chunks(2)")
+                    }
                 }
                 saved_regs.clear();
             }
@@ -1867,10 +1889,7 @@ impl Assembler
                     }
 
                     if should_record_exit {
-                        // Preserve caller-saved registers that may be used in the shared exit.
-                        self.cpush_all();
                         asm_ccall!(self, rb_zjit_record_exit_stack, pc);
-                        self.cpop_all();
                     }
 
                     // If the side exit has already been compiled, jump to it.
@@ -2135,21 +2154,27 @@ impl Assembler {
         out
     }
 
-    pub fn cpop_all(&mut self) {
-        self.push_insn(Insn::CPopAll);
-    }
-
     pub fn cpop_into(&mut self, opnd: Opnd) {
         assert!(matches!(opnd, Opnd::Reg(_)), "Destination of cpop_into must be a register, got: {opnd:?}");
         self.push_insn(Insn::CPopInto(opnd));
+    }
+
+    #[track_caller]
+    pub fn cpop_pair_into(&mut self, opnd0: Opnd, opnd1: Opnd) {
+        assert!(matches!(opnd0, Opnd::Reg(_) | Opnd::VReg{ .. }), "Destination of cpop_pair_into must be a register, got: {opnd0:?}");
+        assert!(matches!(opnd1, Opnd::Reg(_) | Opnd::VReg{ .. }), "Destination of cpop_pair_into must be a register, got: {opnd1:?}");
+        self.push_insn(Insn::CPopPairInto(opnd0, opnd1));
     }
 
     pub fn cpush(&mut self, opnd: Opnd) {
         self.push_insn(Insn::CPush(opnd));
     }
 
-    pub fn cpush_all(&mut self) {
-        self.push_insn(Insn::CPushAll);
+    #[track_caller]
+    pub fn cpush_pair(&mut self, opnd0: Opnd, opnd1: Opnd) {
+        assert!(matches!(opnd0, Opnd::Reg(_) | Opnd::VReg{ .. }), "Destination of cpush_pair must be a register, got: {opnd0:?}");
+        assert!(matches!(opnd1, Opnd::Reg(_) | Opnd::VReg{ .. }), "Destination of cpush_pair must be a register, got: {opnd1:?}");
+        self.push_insn(Insn::CPushPair(opnd0, opnd1));
     }
 
     pub fn cret(&mut self, opnd: Opnd) {
