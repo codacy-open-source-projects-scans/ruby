@@ -2276,6 +2276,9 @@ fn gen_guard_type_not(jit: &mut JITState, asm: &mut Assembler, val: lir::Opnd, g
 
 /// Compile an identity check with a side exit
 fn gen_guard_bit_equals(jit: &mut JITState, asm: &mut Assembler, val: lir::Opnd, expected: crate::hir::Const, reason: SideExitReason, state: &FrameState) -> lir::Opnd {
+    if matches!(reason, SideExitReason::GuardShape(_) ) {
+        gen_incr_counter(asm, Counter::guard_shape_count);
+    }
     let expected_opnd: Opnd = match expected {
         crate::hir::Const::Value(v) => { Opnd::Value(v) }
         crate::hir::Const::CInt64(v) => { v.into() }
@@ -2899,6 +2902,7 @@ fn gen_string_append_codepoint(jit: &mut JITState, asm: &mut Assembler, string: 
 /// Generate a JIT entry that just increments exit_compilation_failure and exits
 fn gen_compile_error_counter(cb: &mut CodeBlock, compile_error: &CompileError) -> Result<CodePtr, CompileError> {
     let mut asm = Assembler::new();
+    asm.new_block_without_id();
     gen_incr_counter(&mut asm, exit_compile_error);
     gen_incr_counter(&mut asm, exit_counter_for_compile_error(compile_error));
     asm.cret(Qundef.into());
