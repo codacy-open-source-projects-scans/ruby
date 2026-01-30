@@ -333,6 +333,8 @@ fn gen_function(cb: &mut CodeBlock, iseq: IseqPtr, version: IseqVersionRef, func
                     };
 
                     gen_if_false(&mut asm, val_opnd, branch_edge, fall_through_edge);
+                    assert!(asm.current_block().insns.last().unwrap().is_terminator());
+
                     asm.set_current_block(fall_through_target);
 
                     let label = jit.get_label(&mut asm, fall_through_target, block_id);
@@ -356,6 +358,8 @@ fn gen_function(cb: &mut CodeBlock, iseq: IseqPtr, version: IseqVersionRef, func
                     };
 
                     gen_if_true(&mut asm, val_opnd, branch_edge, fall_through_edge);
+                    assert!(asm.current_block().insns.last().unwrap().is_terminator());
+
                     asm.set_current_block(fall_through_target);
 
                     let label = jit.get_label(&mut asm, fall_through_target, block_id);
@@ -368,6 +372,8 @@ fn gen_function(cb: &mut CodeBlock, iseq: IseqPtr, version: IseqVersionRef, func
                         args: target.args.iter().map(|insn_id| jit.get_opnd(*insn_id)).collect()
                     };
                     gen_jump(&mut asm, branch_edge);
+                    assert!(asm.current_block().insns.last().unwrap().is_terminator());
+
                 },
                 _ => {
                     if let Err(last_snapshot) = gen_insn(cb, &mut jit, &mut asm, function, insn_id, &insn) {
@@ -382,8 +388,8 @@ fn gen_function(cb: &mut CodeBlock, iseq: IseqPtr, version: IseqVersionRef, func
                 }
             }
         }
-        // Make sure the last patch point has enough space to insert a jump
-        asm.pad_patch_point();
+        // Blocks should always end with control flow
+        assert!(asm.current_block().insns.last().unwrap().is_terminator());
     }
 
     // Generate code if everything can be compiled
@@ -526,10 +532,12 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         &Insn::UnboxFixnum { val } => gen_unbox_fixnum(asm, opnd!(val)),
         Insn::Test { val } => gen_test(asm, opnd!(val)),
         Insn::RefineType { val, .. } => opnd!(val),
+        Insn::HasType { val, expected } => gen_has_type(asm, opnd!(val), *expected),
         Insn::GuardType { val, guard_type, state } => gen_guard_type(jit, asm, opnd!(val), *guard_type, &function.frame_state(*state)),
         Insn::GuardTypeNot { val, guard_type, state } => gen_guard_type_not(jit, asm, opnd!(val), *guard_type, &function.frame_state(*state)),
         &Insn::GuardBitEquals { val, expected, reason, state } => gen_guard_bit_equals(jit, asm, opnd!(val), expected, reason, &function.frame_state(state)),
-        &Insn::GuardBlockParamProxy { level, state } => no_output!(gen_guard_block_param_proxy(jit, asm, level, &function.frame_state(state))),
+        &Insn::GuardAnyBitSet { val, mask, reason, state } => gen_guard_any_bit_set(jit, asm, opnd!(val), mask, reason, &function.frame_state(state)),
+        &Insn::GuardNoBitsSet { val, mask, reason, state } => gen_guard_no_bits_set(jit, asm, opnd!(val), mask, reason, &function.frame_state(state)),
         Insn::GuardNotFrozen { recv, state } => gen_guard_not_frozen(jit, asm, opnd!(recv), &function.frame_state(*state)),
         Insn::GuardNotShared { recv, state } => gen_guard_not_shared(jit, asm, opnd!(recv), &function.frame_state(*state)),
         &Insn::GuardLess { left, right, state } => gen_guard_less(jit, asm, opnd!(left), opnd!(right), &function.frame_state(state)),
@@ -580,6 +588,7 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         &Insn::GuardShape { val, shape, state } => gen_guard_shape(jit, asm, opnd!(val), shape, &function.frame_state(state)),
         Insn::LoadPC => gen_load_pc(asm),
         Insn::LoadEC => gen_load_ec(),
+        &Insn::GetEP { level } => gen_get_ep(asm, level),
         Insn::GetLEP => gen_get_lep(jit, asm),
         Insn::LoadSelf => gen_load_self(),
         &Insn::LoadField { recv, id, offset, return_type } => gen_load_field(asm, opnd!(recv), id, offset, return_type),
@@ -784,26 +793,6 @@ fn gen_getblockparam(jit: &mut JITState, asm: &mut Assembler, ep_offset: u32, le
     // Read the Proc from EP.
     let ep = gen_get_ep(asm, level);
     asm.load(Opnd::mem(VALUE_BITS, ep, offset))
-}
-
-fn gen_guard_block_param_proxy(jit: &JITState, asm: &mut Assembler, level: u32, state: &FrameState) {
-    // Bail out if the `&block` local variable has been modified
-    let ep = gen_get_ep(asm, level);
-    let flags = Opnd::mem(64, ep, SIZEOF_VALUE_I32 * (VM_ENV_DATA_INDEX_FLAGS as i32));
-    asm.test(flags, VM_FRAME_FLAG_MODIFIED_BLOCK_PARAM.into());
-    asm.jnz(side_exit(jit, state, SideExitReason::BlockParamProxyModified));
-
-    // This handles two cases which are nearly identical
-    // Block handler is a tagged pointer. Look at the tag.
-    //   VM_BH_ISEQ_BLOCK_P(): block_handler & 0x03 == 0x01
-    //   VM_BH_IFUNC_P():      block_handler & 0x03 == 0x03
-    // So to check for either of those cases we can use: val & 0x1 == 0x1
-    const _: () = assert!(RUBY_SYMBOL_FLAG & 1 == 0, "guard below rejects symbol block handlers");
-
-    // Bail ouf if the block handler is neither ISEQ nor ifunc
-    let block_handler = asm.load(Opnd::mem(64, ep, SIZEOF_VALUE_I32 * VM_ENV_DATA_INDEX_SPECVAL));
-    asm.test(block_handler, 0x1.into());
-    asm.jz(side_exit(jit, state, SideExitReason::BlockParamProxyNotIseqOrIfunc));
 }
 
 fn gen_guard_not_frozen(jit: &JITState, asm: &mut Assembler, recv: Opnd, state: &FrameState) -> Opnd {
@@ -2205,6 +2194,69 @@ fn gen_test(asm: &mut Assembler, val: lir::Opnd) -> lir::Opnd {
     asm.csel_e(0.into(), 1.into())
 }
 
+fn gen_has_type(asm: &mut Assembler, val: lir::Opnd, ty: Type) -> lir::Opnd {
+    if ty.is_subtype(types::Fixnum) {
+        asm.test(val, Opnd::UImm(RUBY_FIXNUM_FLAG as u64));
+        asm.csel_nz(Opnd::Imm(1), Opnd::Imm(0))
+    } else if ty.is_subtype(types::Flonum) {
+        // Flonum: (val & RUBY_FLONUM_MASK) == RUBY_FLONUM_FLAG
+        let masked = asm.and(val, Opnd::UImm(RUBY_FLONUM_MASK as u64));
+        asm.cmp(masked, Opnd::UImm(RUBY_FLONUM_FLAG as u64));
+        asm.csel_e(Opnd::Imm(1), Opnd::Imm(0))
+    } else if ty.is_subtype(types::StaticSymbol) {
+        // Static symbols have (val & 0xff) == RUBY_SYMBOL_FLAG
+        // Use 8-bit comparison like YJIT does. GuardType should not be used
+        // for a known VALUE, which with_num_bits() does not support.
+        asm.cmp(val.with_num_bits(8), Opnd::UImm(RUBY_SYMBOL_FLAG as u64));
+        asm.csel_e(Opnd::Imm(1), Opnd::Imm(0))
+    } else if ty.is_subtype(types::NilClass) {
+        asm.cmp(val, Qnil.into());
+        asm.csel_e(Opnd::Imm(1), Opnd::Imm(0))
+    } else if ty.is_subtype(types::TrueClass) {
+        asm.cmp(val, Qtrue.into());
+        asm.csel_e(Opnd::Imm(1), Opnd::Imm(0))
+    } else if ty.is_subtype(types::FalseClass) {
+        asm.cmp(val, Qfalse.into());
+        asm.csel_e(Opnd::Imm(1), Opnd::Imm(0))
+    } else if ty.is_immediate() {
+        // All immediate types' guard should have been handled above
+        panic!("unexpected immediate guard type: {ty}");
+    } else if let Some(expected_class) = ty.runtime_exact_ruby_class() {
+        // If val isn't in a register, load it to use it as the base of Opnd::mem later.
+        // TODO: Max thinks codegen should not care about the shapes of the operands except to create them. (Shopify/ruby#685)
+        let val = match val {
+            Opnd::Reg(_) | Opnd::VReg { .. } => val,
+            _ => asm.load(val),
+        };
+
+        let ret_label = asm.new_label("true");
+        let false_label = asm.new_label("false");
+
+        // Check if it's a special constant
+        asm.test(val, (RUBY_IMMEDIATE_MASK as u64).into());
+        asm.jnz(false_label.clone());
+
+        // Check if it's false
+        asm.cmp(val, Qfalse.into());
+        asm.je(false_label.clone());
+
+        // Load the class from the object's klass field
+        let klass = asm.load(Opnd::mem(64, val, RUBY_OFFSET_RBASIC_KLASS));
+        asm.cmp(klass, Opnd::Value(expected_class));
+        asm.jmp(ret_label.clone());
+
+        // If we get here then the value was false, unset the Z flag
+        // so that csel_e will select false instead of true
+        asm.write_label(false_label);
+        asm.test(Opnd::UImm(1), Opnd::UImm(1));
+
+        asm.write_label(ret_label);
+        asm.csel_e(Opnd::UImm(1), Opnd::Imm(0))
+    } else {
+        unimplemented!("unsupported type: {ty}");
+    }
+}
+
 /// Compile a type check with a side exit
 fn gen_guard_type(jit: &mut JITState, asm: &mut Assembler, val: lir::Opnd, guard_type: Type, state: &FrameState) -> lir::Opnd {
     gen_incr_counter(asm, Counter::guard_type_count);
@@ -2334,6 +2386,32 @@ fn gen_guard_bit_equals(jit: &mut JITState, asm: &mut Assembler, val: lir::Opnd,
         _ => panic!("gen_guard_bit_equals: unexpected hir::Const {expected:?}"),
     };
     asm.cmp(val, expected_opnd);
+    asm.jnz(side_exit(jit, state, reason));
+    val
+}
+
+fn mask_to_opnd(mask: crate::hir::Const) -> Option<Opnd> {
+    match mask {
+        crate::hir::Const::CUInt8(v) => Some(Opnd::UImm(v as u64)),
+        crate::hir::Const::CUInt16(v) => Some(Opnd::UImm(v as u64)),
+        crate::hir::Const::CUInt32(v) => Some(Opnd::UImm(v as u64)),
+        crate::hir::Const::CUInt64(v) => Some(Opnd::UImm(v)),
+        _ => None
+    }
+}
+
+/// Compile a bitmask check with a side exit if none of the masked bits are not set
+fn gen_guard_any_bit_set(jit: &mut JITState, asm: &mut Assembler, val: lir::Opnd, mask: crate::hir::Const, reason: SideExitReason, state: &FrameState) -> lir::Opnd {
+    let mask_opnd = mask_to_opnd(mask).unwrap_or_else(|| panic!("gen_guard_any_bit_set: unexpected hir::Const {mask:?}"));
+    asm.test(val, mask_opnd);
+    asm.jz(side_exit(jit, state, reason));
+    val
+}
+
+/// Compile a bitmask check with a side exit if any of the masked bits are set
+fn gen_guard_no_bits_set(jit: &mut JITState, asm: &mut Assembler, val: lir::Opnd, mask: crate::hir::Const, reason: SideExitReason, state: &FrameState) -> lir::Opnd {
+    let mask_opnd = mask_to_opnd(mask).unwrap_or_else(|| panic!("gen_guard_no_bits_set: unexpected hir::Const {mask:?}"));
+    asm.test(val, mask_opnd);
     asm.jnz(side_exit(jit, state, reason));
     val
 }
