@@ -105,9 +105,9 @@ PRISM_FILES = prism/api_node.$(OBJEXT) \
 		prism/util/pm_char.$(OBJEXT) \
 		prism/util/pm_constant_pool.$(OBJEXT) \
 		prism/util/pm_integer.$(OBJEXT) \
+		prism/util/pm_line_offset_list.$(OBJEXT) \
 		prism/util/pm_list.$(OBJEXT) \
 		prism/util/pm_memchr.$(OBJEXT) \
-		prism/util/pm_newline_list.$(OBJEXT) \
 		prism/util/pm_string.$(OBJEXT) \
 		prism/util/pm_strncasecmp.$(OBJEXT) \
 		prism/util/pm_strpbrk.$(OBJEXT) \
@@ -900,8 +900,8 @@ test: test-short
 
 # Separate to skip updating encs and exts by `make -o test-precheck`
 # for GNU make.
-test-precheck: $(ENCSTATIC:static=lib)encs $(RUBYSPEC_CAPIEXT_BUILD) exts PHONY $(DOT_WAIT)
-yes-test-all-precheck: programs $(DOT_WAIT) test-precheck
+test-precheck: $(ENCSTATIC:static=lib)encs exts PHONY $(DOT_WAIT)
+yes-test-all-precheck: programs $(DOT_WAIT) test-precheck yes-fake
 
 PRECHECK_TEST_ALL = yes-test-all-precheck
 
@@ -951,7 +951,7 @@ $(RBCONFIG):
 test-rubyspec: test-spec
 yes-test-rubyspec: yes-test-spec
 
-yes-test-spec-precheck: yes-test-all-precheck yes-fake
+yes-test-spec-precheck: yes-test-all-precheck $(RUBYSPEC_CAPIEXT_BUILD)
 
 test-spec: $(TEST_RUNNABLE)-test-spec
 yes-test-spec: yes-test-spec-precheck
@@ -1561,8 +1561,11 @@ yes-install-for-test-bundled-gems: yes-update-default-gemspecs
 
 test-bundled-gems-fetch: yes-test-bundled-gems-fetch
 yes-test-bundled-gems-fetch: clone-bundled-gems-src
-clone-bundled-gems-src: PHONY
+clone-bundled-gems-src: PHONY $(TIMESTAMPDIR)/bundled-gems-src.time
+$(TIMESTAMPDIR)/bundled-gems-src.time: $(srcdir)/gems/bundled_gems
+	$(Q) $(MAKEDIRS) $(@D)
 	$(Q) $(BASERUBY) -C $(srcdir) tool/fetch-bundled_gems.rb BUNDLED_GEMS="$(BUNDLED_GEMS)" gems/src gems/bundled_gems
+	$(Q) $(TOUCH) $@
 no-test-bundled-gems-fetch:
 
 test-bundled-gems-prepare: $(TEST_RUNNABLE)-test-bundled-gems-prepare
@@ -1596,7 +1599,7 @@ yes-test-bundled-gems-run: $(PREPARE_BUNDLED_GEMS)
 no-test-bundled-gems-run: $(PREPARE_BUNDLED_GEMS)
 
 test-bundled-gems-spec: $(TEST_RUNNABLE)-test-bundled-gems-spec
-yes-test-bundled-gems-spec: yes-test-spec-precheck $(PREPARE_BUNDLED_GEMS)
+yes-test-bundled-gems-spec: yes-test-all-precheck $(PREPARE_BUNDLED_GEMS)
 	$(ACTIONS_GROUP)
 	$(gnumake_recursive)$(Q) \
 	$(RUNRUBY) -r./$(arch)-fake -r$(tooldir)/lib/_tmpdir \
@@ -1635,6 +1638,8 @@ test-bundler: $(TEST_RUNNABLE)-test-bundler
 yes-test-bundler: $(PREPARE_BUNDLER)
 	$(gnumake_recursive)$(XRUBY) \
 		-r./$(arch)-fake \
+		-r$(tooldir)/lib/_tmpdir \
+		-e '$$no_report_tmpdir = true' \
 		-I$(srcdir)/spec/bundler -I$(srcdir)/spec/lib \
 		-e 'Dir.chdir(ARGV.shift); load("spec/bin/rspec")' $(srcdir) \
 		-r spec_helper $(RSPECOPTS) spec/bundler/$(BUNDLER_SPECS)
@@ -1645,6 +1650,8 @@ test-bundler-parallel: $(TEST_RUNNABLE)-test-bundler-parallel
 yes-test-bundler-parallel: $(PREPARE_BUNDLER)
 	$(gnumake_recursive)$(XRUBY) \
 		-r./$(arch)-fake \
+		-r$(tooldir)/lib/_tmpdir \
+		-e '$$no_report_tmpdir = true' \
 		-I$(srcdir)/spec/bundler \
 		-e "ruby = ENV['RUBY']" \
 		-e "ARGV[-1] = File.expand_path(ARGV[-1])" \
