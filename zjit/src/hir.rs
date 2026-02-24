@@ -854,6 +854,7 @@ pub enum Insn {
     /// Get a local variable from a higher scope or the heap.
     /// If `use_sp` is true, it uses the SP register to optimize the read.
     /// `rest_param` is used by infer_types to infer the ArrayExact type.
+    /// TODO: Replace the level == 0 + use_sp path with LoadSP + LoadField.
     GetLocal { level: u32, ep_offset: u32, use_sp: bool, rest_param: bool },
     /// Check whether VM_FRAME_FLAG_MODIFIED_BLOCK_PARAM is set in the environment flags.
     /// Returns CBool (0/1).
@@ -1169,7 +1170,7 @@ impl Insn {
             Insn::GetEP { .. } => effects::Empty,
             Insn::GetLEP { .. } => effects::Empty,
             Insn::LoadSelf { .. } => Effect::read_write(abstract_heaps::Frame, abstract_heaps::Empty),
-            Insn::LoadField { .. } => Effect::read_write(abstract_heaps::Other, abstract_heaps::Empty),
+            Insn::LoadField { .. } => Effect::read_write(abstract_heaps::Memory, abstract_heaps::Empty),
             Insn::StoreField { .. } => effects::Any,
             Insn::WriteBarrier { .. } => effects::Any,
             Insn::GetLocal   { .. } => Effect::read_write(abstract_heaps::Locals, abstract_heaps::Empty),
@@ -1272,6 +1273,15 @@ pub struct InsnPrinter<'a> {
     iseq: Option<IseqPtr>,
 }
 
+fn get_local_var_id(iseq: IseqPtr, level: u32, ep_offset: u32) -> ID {
+    let mut current_iseq = iseq;
+    for _ in 0..level {
+        current_iseq = unsafe { rb_get_iseq_body_parent_iseq(current_iseq) };
+    }
+    let local_idx = ep_offset_to_local_idx(current_iseq, ep_offset);
+    unsafe { rb_zjit_local_id(current_iseq, local_idx.try_into().unwrap()) }
+}
+
 /// Get the name of a local variable given iseq, level, and ep_offset.
 /// Returns
 /// - `":name"` if iseq is available and name is a real identifier,
@@ -1281,12 +1291,7 @@ pub struct InsnPrinter<'a> {
 ///
 /// This mimics local_var_name() from iseq.c.
 fn get_local_var_name_for_printer(iseq: Option<IseqPtr>, level: u32, ep_offset: u32) -> Option<String> {
-    let mut current_iseq = iseq?;
-    for _ in 0..level {
-        current_iseq = unsafe { rb_get_iseq_body_parent_iseq(current_iseq) };
-    }
-    let local_idx = ep_offset_to_local_idx(current_iseq, ep_offset);
-    let id: ID = unsafe { rb_zjit_local_id(current_iseq, local_idx.try_into().unwrap()) };
+    let id = get_local_var_id(iseq?, level, ep_offset);
 
     if id.0 == 0 || unsafe { rb_id2str(id) } == Qfalse {
         return Some(String::from("<empty>"));
@@ -3057,6 +3062,29 @@ impl Function {
         self.push_insn(block, Insn::GuardNoBitsSet { val: flags, mask: Const::CUInt64(RUBY_ELTS_SHARED as u64), mask_name: Some(ID!(RUBY_ELTS_SHARED)), reason: SideExitReason::GuardNotShared, state });
     }
 
+    // TODO: This helper is currently used for level>0 local reads only.
+    // Split GetLocal(level==0) into explicit SP/EP helpers in a follow-up.
+    fn get_local_from_ep(
+        &mut self,
+        block: BlockId,
+        ep_offset: u32,
+        level: u32,
+        return_type: Type,
+    ) -> InsnId {
+        let ep = self.push_insn(block, Insn::GetEP { level });
+        let local_id = get_local_var_id(self.iseq, level, ep_offset);
+        let ep_offset = i32::try_from(ep_offset)
+            .unwrap_or_else(|_| panic!("Could not convert ep_offset {ep_offset} to i32"));
+        let offset = -(SIZEOF_VALUE_I32 * ep_offset);
+
+        self.push_insn(block, Insn::LoadField {
+            recv: ep,
+            id: local_id,
+            offset,
+            return_type,
+        })
+    }
+
     /// Rewrite eligible Send opcodes into SendDirect
     /// opcodes if we know the target ISEQ statically. This removes run-time method lookups and
     /// opens the door for inlining.
@@ -4547,6 +4575,18 @@ impl Function {
                                 let r_obj = VALUE::fixnum_from_isize(r as isize);
                                 Some(unsafe { rb_jit_fix_mod_fix(l_obj, r_obj) }.as_fixnum())
                             },
+                            _ => None,
+                        })
+                    }
+                    Insn::FixnumXor { left, right, .. } => {
+                        self.fold_fixnum_bop(insn_id, left, right, |l, r| match (l, r) {
+                            (Some(l), Some(r)) => Some(l ^ r),
+                            _ => None,
+                        })
+                    }
+                    Insn::FixnumAnd { left, right, .. } => {
+                        self.fold_fixnum_bop(insn_id, left, right, |l, r| match (l, r) {
+                            (Some(l), Some(r)) => Some(l & r),
                             _ => None,
                         })
                     }
@@ -6674,9 +6714,7 @@ pub fn iseq_to_hir(iseq: *const rb_iseq_t) -> Result<Function, ParseError> {
                 }
                 YARVINSN_opt_getconstant_path => {
                     let ic = get_arg(pc, 0).as_ptr();
-                    // TODO: Remove this extra Snapshot and pass `exit_id` to `GetConstantPath` instead.
-                    let snapshot = fun.push_insn(block, Insn::Snapshot { state: exit_state });
-                    state.stack_push(fun.push_insn(block, Insn::GetConstantPath { ic, state: snapshot }));
+                    state.stack_push(fun.push_insn(block, Insn::GetConstantPath { ic, state: exit_id }));
                 }
                 YARVINSN_branchunless | YARVINSN_branchunless_without_ints => {
                     if opcode == YARVINSN_branchunless {
@@ -6830,7 +6868,7 @@ pub fn iseq_to_hir(iseq: *const rb_iseq_t) -> Result<Function, ParseError> {
                 }
                 YARVINSN_getlocal_WC_1 => {
                     let ep_offset = get_arg(pc, 0).as_u32();
-                    state.stack_push(fun.push_insn(block, Insn::GetLocal { ep_offset, level: 1, use_sp: false, rest_param: false }));
+                    state.stack_push(fun.get_local_from_ep(block, ep_offset, 1, types::BasicObject));
                 }
                 YARVINSN_setlocal_WC_1 => {
                     let ep_offset = get_arg(pc, 0).as_u32();
@@ -6839,7 +6877,11 @@ pub fn iseq_to_hir(iseq: *const rb_iseq_t) -> Result<Function, ParseError> {
                 YARVINSN_getlocal => {
                     let ep_offset = get_arg(pc, 0).as_u32();
                     let level = get_arg(pc, 1).as_u32();
-                    state.stack_push(fun.push_insn(block, Insn::GetLocal { ep_offset, level, use_sp: false, rest_param: false }));
+                    if level == 0 {
+                        state.stack_push(fun.push_insn(block, Insn::GetLocal { ep_offset, level, use_sp: false, rest_param: false }));
+                    } else {
+                        state.stack_push(fun.get_local_from_ep(block, ep_offset, level, types::BasicObject));
+                    }
                 }
                 YARVINSN_setlocal => {
                     let ep_offset = get_arg(pc, 0).as_u32();
@@ -6950,12 +6992,11 @@ pub fn iseq_to_hir(iseq: *const rb_iseq_t) -> Result<Function, ParseError> {
                     }));
 
                     // Push modified block: read Proc from EP.
-                    let modified_val = fun.push_insn(modified_block, Insn::GetLocal {
-                        ep_offset,
-                        level,
-                        use_sp: false,
-                        rest_param: false,
-                    });
+                    let modified_val = if level == 0 {
+                        fun.push_insn(modified_block, Insn::GetLocal { ep_offset, level, use_sp: false, rest_param: false })
+                    } else {
+                        fun.get_local_from_ep(modified_block, ep_offset, level, types::BasicObject)
+                    };
                     finish_getblockparam_branch(
                         &mut fun,
                         modified_block,
