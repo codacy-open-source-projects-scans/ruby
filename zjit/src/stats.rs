@@ -169,6 +169,7 @@ make_counters! {
         compile_hir_strength_reduce_time_ns,
         compile_hir_fold_constants_time_ns,
         compile_hir_clean_cfg_time_ns,
+        compile_hir_remove_redundant_patch_points_time_ns,
         compile_hir_eliminate_dead_code_time_ns,
         compile_lir_time_ns,
     }
@@ -215,6 +216,7 @@ make_counters! {
         exit_patchpoint_no_ep_escape,
         exit_patchpoint_single_ractor_mode,
         exit_patchpoint_no_singleton_class,
+        exit_patchpoint_root_box_only,
         exit_callee_side_exit,
         exit_obj_to_string_fallback,
         exit_interrupt,
@@ -224,6 +226,9 @@ make_counters! {
         exit_block_param_proxy_not_nil,
         exit_block_param_wb_required,
         exit_too_many_keyword_parameters,
+        exit_splatkw_not_nil_or_hash,
+        exit_splatkw_polymorphic,
+        exit_splatkw_not_profiled,
     }
 
     // Send fallback counters that are summed as dynamic_send_count
@@ -422,7 +427,6 @@ make_counters! {
     vm_write_locals_count,
     vm_write_stack_count,
     vm_write_to_parent_iseq_local_count,
-    vm_read_from_parent_iseq_local_count,
     // TODO(max): Implement
     // vm_reify_stack_count,
 
@@ -584,6 +588,9 @@ pub fn side_exit_counter(reason: crate::hir::SideExitReason) -> Counter {
         BlockParamProxyNotNil         => exit_block_param_proxy_not_nil,
         BlockParamWbRequired          => exit_block_param_wb_required,
         TooManyKeywordParameters      => exit_too_many_keyword_parameters,
+        SplatKwNotNilOrHash           => exit_splatkw_not_nil_or_hash,
+        SplatKwPolymorphic            => exit_splatkw_polymorphic,
+        SplatKwNotProfiled            => exit_splatkw_not_profiled,
         PatchPoint(Invariant::BOPRedefined { .. })
                                       => exit_patchpoint_bop_redefined,
         PatchPoint(Invariant::MethodRedefined { .. })
@@ -598,6 +605,8 @@ pub fn side_exit_counter(reason: crate::hir::SideExitReason) -> Counter {
                                       => exit_patchpoint_single_ractor_mode,
         PatchPoint(Invariant::NoSingletonClass { .. })
                                       => exit_patchpoint_no_singleton_class,
+        PatchPoint(Invariant::RootBoxOnly)
+                                      => exit_patchpoint_root_box_only,
     }
 }
 

@@ -94,6 +94,8 @@ use std::fmt::{Debug, Display, Formatter};
 use std::os::raw::{c_char, c_int, c_uint};
 use std::panic::{catch_unwind, UnwindSafe};
 
+use crate::cast::IntoUsize as _;
+
 // We check that we can do this with the configure script and a couple of
 // static asserts. u64 and not usize to play nice with lowering to x86.
 pub type size_t = u64;
@@ -475,6 +477,19 @@ impl VALUE {
         true
     }
 
+    /// A metaclass is the singleton class of an object that is a `Module`.
+    /// This is internal terminology from `class.c`.
+    pub fn is_metaclass(self) -> bool {
+        unsafe {
+            if RB_TYPE_P(self, RUBY_T_CLASS) && rb_zjit_singleton_class_p(self) {
+                let attached = rb_class_attached_object(self);
+                RB_TYPE_P(attached, RUBY_T_CLASS) || RB_TYPE_P(attached, RUBY_T_MODULE)
+            } else {
+                false
+            }
+        }
+    }
+
     /// Return true for a static (non-heap) Ruby symbol (RB_STATIC_SYM_P)
     pub fn static_sym_p(self) -> bool {
         let VALUE(cval) = self;
@@ -565,7 +580,11 @@ impl VALUE {
     }
 
     pub fn shape_id_of(self) -> ShapeId {
-        ShapeId(unsafe { rb_obj_shape_id(self) })
+        if self.special_const_p() {
+            INVALID_SHAPE_ID
+        } else {
+            ShapeId(unsafe { rb_obj_shape_id(self) })
+        }
     }
 
     pub fn embedded_p(self) -> bool {
@@ -579,6 +598,20 @@ impl VALUE {
             RB_TYPE_P(self, RUBY_T_STRUCT) &&
             FL_TEST_RAW(self, VALUE(RSTRUCT_EMBED_LEN_MASK)) != VALUE(0)
         }
+    }
+
+    pub fn class_fields_embedded_p(self) -> bool {
+        unsafe { rb_jit_class_fields_embedded_p(self) }
+    }
+
+    pub fn typed_data_p(self) -> bool {
+        !self.special_const_p() &&
+            self.builtin_type() == RUBY_T_DATA &&
+            0 != (self.builtin_flags() & RUBY_TYPED_FL_IS_TYPED_DATA.to_usize())
+    }
+
+    pub fn typed_data_fields_embedded_p(self) -> bool {
+        unsafe { rb_jit_typed_data_fields_embedded_p(self) }
     }
 
     pub fn as_fixnum(self) -> i64 {
@@ -829,6 +862,18 @@ pub fn iseq_name(iseq: IseqPtr) -> String {
     } else {
         ruby_str_to_rust_string(iseq_label)
     }
+}
+
+// Equivalent of get_lvar_level() in compile.c
+pub fn get_lvar_level(mut iseq: IseqPtr) -> u32 {
+    let local_iseq = unsafe { rb_get_iseq_body_local_iseq(iseq) };
+    let mut level = 0;
+    while iseq != local_iseq {
+        iseq = unsafe { rb_get_iseq_body_parent_iseq(iseq) };
+        level += 1;
+    }
+
+    level
 }
 
 // Location is the file defining the method, colon, method name.
@@ -1479,6 +1524,7 @@ pub(crate) mod ids {
         name: aref               content: b"[]"
         name: len
         name: _as_heap
+        name: _fields_obj
         name: thread_ptr
         name: self_              content: b"self"
         name: rb_ivar_get_at_no_ractor_check

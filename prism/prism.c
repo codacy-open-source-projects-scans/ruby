@@ -286,7 +286,7 @@ lex_mode_pop(pm_parser_t *parser) {
     } else {
         parser->lex_modes.index--;
         pm_lex_mode_t *prev = parser->lex_modes.current->prev;
-        xfree(parser->lex_modes.current);
+        xfree_sized(parser->lex_modes.current, sizeof(pm_lex_mode_t));
         parser->lex_modes.current = prev;
     }
 }
@@ -777,7 +777,7 @@ pm_parser_scope_shareable_constant_set(pm_parser_t *parser, pm_shareable_constan
 static void
 pm_locals_free(pm_locals_t *locals) {
     if (locals->capacity > 0) {
-        xfree(locals->locals);
+        xfree_sized(locals->locals, locals->capacity * sizeof(pm_local_t));
     }
 }
 
@@ -2956,7 +2956,7 @@ pm_call_and_write_node_create(pm_parser_t *parser, pm_call_node_t *target, const
     // Here we're going to free the target, since it is no longer necessary.
     // However, we don't want to call `pm_node_destroy` because we want to keep
     // around all of its children since we just reused them.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_call_node_t));
 
     return node;
 }
@@ -3010,7 +3010,7 @@ pm_index_and_write_node_create(pm_parser_t *parser, pm_call_node_t *target, cons
     // Here we're going to free the target, since it is no longer necessary.
     // However, we don't want to call `pm_node_destroy` because we want to keep
     // around all of its children since we just reused them.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_call_node_t));
 
     return node;
 }
@@ -3040,7 +3040,7 @@ pm_call_operator_write_node_create(pm_parser_t *parser, pm_call_node_t *target, 
     // Here we're going to free the target, since it is no longer necessary.
     // However, we don't want to call `pm_node_destroy` because we want to keep
     // around all of its children since we just reused them.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_call_node_t));
 
     return node;
 }
@@ -3071,7 +3071,7 @@ pm_index_operator_write_node_create(pm_parser_t *parser, pm_call_node_t *target,
     // Here we're going to free the target, since it is no longer necessary.
     // However, we don't want to call `pm_node_destroy` because we want to keep
     // around all of its children since we just reused them.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_call_node_t));
 
     return node;
 }
@@ -3101,7 +3101,7 @@ pm_call_or_write_node_create(pm_parser_t *parser, pm_call_node_t *target, const 
     // Here we're going to free the target, since it is no longer necessary.
     // However, we don't want to call `pm_node_destroy` because we want to keep
     // around all of its children since we just reused them.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_call_node_t));
 
     return node;
 }
@@ -3132,7 +3132,7 @@ pm_index_or_write_node_create(pm_parser_t *parser, pm_call_node_t *target, const
     // Here we're going to free the target, since it is no longer necessary.
     // However, we don't want to call `pm_node_destroy` because we want to keep
     // around all of its children since we just reused them.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_call_node_t));
 
     return node;
 }
@@ -3164,7 +3164,7 @@ pm_call_target_node_create(pm_parser_t *parser, pm_call_node_t *target) {
     // Here we're going to free the target, since it is no longer necessary.
     // However, we don't want to call `pm_node_destroy` because we want to keep
     // around all of its children since we just reused them.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_call_node_t));
 
     return node;
 }
@@ -3192,7 +3192,7 @@ pm_index_target_node_create(pm_parser_t *parser, pm_call_node_t *target) {
     // Here we're going to free the target, since it is no longer necessary.
     // However, we don't want to call `pm_node_destroy` because we want to keep
     // around all of its children since we just reused them.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_call_node_t));
 
     return node;
 }
@@ -3873,7 +3873,8 @@ pm_double_parse(pm_parser_t *parser, const pm_token_t *token) {
 
     // First, get a buffer of the content.
     size_t length = (size_t) diff;
-    char *buffer = xmalloc(sizeof(char) * (length + 1));
+    const size_t buffer_size = sizeof(char) * (length + 1);
+    char *buffer = xmalloc(buffer_size);
     memcpy((void *) buffer, token->start, length);
 
     // Next, determine if we need to replace the decimal point because of
@@ -3908,7 +3909,7 @@ pm_double_parse(pm_parser_t *parser, const pm_token_t *token) {
     // is in a valid format. However it's good to be safe.
     if ((eptr != buffer + length) || (errno != 0 && errno != ERANGE)) {
         PM_PARSER_ERR_TOKEN_FORMAT_CONTENT(parser, token, PM_ERR_FLOAT_PARSE);
-        xfree((void *) buffer);
+        xfree_sized(buffer, buffer_size);
         return 0.0;
     }
 
@@ -3931,7 +3932,7 @@ pm_double_parse(pm_parser_t *parser, const pm_token_t *token) {
     }
 
     // Finally we can free the buffer and return the value.
-    xfree((void *) buffer);
+    xfree_sized(buffer, buffer_size);
     return value;
 }
 
@@ -4017,7 +4018,7 @@ pm_float_node_rational_create(pm_parser_t *parser, const pm_token_t *token) {
     digits[0] = '1';
     if (fract_length > 1) memset(digits + 1, '0', fract_length - 1);
     pm_integer_parse(&node->denominator, PM_INTEGER_BASE_DEFAULT, digits, digits + fract_length);
-    xfree(digits);
+    xfree_sized(digits, length);
 
     pm_integers_reduce(&node->numerator, &node->denominator);
     return node;
@@ -5521,7 +5522,7 @@ pm_multi_write_node_create(pm_parser_t *parser, pm_multi_target_node_t *target, 
 
     // Explicitly do not call pm_node_destroy here because we want to keep
     // around all of the information within the MultiWriteNode node.
-    xfree(target);
+    xfree_sized(target, sizeof(pm_multi_target_node_t));
 
     return node;
 }
@@ -5646,7 +5647,7 @@ pm_numbered_reference_read_node_number(pm_parser_t *parser, const pm_token_t *to
         value = 0;
     }
 
-    xfree(digits);
+    xfree_sized(digits, sizeof(char) * (length + 1));
 
     if ((errno == ERANGE) || (value > NTH_REF_MAX)) {
         PM_PARSER_WARN_FORMAT(parser, U32(start - parser->start), U32(length), PM_WARN_INVALID_NUMBERED_REFERENCE, (int) (length + 1), (const char *) token->start);
@@ -6751,7 +6752,7 @@ pm_string_node_to_symbol_node(pm_parser_t *parser, pm_string_node_t *node, const
     // We are explicitly _not_ using pm_node_destroy here because we don't want
     // to trash the unescaped string. We could instead copy the string if we
     // know that it is owned, but we're taking the fast path for now.
-    xfree(node);
+    xfree_sized(node, sizeof(pm_string_node_t));
 
     return new_node;
 }
@@ -6784,7 +6785,7 @@ pm_symbol_node_to_string_node(pm_parser_t *parser, pm_symbol_node_t *node) {
     // We are explicitly _not_ using pm_node_destroy here because we don't want
     // to trash the unescaped string. We could instead copy the string if we
     // know that it is owned, but we're taking the fast path for now.
-    xfree(node);
+    xfree_sized(node, sizeof(pm_symbol_node_t));
 
     return new_node;
 }
@@ -7247,7 +7248,7 @@ pm_parser_scope_pop(pm_parser_t *parser) {
     parser->current_scope = scope->previous;
     pm_locals_free(&scope->locals);
     pm_node_list_free(&scope->implicit_parameters);
-    xfree(scope);
+    xfree_sized(scope, sizeof(pm_scope_t));
 }
 
 /******************************************************************************/
@@ -7847,7 +7848,7 @@ context_push(pm_parser_t *parser, pm_context_t context) {
 static void
 context_pop(pm_parser_t *parser) {
     pm_context_node_t *prev = parser->current_context->prev;
-    xfree(parser->current_context);
+    xfree_sized(parser->current_context, sizeof(pm_context_node_t));
     parser->current_context = prev;
 }
 
@@ -13956,6 +13957,7 @@ parse_parameters(
     bool allows_forwarding_parameters,
     bool accepts_blocks_in_defaults,
     bool in_block,
+    pm_diagnostic_id_t diag_id_forwarding,
     uint16_t depth
 ) {
     pm_do_loop_stack_push(parser, false);
@@ -14017,7 +14019,7 @@ parse_parameters(
             }
             case PM_TOKEN_UDOT_DOT_DOT: {
                 if (!allows_forwarding_parameters) {
-                    pm_parser_err_current(parser, PM_ERR_ARGUMENT_NO_FORWARDING_ELLIPSES);
+                    pm_parser_err_current(parser, diag_id_forwarding);
                 }
 
                 bool succeeded = update_parameter_state(parser, &parser->current, &order);
@@ -14681,6 +14683,7 @@ parse_block_parameters(
             false,
             accepts_blocks_in_defaults,
             true,
+            is_lambda_literal ? PM_ERR_ARGUMENT_NO_FORWARDING_ELLIPSES_LAMBDA : PM_ERR_ARGUMENT_NO_FORWARDING_ELLIPSES_BLOCK,
             (uint16_t) (depth + 1)
         );
         if (!is_lambda_literal) {
@@ -16639,7 +16642,7 @@ parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node
     }
 
     pm_hash_pattern_node_t *node = pm_hash_pattern_node_node_list_create(parser, &assocs, rest);
-    xfree(assocs.nodes);
+    xfree_sized(assocs.nodes, assocs.capacity * sizeof(pm_node_t *));
 
     pm_static_literals_free(&keys);
     return node;
@@ -17166,7 +17169,7 @@ parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flag
             }
         }
 
-        xfree(nodes.nodes);
+        xfree_sized(nodes.nodes, nodes.capacity * sizeof(pm_node_t *));
     } else if (leading_rest) {
         // Otherwise, if we parsed a single splat pattern, then we know we have
         // an array pattern, so we can go ahead and create that node.
@@ -18903,7 +18906,17 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     } else {
                         // https://bugs.ruby-lang.org/issues/19107
                         bool allow_trailing_comma = parser->version >= PM_OPTIONS_VERSION_CRUBY_4_1;
-                        params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, true, allow_trailing_comma, true, true, false, (uint16_t) (depth + 1));
+                        params = parse_parameters(
+                            parser,
+                            PM_BINDING_POWER_DEFINED,
+                            true,
+                            allow_trailing_comma,
+                            true,
+                            true,
+                            false,
+                            PM_ERR_ARGUMENT_NO_FORWARDING_ELLIPSES,
+                            (uint16_t) (depth + 1)
+                        );
                     }
 
                     lex_state_set(parser, PM_LEX_STATE_BEG);
@@ -18926,7 +18939,17 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                         lex_state_set(parser, parser->lex_state | PM_LEX_STATE_LABEL);
                     }
 
-                    params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, false, false, true, true, false, (uint16_t) (depth + 1));
+                    params = parse_parameters(
+                        parser,
+                        PM_BINDING_POWER_DEFINED,
+                        false,
+                        false,
+                        true,
+                        true,
+                        false,
+                        PM_ERR_ARGUMENT_NO_FORWARDING_ELLIPSES,
+                        (uint16_t) (depth + 1)
+                    );
 
                     // Reject `def * = 1` and similar. We have to specifically check
                     // for them because they create ambiguity with optional arguments.
@@ -18974,6 +18997,20 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 }
 
                 pm_node_t *statement = parse_expression(parser, PM_BINDING_POWER_DEFINED + 1, allow_command_call, false, PM_ERR_DEF_ENDLESS, (uint16_t) (depth + 1));
+
+                // In an endless method definition, the body is not allowed to
+                // be a command with a do..end block.
+                if (PM_NODE_TYPE_P(statement, PM_CALL_NODE)) {
+                    pm_call_node_t *call = (pm_call_node_t *) statement;
+
+                    if (call->arguments != NULL && call->block != NULL && PM_NODE_TYPE_P(call->block, PM_BLOCK_NODE)) {
+                        pm_block_node_t *block = (pm_block_node_t *) call->block;
+
+                        if (parser->start[block->opening_loc.start] != '{') {
+                            pm_parser_err_node(parser, call->block, PM_ERR_DEF_ENDLESS_DO_BLOCK);
+                        }
+                    }
+                }
 
                 if (accept1(parser, PM_TOKEN_KEYWORD_RESCUE_MODIFIER)) {
                     context_push(parser, PM_CONTEXT_RESCUE_MODIFIER);
@@ -19453,7 +19490,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                         pm_interpolated_symbol_node_append(interpolated, first_string);
                         pm_interpolated_symbol_node_append(interpolated, second_string);
 
-                        xfree(current);
+                        xfree_sized(current, sizeof(pm_symbol_node_t));
                         current = UP(interpolated);
                     } else {
                         assert(false && "unreachable");
@@ -19538,7 +19575,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                             pm_interpolated_symbol_node_append(interpolated, first_string);
                             pm_interpolated_symbol_node_append(interpolated, second_string);
 
-                            xfree(current);
+                            xfree_sized(current, sizeof(pm_symbol_node_t));
                             current = UP(interpolated);
                         } else {
                             assert(false && "unreachable");
@@ -21583,6 +21620,26 @@ pm_call_node_command_p(const pm_call_node_t *node) {
 }
 
 /**
+ * Determine if a given write node has a command call as its right-hand side. We
+ * need this because command calls as the values of writes cannot be extended by
+ * infix operators.
+ */
+static inline bool
+pm_write_node_command_p(const pm_node_t *node) {
+    pm_node_t *value;
+    switch (PM_NODE_TYPE(node)) {
+        case PM_CLASS_VARIABLE_WRITE_NODE: value = ((pm_class_variable_write_node_t *) node)->value; break;
+        case PM_CONSTANT_PATH_WRITE_NODE: value = ((pm_constant_path_write_node_t *) node)->value; break;
+        case PM_CONSTANT_WRITE_NODE: value = ((pm_constant_write_node_t *) node)->value; break;
+        case PM_GLOBAL_VARIABLE_WRITE_NODE: value = ((pm_global_variable_write_node_t *) node)->value; break;
+        case PM_INSTANCE_VARIABLE_WRITE_NODE: value = ((pm_instance_variable_write_node_t *) node)->value; break;
+        case PM_LOCAL_VARIABLE_WRITE_NODE: value = ((pm_local_variable_write_node_t *) node)->value; break;
+        default: return false;
+    }
+    return PM_NODE_TYPE_P(value, PM_CALL_NODE) && pm_call_node_command_p((pm_call_node_t *) value);
+}
+
+/**
  * Parse an expression at the given point of the parser using the given binding
  * power to parse subsequent chains. If this function finds a syntax error, it
  * will append the error message to the parser's error list.
@@ -21651,12 +21708,6 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
      ) {
         node = parse_expression_infix(parser, node, binding_power, current_binding_powers.right, accepts_command_call, (uint16_t) (depth + 1));
 
-        if (context_terminator(parser->current_context->context, &parser->current)) {
-            // If this token terminates the current context, then we need to
-            // stop parsing the expression, as it has become a statement.
-            return node;
-        }
-
         switch (PM_NODE_TYPE(node)) {
             case PM_MULTI_WRITE_NODE:
                 // Multi-write nodes are statements, and cannot be followed by
@@ -21672,9 +21723,13 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
             case PM_INSTANCE_VARIABLE_WRITE_NODE:
             case PM_LOCAL_VARIABLE_WRITE_NODE:
                 // These expressions are statements, by virtue of the right-hand
-                // side of their write being an implicit array.
-                if (PM_NODE_FLAG_P(node, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY) && pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_MODIFIER) {
-                    return node;
+                // side of their write being an implicit array or a command call.
+                // This mirrors parse.y's behavior where `lhs = command_call`
+                // reduces to stmt (not expr), preventing and/or from following.
+                if (pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_MODIFIER) {
+                    if (PM_NODE_FLAG_P(node, PM_WRITE_NODE_FLAGS_IMPLICIT_ARRAY) || pm_write_node_command_p(node)) {
+                        return node;
+                    }
                 }
                 break;
             case PM_CALL_NODE:
@@ -21683,6 +21738,19 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
                 // the call node) being an implicit array.
                 if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_IMPLICIT_ARRAY) && pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_MODIFIER) {
                     return node;
+                }
+                break;
+            case PM_RESCUE_MODIFIER_NODE:
+                // A rescue modifier whose handler is a one-liner pattern match
+                // (=> or in) produces a statement. That means it cannot be
+                // extended by operators above the modifier level.
+                if (pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_MODIFIER) {
+                    pm_rescue_modifier_node_t *cast = (pm_rescue_modifier_node_t *) node;
+                    pm_node_t *rescue_expression = cast->rescue_expression;
+
+                    if (PM_NODE_TYPE_P(rescue_expression, PM_MATCH_REQUIRED_NODE) || PM_NODE_TYPE_P(rescue_expression, PM_MATCH_PREDICATE_NODE)) {
+                        return node;
+                    }
                 }
                 break;
             default:
@@ -21767,6 +21835,17 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
                 default:
                     accepts_command_call = false;
                     break;
+            }
+        }
+
+        if (context_terminator(parser->current_context->context, &parser->current)) {
+            pm_binding_powers_t next_binding_powers = pm_binding_powers[parser->current.type];
+            if (
+                !next_binding_powers.binary ||
+                binding_power > next_binding_powers.left ||
+                (PM_NODE_TYPE_P(node, PM_CALL_NODE) && pm_call_node_command_p((pm_call_node_t *) node))
+            ) {
+                return node;
             }
         }
     }
@@ -22252,7 +22331,7 @@ pm_comment_list_free(pm_list_t *list) {
         next = node->next;
 
         pm_comment_t *comment = (pm_comment_t *) node;
-        xfree(comment);
+        xfree_sized(comment, sizeof(pm_comment_t));
     }
 }
 
@@ -22267,7 +22346,7 @@ pm_magic_comment_list_free(pm_list_t *list) {
         next = node->next;
 
         pm_magic_comment_t *magic_comment = (pm_magic_comment_t *) node;
-        xfree(magic_comment);
+        xfree_sized(magic_comment, sizeof(pm_magic_comment_t));
     }
 }
 

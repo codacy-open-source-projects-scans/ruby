@@ -980,6 +980,7 @@ box.$(OBJEXT): {$(VPATH)}vm_core.h
 box.$(OBJEXT): {$(VPATH)}vm_debug.h
 box.$(OBJEXT): {$(VPATH)}vm_opts.h
 box.$(OBJEXT): {$(VPATH)}vm_sync.h
+box.$(OBJEXT): {$(VPATH)}zjit.h
 builtin.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
 builtin.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 builtin.$(OBJEXT): $(CCAN_DIR)/list/list.h
@@ -7808,6 +7809,7 @@ jit.$(OBJEXT): {$(VPATH)}internal/error.h
 jit.$(OBJEXT): {$(VPATH)}internal/eval.h
 jit.$(OBJEXT): {$(VPATH)}internal/event.h
 jit.$(OBJEXT): {$(VPATH)}internal/fl_type.h
+jit.$(OBJEXT): {$(VPATH)}internal/core/rtypeddata.h
 jit.$(OBJEXT): {$(VPATH)}internal/gc.h
 jit.$(OBJEXT): {$(VPATH)}internal/glob.h
 jit.$(OBJEXT): {$(VPATH)}internal/globals.h
