@@ -4446,6 +4446,15 @@ impl Function {
         self.push_insn(block, Insn::IncrCounterPtr { counter_ptr });
     }
 
+    fn count_iseq_calls(&mut self, block: BlockId) {
+        let iseq_name = iseq_get_location(self.iseq, 0);
+        let access_counter_ptrs = crate::state::ZJITState::get_iseq_calls_count_pointers();
+        let counter_ptr = access_counter_ptrs.entry(iseq_name.to_string()).or_insert_with(|| Box::new(0));
+        let counter_ptr: &mut u64 = counter_ptr.as_mut();
+
+        self.push_insn(block, Insn::IncrCounterPtr { counter_ptr });
+    }
+
     fn count_not_annotated_cfunc(&mut self, block: BlockId, cme: *const rb_callable_method_entry_t) {
         let owner = unsafe { (*cme).owner };
         let called_id = unsafe { (*cme).called_id };
@@ -5080,6 +5089,18 @@ impl Function {
                             _ => None,
                         })
                     }
+                    Insn::FixnumDiv { left, right, .. } => {
+                        self.fold_fixnum_bop(insn_id, left, right, |l, r| match (l, r) {
+                            (Some(l), Some(r)) if l == (RUBY_FIXNUM_MIN as i64) && r == -1 => None, // Avoid Fixnum overflow
+                            (Some(_l), Some(r)) if r == 0 => None, // Avoid Divide by zero.
+                            (Some(l), Some(r)) => {
+                                let l_obj = VALUE::fixnum_from_isize(l as isize);
+                                let r_obj = VALUE::fixnum_from_isize(r as isize);
+                                Some(unsafe { rb_jit_fix_div_fix(l_obj, r_obj) }.as_fixnum())
+                            },
+                            _ => None,
+                        })
+                    }
                     Insn::FixnumMod { left, right, .. } => {
                         self.fold_fixnum_bop(insn_id, left, right, |l, r| match (l, r) {
                             (Some(l), Some(r)) if r != 0 => {
@@ -5318,6 +5339,28 @@ impl Function {
         }
     }
 
+    /// Remove duplicate CheckInterrupts instructions within each basic block.
+    /// Only the first CheckInterrupts in a block is needed unless an intervening
+    /// instruction writes to InterruptFlag (e.g. a call), which resets tracking.
+    fn remove_duplicate_check_interrupts(&mut self) {
+        for block_id in self.rpo() {
+            let mut seen = false;
+            let insns = std::mem::take(&mut self.blocks[block_id.0].insns);
+            let mut new_insns = Vec::with_capacity(insns.len());
+            for insn_id in insns {
+                let insn = &self.insns[insn_id.0];
+                if matches!(insn, Insn::CheckInterrupts { .. }) {
+                    if seen { continue; }
+                    seen = true;
+                } else if insn.effects_of().write_bits().overlaps(abstract_heaps::InterruptFlag) {
+                    seen = false;
+                }
+                new_insns.push(insn_id);
+            }
+            self.blocks[block_id.0].insns = new_insns;
+        }
+    }
+
     /// Return a list that has entry_block and then jit_entry_blocks
     fn entry_blocks(&self) -> Vec<BlockId> {
         let mut entry_blocks = self.jit_entry_blocks.clone();
@@ -5545,6 +5588,8 @@ impl Function {
                     Counter::compile_hir_clean_cfg_time_ns
                 } else if ident_equal!($name, remove_redundant_patch_points) {
                     Counter::compile_hir_remove_redundant_patch_points_time_ns
+                } else if ident_equal!($name, remove_duplicate_check_interrupts) {
+                    Counter::compile_hir_remove_duplicate_check_interrupts_time_ns
                 } else if ident_equal!($name, eliminate_dead_code) {
                     Counter::compile_hir_eliminate_dead_code_time_ns
                 } else {
@@ -5573,6 +5618,7 @@ impl Function {
         run_pass!(fold_constants);
         run_pass!(clean_cfg);
         run_pass!(remove_redundant_patch_points);
+        run_pass!(remove_duplicate_check_interrupts);
         run_pass!(eliminate_dead_code);
 
         if should_dump {
@@ -8013,6 +8059,9 @@ fn compile_jit_entry_block(fun: &mut Function, jit_entry_idx: usize, target_bloc
     // Prepare entry_state with basic block params
     let (self_param, entry_state) = compile_jit_entry_state(fun, jit_entry_block, jit_entry_idx);
 
+    if get_option!(stats) {
+        fun.count_iseq_calls(jit_entry_block);
+    }
     // Jump to target_block
     fun.push_insn(jit_entry_block, Insn::Jump(BranchEdge { target: target_block, args: entry_state.as_args(self_param) }));
 }
