@@ -22,10 +22,11 @@ def categorize_symbol(dso, symbol):
         return '[sha256]'
     elif symbol.startswith('[JIT] gen_send'):
         return '[JIT send]'
-    elif symbol.startswith('[JIT]'):
+    # TODO: Stop using zjit:: as the prefix for JIT code. Rust modules and JIT code should use different namespaces.
+    elif symbol.startswith('[JIT]') or (symbol.startswith('zjit::') and '@') or symbol == 'zjit::ZJIT entry trampoline':
         return '[JIT code]'
-    elif '::' in symbol or symbol.startswith('yjit::') or symbol.startswith('_ZN4yjit'):
-        return '[YJIT compile]'
+    elif '::' in symbol or symbol.startswith('_ZN4yjit') or symbol.startswith('_ZN4zjit'):
+        return '[JIT compile]'
     elif symbol.startswith('rb_vm_') or symbol.startswith('vm_') or symbol in {
         "rb_call0", "callable_method_entry_or_negative", "invoke_block_from_c_bh",
         "rb_funcallv_scope", "setup_parameters_complex", "rb_yield"}:
@@ -108,7 +109,7 @@ if __name__ == "__main__" and len(sys.argv) == 2:
             row = line.split(maxsplit=6)
 
             period = row[3] # "1212775"
-            symbol, dso = row[6].split(" (") # "[JIT] getlocal_WC_0+0x0", "/tmp/perf-78207.map)\n"
+            symbol, dso = row[6].rsplit(" (", 1) # "[JIT] getlocal_WC_0+0x0", "/tmp/perf-78207.map)\n"
             symbol = symbol.split("+")[0] # "[JIT] getlocal_WC_0"
             dso = dso.split(")")[0] # "/tmp/perf-78207.map"
 
