@@ -747,7 +747,7 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         &Insn::WriteBarrier { recv, val } => no_output!(gen_write_barrier(jit, asm, opnd!(recv), opnd!(val), function.type_of(val))),
         &Insn::IsBlockGiven { lep } => gen_is_block_given(asm, opnd!(lep)),
         Insn::ArrayInclude { elements, target, state } => gen_array_include(jit, asm, opnds!(elements), opnd!(target), &function.frame_state(*state)),
-        Insn::ArrayPackBuffer { elements, fmt, buffer, state } => gen_array_pack_buffer(jit, asm, opnds!(elements), opnd!(fmt), opnd!(buffer), &function.frame_state(*state)),
+        Insn::ArrayPackBuffer { elements, fmt, buffer, state } => gen_array_pack_buffer(jit, asm, opnds!(elements), opnd!(fmt), (*buffer).map(|buffer| opnd!(buffer)), &function.frame_state(*state)),
         &Insn::DupArrayInclude { ary, target, state } => gen_dup_array_include(jit, asm, ary, opnd!(target), &function.frame_state(state)),
         Insn::ArrayHash { elements, state } => gen_opt_newarray_hash(jit, asm, opnds!(elements), &function.frame_state(*state)),
         &Insn::IsA { val, class } => gen_is_a(jit, asm, opnd!(val), opnd!(class)),
@@ -2047,7 +2047,7 @@ fn gen_array_pack_buffer(
     asm: &mut Assembler,
     elements: Vec<Opnd>,
     fmt: Opnd,
-    buffer: Opnd,
+    buffer: Option<Opnd>,
     state: &FrameState,
 ) -> lir::Opnd {
     gen_prepare_non_leaf_call(jit, asm, state);
@@ -2055,9 +2055,13 @@ fn gen_array_pack_buffer(
     let array_len: c_long = elements.len().try_into().expect("Unable to fit length of elements into c_long");
 
     // After gen_prepare_non_leaf_call, the elements are spilled to the Ruby stack.
-    // The elements are at the bottom of the virtual stack, followed by the fmt, followed by the buffer.
+    // The elements are at the bottom of the virtual stack, followed by the fmt, and optionally the buffer.
     // Get a pointer to the first element on the Ruby stack.
-    let stack_bottom = state.stack().len() - elements.len() - 2;
+    let stack_bottom = if buffer.is_some() {
+        state.stack().len() - elements.len() - 2
+    } else {
+        state.stack().len() - elements.len() - 1
+    };
     let elements_ptr = asm.lea(Opnd::mem(64, SP, stack_bottom as i32 * SIZEOF_VALUE_I32));
 
     unsafe extern "C" {
@@ -2066,7 +2070,7 @@ fn gen_array_pack_buffer(
     asm_ccall!(
         asm,
         rb_vm_opt_newarray_pack_buffer,
-        EC, array_len.into(), elements_ptr, fmt, buffer
+        EC, array_len.into(), elements_ptr, fmt, buffer.unwrap_or_else(|| Qundef.into())
     )
 }
 
@@ -3076,11 +3080,15 @@ c_callable! {
             unsafe { Rc::increment_strong_count(iseq_call_ptr as *const IseqCall); }
             let iseq_call = unsafe { Rc::from_raw(iseq_call_ptr as *const IseqCall) };
             let iseq = iseq_call.iseq.get();
-            let entry_insn_idxs = crate::hir::jit_entry_insns(iseq);
+            let params = unsafe { iseq.params() };
+            let entry_idx = iseq_call.jit_entry_idx.to_usize();
+            let entry_insn_idx = params.opt_table_slice().get(entry_idx)
+                .unwrap_or_else(|| panic!("function_stub: opt_table out of bounds. {params:#?}, entry_idx={entry_idx}"))
+                .as_u32();
             // gen_push_frame() doesn't set PC or ISEQ, so we need to set them before exit.
             // function_stub_hit_body() may allocate and call gc_validate_pc(), so we always set PC and ISEQ.
             // Clear jit_return so the interpreter reads cfp->pc and cfp->iseq directly.
-            let pc = unsafe { rb_iseq_pc_at_idx(iseq, entry_insn_idxs[iseq_call.jit_entry_idx.to_usize()]) };
+            let pc = unsafe { rb_iseq_pc_at_idx(iseq, entry_insn_idx) };
             unsafe { rb_set_cfp_pc(cfp, pc) };
             unsafe { (*cfp)._iseq = iseq };
             unsafe { (*cfp).jit_return = std::ptr::null_mut() };
@@ -3501,7 +3509,7 @@ impl Assembler {
 
 /// Store info about a JIT entry point
 pub struct JITEntry {
-    /// Index that corresponds to [crate::hir::jit_entry_insns]
+    /// Index that corresponds to an entry in [crate::cruby::IseqParameters::opt_table_slice]
     jit_entry_idx: usize,
     /// Position where the entry point starts
     start_addr: Cell<Option<CodePtr>>,
@@ -3524,7 +3532,7 @@ pub struct IseqCall {
     /// Callee ISEQ that start_addr jumps to
     pub iseq: Cell<IseqPtr>,
 
-    /// Index that corresponds to [crate::hir::jit_entry_insns]
+    /// Index that corresponds to an entry in [crate::cruby::IseqParameters::opt_table_slice]
     jit_entry_idx: u16,
 
     /// Argument count passing to the HIR function
