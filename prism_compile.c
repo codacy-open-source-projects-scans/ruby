@@ -3749,7 +3749,7 @@ pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *c
 
     if (PM_NODE_FLAG_P(call_node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
         if (PM_BRANCH_COVERAGE_P(iseq)) {
-            uint32_t end_cursor;
+            uint32_t end_cursor = 0;
             bool end_found = false;
 
             if (call_node->closing_loc.length > 0) {
@@ -11361,12 +11361,6 @@ pm_parse_process(pm_parse_result_t *result, pm_node_t *node, VALUE *script_lines
 
     pm_intern_constants_ctx_t intern_ctx = { .constants = scope_node->constants, .encoding = scope_node->encoding, .index = 0 };
     pm_parser_constants_each(parser, pm_intern_constants_callback, &intern_ctx);
-
-    pm_constant_id_list_t *locals = &scope_node->locals;
-    pm_index_lookup_table_init_heap(&scope_node->index_lookup_table, (int) constants_size);
-    for (size_t index = 0; index < locals->size; index++) {
-        pm_index_lookup_table_insert(&scope_node->index_lookup_table, locals->ids[index], (int) index);
-    }
 
     // If we got here, this is a success and we can return Qnil to indicate that
     // no error should be raised.
