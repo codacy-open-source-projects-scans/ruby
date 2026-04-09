@@ -731,7 +731,7 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         Insn::GetIvar { self_val, id, ic, state: _ } => gen_getivar(jit, asm, opnd!(self_val), *id, *ic),
         Insn::SetGlobal { id, val, state } => no_output!(gen_setglobal(jit, asm, *id, opnd!(val), &function.frame_state(*state))),
         Insn::GetGlobal { id, state } => gen_getglobal(jit, asm, *id, &function.frame_state(*state)),
-        &Insn::IsBlockParamModified { ep } => gen_is_block_param_modified(asm, opnd!(ep)),
+        &Insn::IsBlockParamModified { flags } => gen_is_block_param_modified(asm, opnd!(flags)),
         &Insn::GetBlockParam { ep_offset, level, state } => gen_getblockparam(jit, asm, ep_offset, level, &function.frame_state(state)),
         &Insn::SetLocal { val, ep_offset, level } => no_output!(gen_setlocal(asm, opnd!(val), function.type_of(val), ep_offset, level)),
         Insn::GetConstant { klass, id, allow_nil, state } => gen_getconstant(jit, asm, opnd!(klass), *id, opnd!(allow_nil), &function.frame_state(*state)),
@@ -896,8 +896,7 @@ fn gen_setlocal(asm: &mut Assembler, val: Opnd, val_type: Type, local_ep_offset:
 }
 
 /// Returns 1 (as CBool) when VM_FRAME_FLAG_MODIFIED_BLOCK_PARAM is set; returns 0 otherwise.
-fn gen_is_block_param_modified(asm: &mut Assembler, ep: Opnd) -> Opnd {
-    let flags = asm.load(Opnd::mem(VALUE_BITS, ep, SIZEOF_VALUE_I32 * (VM_ENV_DATA_INDEX_FLAGS as i32)));
+fn gen_is_block_param_modified(asm: &mut Assembler, flags: Opnd) -> Opnd {
     asm.test(flags, VM_FRAME_FLAG_MODIFIED_BLOCK_PARAM.into());
     asm.csel_nz(Opnd::Imm(1), Opnd::Imm(0))
 }
@@ -2459,8 +2458,9 @@ fn gen_has_type(jit: &mut JITState, asm: &mut Assembler, val: lir::Opnd, ty: Typ
         asm.csel_e(Opnd::Imm(1), Opnd::Imm(0))
     } else if ty.is_subtype(types::StaticSymbol) {
         // Static symbols have (val & 0xff) == RUBY_SYMBOL_FLAG
-        // Use 8-bit comparison like YJIT does. GuardType should not be used
-        // for a known VALUE, which with_num_bits() does not support.
+        // Use 8-bit comparison like YJIT does.
+        // If `val` is a constant (rare but possible), put it in a register to allow masking.
+        let val = asm.load_imm(val);
         asm.cmp(val.with_num_bits(8), Opnd::UImm(RUBY_SYMBOL_FLAG as u64));
         asm.csel_e(Opnd::Imm(1), Opnd::Imm(0))
     } else if ty.is_subtype(types::NilClass) {
@@ -2529,8 +2529,9 @@ fn gen_guard_type(jit: &mut JITState, asm: &mut Assembler, val: lir::Opnd, guard
         asm.jne(jit, side_exit(jit, state, GuardType(guard_type)));
     } else if guard_type.is_subtype(types::StaticSymbol) {
         // Static symbols have (val & 0xff) == RUBY_SYMBOL_FLAG
-        // Use 8-bit comparison like YJIT does. GuardType should not be used
-        // for a known VALUE, which with_num_bits() does not support.
+        // Use 8-bit comparison like YJIT does.
+        // If `val` is a constant (rare but possible), put it in a register to allow masking.
+        let val = asm.load_imm(val);
         asm.cmp(val.with_num_bits(8), Opnd::UImm(RUBY_SYMBOL_FLAG as u64));
         asm.jne(jit, side_exit(jit, state, GuardType(guard_type)));
     } else if guard_type.is_subtype(types::NilClass) {
@@ -3541,6 +3542,15 @@ impl Assembler {
         match recv {
             Opnd::VReg { .. } | Opnd::Reg(_) => recv,
             _ => self.load(recv),
+        }
+    }
+
+    /// Emits a load for constant based operands and returns a vreg,
+    /// otherwise returns recv.
+    fn load_imm(&mut self, recv: Opnd) -> Opnd {
+        match recv {
+            Opnd::Value { .. } | Opnd::UImm(_) | Opnd::Imm(_) => self.load(recv),
+            _ => recv,
         }
     }
 

@@ -448,6 +448,20 @@ fn test_getblockparamproxy_modified_nested_block() {
 }
 
 #[test]
+fn test_getblockparamproxy_polymorphic_none_and_iseq() {
+    set_call_threshold(3);
+    eval("
+        def test(&block)
+          0.then(&block)
+        end
+        test
+        test { 1 }
+    ");
+    assert_contains_opcode("test", YARVINSN_getblockparamproxy);
+    assert_snapshot!(assert_compiles("test { 2 }"), @"2");
+}
+
+#[test]
 fn test_getblockparam() {
     eval("
         def test(&blk)
@@ -5566,6 +5580,30 @@ fn test_send_block_unused_warning_emitted_from_jit() {
           $VERBOSE = true
           m_unused_block_warn_test {}
           $warnings.any? { |w| w.include?("may be ignored") }
+        end
+
+        test
+        test
+    "#), @"true");
+}
+
+#[test]
+fn test_load_immediates_into_registers_before_masking() {
+    // See https://github.com/ruby/ruby/pull/16669 -- this is a reduced reproduction from a Ruby
+    // spec.
+    set_call_threshold(2);
+    assert_snapshot!(inspect(r#"
+        def test
+          klass = Class.new do
+            def ===(o)
+              true
+            end
+          end
+
+          case 1
+          when klass.new
+            :called
+          end == :called
         end
 
         test
