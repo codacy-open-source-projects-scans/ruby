@@ -302,9 +302,7 @@ rb_iseq_mark_and_move_each_body_value(const rb_iseq_t *iseq, VALUE *original_ise
         for (unsigned int i = 0; i < body->icvarc_size; i++, is_entries++) {
             ICVARC icvarc = (ICVARC)is_entries;
             if (icvarc->entry) {
-                RUBY_ASSERT(!RB_TYPE_P(icvarc->entry->class_value, T_NONE));
-
-                rb_gc_mark_and_move(&icvarc->entry->class_value);
+                rb_gc_mark_and_move((VALUE *)&icvarc->entry);
             }
         }
 
@@ -1918,16 +1916,30 @@ iseqw_s_compile_file_prism(int argc, VALUE *argv, VALUE self)
     rb_execution_context_t *ec = GET_EC();
     VALUE v = rb_vm_push_frame_fname(ec, file);
 
+    make_compile_option(&option, opt);
+
     pm_parse_result_t result;
     pm_parse_result_init(&result);
     result.node.coverage_enabled = 1;
+
+    switch (option.frozen_string_literal) {
+      case ISEQ_FROZEN_STRING_LITERAL_UNSET:
+        break;
+      case ISEQ_FROZEN_STRING_LITERAL_DISABLED:
+        pm_options_frozen_string_literal_set(result.options, false);
+        break;
+      case ISEQ_FROZEN_STRING_LITERAL_ENABLED:
+        pm_options_frozen_string_literal_set(result.options, true);
+        break;
+      default:
+        rb_bug("iseqw_s_compile_file_prism: invalid frozen_string_literal=%d", option.frozen_string_literal);
+        break;
+    }
 
     VALUE script_lines;
     VALUE error = pm_load_parse_file(&result, file, ruby_vm_keep_script_lines ? &script_lines : NULL);
 
     if (error == Qnil) {
-        make_compile_option(&option, opt);
-
         int error_state;
         rb_iseq_t *iseq = pm_iseq_new_with_opt(&result.node, rb_fstring_lit("<main>"),
                                                file,
