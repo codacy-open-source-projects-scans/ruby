@@ -39,6 +39,7 @@
 #include "internal/string.h"
 #include "internal/util.h"
 #include "internal/variable.h"
+#include "vm_core.h"
 #include "ruby/encoding.h"
 #include "ruby/util.h"
 #include "builtin.h"
@@ -74,6 +75,8 @@
 #ifndef DBL_EPSILON
 #define DBL_EPSILON 2.2204460492503131e-16
 #endif
+
+#define ACCURATE_POW10(ndigits) ((ndigits) < DBL_DIG)
 
 #ifndef USE_RB_INFINITY
 #elif !defined(WORDS_BIGENDIAN) /* BYTE_ORDER == LITTLE_ENDIAN */
@@ -977,7 +980,7 @@ flo_to_s(VALUE flt)
             rb_str_cat(s, buf, digs + 1);
         }
         else if (decpt <= DBL_DIG) {
-            long len;
+            rb_len_t len;
             char *ptr;
             rb_str_cat(s, buf, digs);
             rb_str_resize(s, (len = RSTRING_LEN(s)) + decpt - digs + 2);
@@ -993,7 +996,7 @@ flo_to_s(VALUE flt)
         }
     }
     else if (decpt > -4) {
-        long len;
+        rb_len_t len;
         char *ptr;
         rb_str_cat(s, "0.", 2);
         rb_str_resize(s, (len = RSTRING_LEN(s)) - decpt + digs);
@@ -2018,6 +2021,9 @@ rb_float_floor(VALUE num, int ndigits)
         if (float_round_overflow(ndigits, binexp)) return num;
         if (number > 0.0 && float_round_underflow(ndigits, binexp))
             return DBL2NUM(0.0);
+        if (!ACCURATE_POW10(ndigits)) {
+            return rb_flo_floor_by_rational(num, ndigits);
+        }
         f = pow(10, ndigits);
         mul = floor(number * f);
         res = (mul + 1) / f;
@@ -2159,8 +2165,8 @@ flo_floor(int argc, VALUE *argv, VALUE num)
  *  returns an Integer based on a computed granularity:
  *
  *  - The granularity is `10 ** ndigits.abs`.
- *  - The returned value is the largest multiple of the granularity
- *    that is less than or equal to `self`.
+ *  - The returned value is the smallest multiple of the granularity
+ *    that is greater than or equal to `self`.
  *
  *  Examples with positive `self`:
  *
@@ -2226,6 +2232,9 @@ rb_float_ceil(VALUE num, int ndigits)
         if (float_round_overflow(ndigits, binexp)) return num;
         if (number < 0.0 && float_round_underflow(ndigits, binexp))
             return DBL2NUM(0.0);
+        if (!ACCURATE_POW10(ndigits)) {
+            return rb_flo_ceil_by_rational(num, ndigits);
+        }
         f = pow(10, ndigits);
         f = ceil(number * f) / f;
         return DBL2NUM(f);
@@ -2490,9 +2499,8 @@ flo_round(int argc, VALUE *argv, VALUE num)
         frexp(number, &binexp);
         if (float_round_overflow(ndigits, binexp)) return num;
         if (float_round_underflow(ndigits, binexp)) return DBL2NUM(0);
-        if (ndigits > 14) {
-            /* In this case, pow(10, ndigits) may not be accurate. */
-            return rb_flo_round_by_rational(argc, argv, num);
+        if (!ACCURATE_POW10(ndigits)) {
+            return rb_flo_round_by_rational(num, ndigits, mode);
         }
         f = pow(10, ndigits);
         x = ROUND_CALL(mode, round, (number, f));
@@ -2657,7 +2665,7 @@ num_ceil(int argc, VALUE *argv, VALUE num)
 
 /*
  *  call-seq:
- *    round(digits = 0) -> integer or float
+ *    round(digits = 0, half: :up) -> integer or float
  *
  *  Returns +self+ rounded to the nearest value with
  *  a precision of +digits+ decimal digits.
@@ -4040,6 +4048,11 @@ rb_int_uminus(VALUE num)
     }
 }
 
+/* ruby_decimal_digit_pairs is defined in bignum.c and declared in
+ * internal/bignum.h.  See there for the rationale of the 2-digit
+ * lookup-table itoa optimisation; both rb_fix2str here and big2str_2bdigits
+ * in bignum.c consume it. */
+
 VALUE
 rb_fix2str(VALUE x, int base)
 {
@@ -4072,9 +4085,34 @@ rb_fix2str(VALUE x, int base)
     else {
         u = val;
     }
-    do {
-        *--b = ruby_digitmap[(int)(u % base)];
-    } while (u /= base);
+    if (base == 10) {
+        /* Emit two digits per iteration from a precomputed table.  The
+         * compiler lowers `u % 100` and `u / 100` to a single multiply +
+         * shift, so each iteration costs roughly one multiply, one shift,
+         * and two stores.  About 2x fewer iterations than the classic
+         * per-digit loop for multi-digit inputs. */
+        while (u >= 100) {
+            unsigned long idx = (u % 100) * 2;
+            u /= 100;
+            b -= 2;
+            b[0] = ruby_decimal_digit_pairs[idx];
+            b[1] = ruby_decimal_digit_pairs[idx + 1];
+        }
+        if (u >= 10) {
+            unsigned long idx = u * 2;
+            b -= 2;
+            b[0] = ruby_decimal_digit_pairs[idx];
+            b[1] = ruby_decimal_digit_pairs[idx + 1];
+        }
+        else {
+            *--b = (char)('0' + u);
+        }
+    }
+    else {
+        do {
+            *--b = ruby_digitmap[(int)(u % base)];
+        } while (u /= base);
+    }
     if (neg) {
         *--b = '-';
     }
@@ -4433,7 +4471,8 @@ fix_div(VALUE x, VALUE y)
  *
  * Returns the quotient of +self+ and +other+.
  *
- * For integer +other+, truncates the result to an integer:
+ * For integer +other+, returns the largest integer less than or equal to
+ * the mathematical quotient:
  *
  *   4 / 3              # => 1
  *   4 / -3             # => -2
@@ -5696,6 +5735,49 @@ rb_int_bit_length(VALUE num)
 }
 
 static VALUE
+rb_fix_bit_count(VALUE fix)
+{
+    long v = FIX2LONG(fix);
+    if (v < 0)
+        rb_raise(rb_eArgError, "bit_count is undefined for negative integers");
+    return LONG2FIX(rb_popcount_intptr((uintptr_t)v));
+}
+
+/*
+ *  call-seq:
+ *    bit_count -> integer
+ *
+ *  Returns the number of set bits (bits equal to 1) in the binary
+ *  representation of +self+, also known as the population count or
+ *  Hamming weight.
+ *
+ *    0.bit_count            # => 0
+ *    1.bit_count            # => 1
+ *    7.bit_count            # => 3
+ *    0b10101.bit_count      # => 3
+ *    255.bit_count          # => 8
+ *    (2**1000).bit_count    # => 1
+ *    (2**1000-1).bit_count  # => 1000
+ *
+ *  Raises an exception if +self+ is negative.
+ *
+ *    (-1).bit_count # Raises ArgumentError
+ *
+ */
+
+VALUE
+rb_int_bit_count(VALUE num)
+{
+    if (FIXNUM_P(num)) {
+        return rb_fix_bit_count(num);
+    }
+    else if (RB_BIGNUM_TYPE_P(num)) {
+        return rb_big_bit_count(num);
+    }
+    UNREACHABLE_RETURN(Qnil);
+}
+
+static VALUE
 rb_fix_digits(VALUE fix, long base)
 {
     VALUE digits;
@@ -5758,7 +5840,7 @@ rb_int_digits_bigbase(VALUE num, VALUE base)
     digits = rb_ary_new_from_args(1, num);
     while (RARRAY_LEN(bases)) {
         VALUE b = rb_ary_pop(bases);
-        long i, last_idx = RARRAY_LEN(digits) - 1;
+        rb_len_t i, last_idx = RARRAY_LEN(digits) - 1;
         for(i = last_idx; i >= 0; i--) {
             VALUE n = RARRAY_AREF(digits, i);
             VALUE divmod = rb_int_divmod(n, b);
@@ -6477,10 +6559,6 @@ int_s_try_convert(VALUE self, VALUE num)
 void
 Init_Numeric(void)
 {
-#ifdef _UNICOSMP
-    /* Turn off floating point exceptions for divide by zero, etc. */
-    _set_Creg(0, 0);
-#endif
     id_coerce = rb_intern_const("coerce");
     id_to = rb_intern_const("to");
     id_by = rb_intern_const("by");
@@ -6573,6 +6651,7 @@ Init_Numeric(void)
     rb_define_method(rb_cInteger, ">>", rb_int_rshift, 1);
 
     rb_define_method(rb_cInteger, "digits", rb_int_digits, -1);
+    rb_define_method(rb_cInteger, "bit_count", rb_int_bit_count, 0);
 
 #define fix_to_s_static(n) do { \
         VALUE lit = rb_fstring_literal(#n); \

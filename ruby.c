@@ -44,7 +44,7 @@
 #include "eval_intern.h"
 #include "internal.h"
 #include "internal/cmdlineopt.h"
-#include "internal/cont.h"
+#include "internal/coverage.h"
 #include "internal/error.h"
 #include "internal/file.h"
 #include "internal/inits.h"
@@ -56,6 +56,7 @@
 #include "internal/thread.h"
 #include "internal/ruby_parser.h"
 #include "internal/variable.h"
+#include "prism_compile.h"
 #include "ruby/encoding.h"
 #include "ruby/thread.h"
 #include "ruby/util.h"
@@ -462,7 +463,8 @@ ruby_push_include(const char *path, VALUE (*filter)(VALUE))
         while (is_path_sep(*p))
             p++;
         if (!*p) break;
-        for (s = p; *s && !is_path_sep(*s); s = CharNext(s));
+        /* separators never appear inside a multibyte character */
+        for (s = p; *s && !is_path_sep(*s); s++);
         len = s - p;
 #undef is_path_sep
 
@@ -523,7 +525,7 @@ expand_include_path(VALUE path)
     return rb_file_expand_path(path, Qnil);
 }
 
-void
+static void
 ruby_incpush_expand(const char *path)
 {
     ruby_push_include(path, expand_include_path);
@@ -798,6 +800,25 @@ require_libraries(VALUE *req_list)
     *req_list = 0;
 }
 
+static void
+require_libraries_in_main_box(VALUE *req_list)
+{
+    const rb_box_t *main_box = rb_main_box();
+    VALUE list = *req_list;
+    ID require;
+    rb_encoding *extenc = rb_default_external_encoding();
+
+    CONST_ID(require, "require");
+    while (list && RARRAY_LEN(list) > 0) {
+        VALUE feature = rb_ary_shift(list);
+        rb_enc_associate(feature, extenc);
+        RBASIC_SET_CLASS_RAW(feature, rb_cString);
+        OBJ_FREEZE(feature);
+        rb_funcallv(main_box->box_object, require, 1, &feature);
+    }
+    *req_list = 0;
+}
+
 static const struct rb_block*
 toplevel_context(rb_binding_t *bind)
 {
@@ -808,7 +829,7 @@ static int
 process_sflag(int sflag)
 {
     if (sflag > 0) {
-        long n;
+        rb_len_t n;
         const VALUE *args;
         VALUE argv = rb_argv;
 
@@ -878,7 +899,6 @@ moreswitches(const char *s, ruby_cmdline_options_t *opt, int envopt)
     char **argv, *p;
     const char *ap = 0;
     VALUE argstr, argary;
-    void *ptr;
 
     VALUE src_enc_name = opt->src.enc.name;
     VALUE ext_enc_name = opt->ext.enc.name;
@@ -915,7 +935,7 @@ moreswitches(const char *s, ruby_cmdline_options_t *opt, int envopt)
     rb_str_cat(argary, (char *)&ap, sizeof(ap));
 
     VALUE ptr_obj;
-    argv = ptr = RB_ALLOCV_N(char *, ptr_obj, argc);
+    argv = RB_ALLOCV_N(char *, ptr_obj, argc);
     MEMMOVE(argv, RSTRING_PTR(argary), char *, argc);
 
     while ((i = proc_options(argc, argv, opt, envopt)) > 1 && envopt && (argc -= i) > 0) {
@@ -1482,7 +1502,7 @@ proc_long_options(ruby_cmdline_options_t *opt, const char *s, long argc, char **
         setup_yjit_options(s);
 #else
         rb_warn("Ruby was built without YJIT support."
-                " You may need to install rustc to build Ruby with YJIT.");
+                " You may need to install rustc and configure with --enable-yjit to build Ruby with YJIT.");
 #endif
     }
     else if (is_option_with_optarg("zjit", '-', true, false, false)) {
@@ -1771,6 +1791,7 @@ proc_options(long argc, char **argv, ruby_cmdline_options_t *opt, int envopt)
     return argc0 - argc;
 }
 
+VALUE rb_define_gem_modules(VALUE, VALUE);
 void Init_builtin_features(void);
 
 static void
@@ -1798,19 +1819,6 @@ ruby_opt_init(ruby_cmdline_options_t *opt)
 
     if (opt->dump & dump_exit_bits) return;
 
-    if (FEATURE_SET_P(opt->features, gems)) {
-        rb_define_module("Gem");
-        if (opt->features.set & FEATURE_BIT(error_highlight)) {
-            rb_define_module("ErrorHighlight");
-        }
-        if (opt->features.set & FEATURE_BIT(did_you_mean)) {
-            rb_define_module("DidYouMean");
-        }
-        if (opt->features.set & FEATURE_BIT(syntax_suggest)) {
-            rb_define_module("SyntaxSuggest");
-        }
-    }
-
     Init_ext(); /* load statically linked extensions before rubygems */
     Init_extra_exts();
 
@@ -1829,13 +1837,40 @@ ruby_opt_init(ruby_cmdline_options_t *opt)
     rb_zjit_init_builtin_cmes();
 #endif
 
-    ruby_init_prelude();
+    /**
+     * Initialize the root/main boxes before loading libraries to run them
+     * (including RubyGems, written in Ruby) in those boxes themselves
+     */
+    if (rb_box_available()) {
+        rb_initialize_mandatory_boxes();
+    }
 
-    /* Initialize the main box after loading libraries (including rubygems)
-     * to enable those in both root and main */
-    if (rb_box_available())
-        rb_initialize_main_box();
     rb_box_init_done();
+
+    if (FEATURE_SET_P(opt->features, gems)) {
+        rb_box_gem_flags_t gem_flags = {
+            .gem = FEATURE_SET_P(opt->features, gems),
+            .error_highlight = opt->features.set & FEATURE_BIT(error_highlight),
+            .did_you_mean    = opt->features.set & FEATURE_BIT(did_you_mean),
+            .syntax_suggest  = opt->features.set & FEATURE_BIT(syntax_suggest)
+        };
+
+        if (rb_box_available()) {
+            rb_vm_call_cfunc_in_box(Qnil, rb_define_gem_modules, (VALUE)&gem_flags, Qnil,
+                                    rb_str_new_cstr("before_prelude.root.dummy"), rb_root_box());
+            rb_vm_call_cfunc_in_box(Qnil, rb_define_gem_modules, (VALUE)&gem_flags, Qnil,
+                                    rb_str_new_cstr("before_prelude.main.dummy"), rb_main_box());
+
+            rb_box_set_gem_flags(&gem_flags);
+        }
+        else {
+            rb_define_gem_modules((VALUE)&gem_flags, Qnil);
+        }
+    }
+
+    // The root/main boxes load gem_prelude here.
+    // User boxes will load it in those #initialize instead.
+    ruby_init_prelude();
 
     // Enable JITs after ruby_init_prelude() to avoid JITing prelude code.
 #if USE_YJIT
@@ -1847,7 +1882,12 @@ ruby_opt_init(ruby_cmdline_options_t *opt)
 #endif
 
     ruby_set_script_name(opt->script_name);
-    require_libraries(&opt->req_list);
+    if (rb_box_available()) {
+        require_libraries_in_main_box(&opt->req_list);
+    }
+    else {
+        require_libraries(&opt->req_list);
+    }
 }
 
 static int
@@ -2188,7 +2228,7 @@ prism_script(ruby_cmdline_options_t *opt, pm_parse_result_t *result)
     const bool read_stdin = (strcmp(opt->script, "-") == 0);
 
     if (read_stdin) {
-        pm_options_encoding_set(options, rb_enc_name(rb_locale_encoding()));
+        pm_options_encoding_set(options, rb_enc_name(IF_UTF8_PATH(rb_utf8_encoding(), rb_locale_encoding())));
     }
     if (opt->src.enc.name != 0) {
         pm_options_encoding_set(options, StringValueCStr(opt->src.enc.name));
@@ -2344,7 +2384,7 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
     int i = (int)proc_options(argc, argv, opt, 0);
     unsigned int dump = opt->dump & dump_exit_bits;
     const rb_box_t *box = rb_root_box();
-    const long loaded_before_enc = RARRAY_LEN(box->loaded_features);
+    const rb_len_t loaded_before_enc = RARRAY_LEN(box->loaded_features);
 
     if (opt->dump & (DUMP_BIT(usage)|DUMP_BIT(help))) {
         const char *const progname =
@@ -2496,12 +2536,12 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
 #endif
     rb_obj_freeze(opt->script_name);
     if (IF_UTF8_PATH(uenc != lenc, 1)) {
-        long i;
+        rb_len_t i;
         VALUE load_path = box->load_path;
         const ID id_initial_load_path_mark = INITIAL_LOAD_PATH_MARK;
         int modifiable = FALSE;
 
-        rb_get_expanded_load_path();
+        rb_get_expanded_load_path(NULL);
         for (i = 0; i < RARRAY_LEN(load_path); ++i) {
             VALUE path = RARRAY_AREF(load_path, i);
             int mark = rb_attr_get(path, id_initial_load_path_mark) == path;
@@ -2526,7 +2566,7 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
     {
         VALUE loaded_features = box->loaded_features;
         bool modified = false;
-        for (long i = loaded_before_enc; i < RARRAY_LEN(loaded_features); ++i) {
+        for (rb_len_t i = loaded_before_enc; i < RARRAY_LEN(loaded_features); ++i) {
             VALUE path = RARRAY_AREF(loaded_features, i);
             if (!(path = copy_str(path, IF_UTF8_PATH(uenc, lenc), true))) continue;
             if (!modified) {
@@ -2688,7 +2728,7 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
 
 #ifndef DOSISH
 static void
-warn_cr_in_shebang(const char *str, long len)
+warn_cr_in_shebang(const char *str, rb_len_t len)
 {
     if (len > 1 && str[len-1] == '\n' && str[len-2] == '\r') {
         rb_warn("shebang line ending with \\r may cause problems");
@@ -2729,7 +2769,7 @@ load_file_internal(VALUE argp_v)
         VALUE c = 1;		/* something not nil */
         VALUE line;
         char *p, *str;
-        long len;
+        rb_len_t len;
         int no_src_enc = !opt->src.enc.name;
         int no_ext_enc = !opt->ext.enc.name;
         int no_int_enc = !opt->intern.enc.name;
@@ -2805,7 +2845,7 @@ load_file_internal(VALUE argp_v)
         enc = rb_enc_from_index(opt->src.enc.index);
     }
     else if (f == rb_stdin) {
-        enc = rb_locale_encoding();
+        enc = IF_UTF8_PATH(rb_utf8_encoding(), rb_locale_encoding());
     }
     else {
         enc = rb_utf8_encoding();
@@ -2867,7 +2907,7 @@ open_load_file(VALUE fname_v, int *xflag)
 {
     const char *fname = (fname_v = rb_str_encode_ospath(fname_v),
                          StringValueCStr(fname_v));
-    long flen = RSTRING_LEN(fname_v);
+    rb_len_t flen = RSTRING_LEN(fname_v);
     VALUE f;
     int e;
 

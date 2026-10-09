@@ -65,14 +65,57 @@ pm_constant_id_list_insert(pm_constant_id_list_t *list, size_t index, pm_constan
 }
 
 /**
- * Checks if the current constant id list includes the given constant id.
+ * The slot that holds the given id, or the empty slot it would occupy. The
+ * table is never full, so this terminates.
+ */
+static PRISM_INLINE size_t
+pm_constant_id_set_slot(const pm_constant_id_set_t *set, pm_constant_id_t id) {
+    assert(set->capacity != 0);
+
+    size_t mask = set->capacity - 1;
+    size_t index = ((size_t) pm_constant_id_hash(id)) & mask;
+
+    while (set->ids[index] != PM_CONSTANT_ID_UNSET && set->ids[index] != id) {
+        index = (index + 1) & mask;
+    }
+
+    return index;
+}
+
+/**
+ * Add a constant id to the set, reporting whether it was not already there.
  */
 bool
-pm_constant_id_list_includes(pm_constant_id_list_t *list, pm_constant_id_t id) {
-    for (size_t index = 0; index < list->size; index++) {
-        if (list->ids[index] == id) return true;
+pm_constant_id_set_insert(pm_arena_t *arena, pm_constant_id_set_t *set, pm_constant_id_t id) {
+    /* PM_CONSTANT_ID_UNSET marks an empty slot, so it cannot also be a member. */
+    assert(id != PM_CONSTANT_ID_UNSET);
+
+    /*
+     * Grow at the same load factor the locals table and the constant pool use.
+     * An empty set has no slots at all, so this also builds the first table.
+     */
+    if (set->size >= (set->capacity / 4 * 3)) {
+        size_t capacity = set->capacity == 0 ? 8 : set->capacity * 2;
+        pm_constant_id_set_t grown = {
+            .size = set->size,
+            .capacity = capacity,
+            .ids = (pm_constant_id_t *) pm_arena_zalloc(arena, capacity * sizeof(pm_constant_id_t), PRISM_ALIGNOF(pm_constant_id_t))
+        };
+
+        for (size_t index = 0; index < set->capacity; index++) {
+            pm_constant_id_t moved = set->ids[index];
+            if (moved != PM_CONSTANT_ID_UNSET) grown.ids[pm_constant_id_set_slot(&grown, moved)] = moved;
+        }
+
+        *set = grown;
     }
-    return false;
+
+    size_t index = pm_constant_id_set_slot(set, id);
+    if (set->ids[index] == id) return false;
+
+    set->ids[index] = id;
+    set->size++;
+    return true;
 }
 
 /**
@@ -245,7 +288,9 @@ pm_constant_pool_find(const pm_constant_pool_t *pool, const uint8_t *start, size
     pm_constant_pool_bucket_t *bucket;
 
     while (bucket = &pool->buckets[index], bucket->id != PM_CONSTANT_ID_UNSET) {
-        if ((bucket->length == length) && memcmp(bucket->start, start, length) == 0) {
+        // Compare the stored hash before touching the contents so that probe
+        // collisions are rejected without a memcmp call.
+        if ((bucket->hash == hash) && (bucket->length == length) && memcmp(bucket->start, start, length) == 0) {
             return bucket->id;
         }
 
@@ -274,8 +319,9 @@ pm_constant_pool_insert(pm_arena_t *arena, pm_constant_pool_t *pool, const uint8
     while (bucket = &pool->buckets[index], bucket->id != PM_CONSTANT_ID_UNSET) {
         // If there is a collision, then we need to check if the content is the
         // same as the content we are trying to insert. If it is, then we can
-        // return the id of the existing constant.
-        if ((bucket->length == length) && memcmp(bucket->start, start, length) == 0) {
+        // return the id of the existing constant. Compare the stored hash
+        // first so that probe collisions are rejected without a memcmp call.
+        if ((bucket->hash == hash) && (bucket->length == length) && memcmp(bucket->start, start, length) == 0) {
             // Since we have found a match, we need to check if this is
             // attempting to insert a shared or an owned constant. We want to
             // prefer shared constants since they don't require allocations.

@@ -223,6 +223,10 @@ unset_addr_list_add(UnsetAddrList* uslist, int offset, struct _Node* node)
 static int
 add_opcode(regex_t* reg, int opcode)
 {
+  /* Every instruction passes here, so this is where a program that would
+     outgrow its offset type is stopped, while it is still being emitted. */
+  if (reg->used > MAX_COMPILED_PROGRAM_SIZE)
+    return ONIGERR_TOO_BIG_COMPILED_PROGRAM;
   BBUF_ADD1(reg, opcode);
   return 0;
 }
@@ -394,6 +398,7 @@ compile_tree_empty_check(Node* node, regex_t* reg, int empty_info)
     r = add_mem_num(reg, reg->num_null_check); /* NULL CHECK ID */
     if (r) return r;
     reg->num_null_check++;
+    if ((MemNumType)reg->num_null_check <= 0) return ONIGERR_TOO_MANY_NULL_CHECK;
   }
 
   r = compile_tree(node, reg);
@@ -703,6 +708,7 @@ compile_range_repeat_node(QtfrNode* qn, int target_len, int empty_info,
   if (r) return r;
   r = add_mem_num(reg, num_repeat); /* OP_REPEAT ID */
   reg->num_repeat++;
+  if ((MemNumType)reg->num_repeat <= 0) return ONIGERR_TOO_MANY_RANGE_REPEAT;
   if (r) return r;
   r = add_rel_addr(reg, target_len + SIZE_OP_REPEAT_INC);
   if (r) return r;
@@ -739,6 +745,10 @@ is_anychar_star_quantifier(QtfrNode* qn)
 }
 
 #define QUANTIFIER_EXPAND_LIMIT_SIZE   50
+/* (tlen * n <= QUANTIFIER_EXPAND_LIMIT_SIZE) without overflowing int: tlen
+   and n are each bounded by ONIG_MAX_REPEAT_NUM, but their product is not. */
+#define IS_EXPAND_LIMIT_OK(tlen, n) \
+  ((n) <= 0 || (tlen) <= QUANTIFIER_EXPAND_LIMIT_SIZE / (n))
 #define CKN_ON   (ckn > 0)
 
 #ifdef USE_COMBINATION_EXPLOSION_CHECK
@@ -1003,7 +1013,7 @@ compile_length_quantifier_node(QtfrNode* qn, regex_t* reg)
     mod_tlen = tlen;
 
   if (infinite &&
-      (qn->lower <= 1 || tlen * qn->lower <= QUANTIFIER_EXPAND_LIMIT_SIZE)) {
+      (qn->lower <= 1 || IS_EXPAND_LIMIT_OK(tlen, qn->lower))) {
     if (qn->lower == 1 && tlen > QUANTIFIER_EXPAND_LIMIT_SIZE) {
       len = SIZE_OP_JUMP;
     }
@@ -1029,8 +1039,8 @@ compile_length_quantifier_node(QtfrNode* qn, regex_t* reg)
     len = SIZE_OP_JUMP + tlen;
   }
   else if (!infinite && qn->greedy &&
-           (qn->upper == 1 || (tlen + SIZE_OP_PUSH) * qn->upper
-                                      <= QUANTIFIER_EXPAND_LIMIT_SIZE)) {
+           (qn->upper == 1 ||
+            IS_EXPAND_LIMIT_OK(tlen + SIZE_OP_PUSH, qn->upper))) {
     len = tlen * qn->lower;
     len += (SIZE_OP_PUSH + tlen) * (qn->upper - qn->lower);
   }
@@ -1080,7 +1090,7 @@ compile_quantifier_node(QtfrNode* qn, regex_t* reg)
     mod_tlen = tlen;
 
   if (infinite &&
-      (qn->lower <= 1 || tlen * qn->lower <= QUANTIFIER_EXPAND_LIMIT_SIZE)) {
+      (qn->lower <= 1 || IS_EXPAND_LIMIT_OK(tlen, qn->lower))) {
     if (qn->lower == 1 && tlen > QUANTIFIER_EXPAND_LIMIT_SIZE) {
       if (qn->greedy) {
 #ifdef USE_OP_PUSH_OR_JUMP_EXACT
@@ -1150,8 +1160,8 @@ compile_quantifier_node(QtfrNode* qn, regex_t* reg)
     r = compile_tree(qn->target, reg);
   }
   else if (!infinite && qn->greedy &&
-           (qn->upper == 1 || (tlen + SIZE_OP_PUSH) * qn->upper
-                                  <= QUANTIFIER_EXPAND_LIMIT_SIZE)) {
+           (qn->upper == 1 ||
+            IS_EXPAND_LIMIT_OK(tlen + SIZE_OP_PUSH, qn->upper))) {
     int n = qn->upper - qn->lower;
 
     r = compile_tree_n_times(qn->target, qn->lower, reg);
@@ -5602,53 +5612,62 @@ dup_copy(const void *ptr, size_t size)
 }
 
 extern int
-onig_reg_copy(regex_t** nreg, regex_t* oreg)
+onig_reg_copy_body(regex_t* nreg, regex_t* oreg)
 {
   if (IS_NOT_NULL(oreg)) {
-    regex_t *reg = *nreg = (regex_t* )xmalloc(sizeof(regex_t));
-    if (IS_NULL(reg)) return ONIGERR_MEMORY;
+    *nreg = *oreg;
 
-    *reg = *oreg;
+# define COPY_FAILED(mem, size) IS_NULL(nreg->mem = dup_copy(oreg->mem, size))
 
-# define COPY_FAILED(mem, size) IS_NULL(reg->mem = dup_copy(reg->mem, size))
-
-    if (IS_NOT_NULL(reg->exact)) {
-      size_t exact_size = reg->exact_end - reg->exact;
+    if (IS_NOT_NULL(oreg->exact)) {
+      size_t exact_size = oreg->exact_end - oreg->exact;
       if (COPY_FAILED(exact, exact_size))
         goto err;
-      (reg)->exact_end = (reg)->exact + exact_size;
+      (nreg)->exact_end = (nreg)->exact + exact_size;
     }
 
-    if (IS_NOT_NULL(reg->p)) {
-      if (COPY_FAILED(p, reg->alloc))
+    if (IS_NOT_NULL(oreg->p)) {
+      if (COPY_FAILED(p, oreg->alloc))
         goto err_p;
     }
-    if (IS_NOT_NULL(reg->repeat_range)) {
-      if (COPY_FAILED(repeat_range, reg->repeat_range_alloc * sizeof(OnigRepeatRange)))
+    if (IS_NOT_NULL(oreg->repeat_range)) {
+      if (COPY_FAILED(repeat_range, oreg->repeat_range_alloc * sizeof(OnigRepeatRange)))
         goto err_repeat_range;
     }
-    if (IS_NOT_NULL(reg->name_table)) {
-      if (onig_names_copy(reg, oreg))
+    if (IS_NOT_NULL(oreg->name_table)) {
+      if (onig_names_copy(nreg, oreg))
         goto err_name_table;
     }
-    if (IS_NOT_NULL(reg->chain)) {
-      if (onig_reg_copy(&reg->chain, reg->chain))
+    if (IS_NOT_NULL(oreg->chain)) {
+      if (onig_reg_copy(&nreg->chain, oreg->chain))
         goto err_chain;
     }
     return 0;
 # undef COPY_FAILED
 
   err_chain:
-    onig_names_free(reg);
+    onig_names_free(nreg);
   err_name_table:
-    xfree(reg->repeat_range);
+    xfree(nreg->repeat_range);
   err_repeat_range:
-    xfree(reg->p);
+    xfree(nreg->p);
   err_p:
-    xfree(reg->exact);
+    xfree(nreg->exact);
   err:
-    xfree(reg);
+    xfree(nreg);
     return ONIGERR_MEMORY;
+  }
+  return 0;
+}
+
+extern int
+onig_reg_copy(regex_t** nreg, regex_t* oreg)
+{
+  if (IS_NOT_NULL(oreg)) {
+    regex_t *reg = *nreg = (regex_t* )xmalloc(sizeof(regex_t));
+    if (IS_NULL(reg)) return ONIGERR_MEMORY;
+
+    return onig_reg_copy_body(reg, oreg);
   }
   return 0;
 }

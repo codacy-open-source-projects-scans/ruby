@@ -59,6 +59,7 @@ control_frame_dump(const rb_execution_context_t *ec, const rb_control_frame_t *c
     char ep_in_heap = ' ';
     char posbuf[MAX_POSBUF+1];
     int line = 0;
+    int iseq_name_len = -1;
     const char *magic, *iseq_name = "-", *selfstr = "-", *biseq_name = "-";
     VALUE tmp;
     const rb_iseq_t *iseq = NULL;
@@ -90,6 +91,9 @@ control_frame_dump(const rb_execution_context_t *ec, const rb_control_frame_t *c
         break;
       case VM_FRAME_MAGIC_CFUNC:
         magic = "CFUNC";
+        if (me) {
+            box = me->def->box;
+        }
         break;
       case VM_FRAME_MAGIC_IFUNC:
         magic = "IFUNC";
@@ -128,18 +132,22 @@ control_frame_dump(const rb_execution_context_t *ec, const rb_control_frame_t *c
         else if (SYMBOL_P((VALUE)iseq)) {
             tmp = rb_sym2str((VALUE)iseq);
             iseq_name = RSTRING_PTR(tmp);
-            snprintf(posbuf, MAX_POSBUF, ":%s", iseq_name);
+            iseq_name_len = RSTRING_LENINT(tmp);
+            snprintf(posbuf, MAX_POSBUF, ":%.*s", iseq_name_len, iseq_name);
             line = -1;
         }
         else {
             if (CFP_PC(cfp)) {
                 pc = CFP_PC(cfp) - ISEQ_BODY(iseq)->iseq_encoded;
                 iseq_name = RSTRING_PTR(ISEQ_BODY(iseq)->location.label);
+                iseq_name_len = RSTRING_LENINT(ISEQ_BODY(iseq)->location.label);
                 if (pc >= 0 && (size_t)pc <= ISEQ_BODY(iseq)->iseq_size) {
                     line = rb_vm_get_sourceline(cfp);
                 }
                 if (line) {
-                    snprintf(posbuf, MAX_POSBUF, "%s:%d", RSTRING_PTR(rb_iseq_path(iseq)), line);
+                    VALUE path = rb_iseq_path(iseq);
+                    snprintf(posbuf, MAX_POSBUF, "%.*s:%d",
+                             RSTRING_LENINT(path), RSTRING_PTR(path), line);
                 }
             }
             else {
@@ -180,7 +188,12 @@ control_frame_dump(const rb_execution_context_t *ec, const rb_control_frame_t *c
     }
     if (0) {
         kprintf("              \t");
-        kprintf("iseq: %-24s ", iseq_name);
+        if (iseq_name_len < 0) {
+            kprintf("iseq: %-24s ", iseq_name);
+        }
+        else {
+            kprintf("iseq: %-24.*s ", iseq_name_len, iseq_name);
+        }
         kprintf("self: %-24s ", selfstr);
         kprintf("%-1s ", biseq_name);
     }
@@ -283,7 +296,7 @@ box_env_dump(const rb_execution_context_t *ec, const VALUE *env, const rb_contro
     char ep_in_heap = ' ';
     char posbuf[MAX_POSBUF+1];
     int line = 0;
-    const char *magic, *iseq_name = "-";
+    const char *magic;
     VALUE tmp;
     const rb_iseq_t *iseq = NULL;
     const rb_box_t *box = NULL;
@@ -344,35 +357,27 @@ box_env_dump(const rb_execution_context_t *ec, const VALUE *env, const rb_contro
     if (cfp && CFP_ISEQ(cfp)) {
 #define RUBY_VM_IFUNC_P(ptr) IMEMO_TYPE_P(ptr, imemo_ifunc)
         const rb_iseq_t *resolved_iseq = CFP_ISEQ(cfp);
-        if (RUBY_VM_IFUNC_P(resolved_iseq)) {
-            iseq_name = "<ifunc>";
-        }
-        else if (SYMBOL_P((VALUE)resolved_iseq)) {
+        if (SYMBOL_P((VALUE)resolved_iseq)) {
             tmp = rb_sym2str((VALUE)resolved_iseq);
-            iseq_name = RSTRING_PTR(tmp);
-            snprintf(posbuf, MAX_POSBUF, ":%s", iseq_name);
+            snprintf(posbuf, MAX_POSBUF, ":%.*s",
+                     RSTRING_LENINT(tmp), RSTRING_PTR(tmp));
             line = -1;
         }
-        else {
-            if (CFP_PC(cfp)) {
-                iseq = resolved_iseq;
-                pc = CFP_PC(cfp) - ISEQ_BODY(iseq)->iseq_encoded;
-                iseq_name = RSTRING_PTR(ISEQ_BODY(iseq)->location.label);
-                if (pc >= 0 && (size_t)pc <= ISEQ_BODY(iseq)->iseq_size) {
-                    line = rb_vm_get_sourceline(cfp);
-                }
-                if (line) {
-                    snprintf(posbuf, MAX_POSBUF, "%s:%d", RSTRING_PTR(rb_iseq_path(iseq)), line);
-                }
+        else if (!RUBY_VM_IFUNC_P(resolved_iseq) && CFP_PC(cfp)) {
+            iseq = resolved_iseq;
+            pc = CFP_PC(cfp) - ISEQ_BODY(iseq)->iseq_encoded;
+            if (pc >= 0 && (size_t)pc <= ISEQ_BODY(iseq)->iseq_size) {
+                line = rb_vm_get_sourceline(cfp);
             }
-            else {
-                iseq_name = "<dummy_frame>";
+            if (line) {
+                VALUE path = rb_iseq_path(iseq);
+                snprintf(posbuf, MAX_POSBUF, "%.*s:%d",
+                         RSTRING_LENINT(path), RSTRING_PTR(path), line);
             }
         }
     }
     else if (me != NULL && IMEMO_TYPE_P(me, imemo_ment)) {
-        iseq_name = rb_id2name(me->def->original_id);
-        snprintf(posbuf, MAX_POSBUF, ":%s", iseq_name);
+        snprintf(posbuf, MAX_POSBUF, ":%s", rb_id2name(me->def->original_id));
         line = -1;
     }
 
@@ -753,12 +758,7 @@ rb_vmdebug_thread_dump_state(FILE *errout, VALUE self)
 }
 
 #if defined __APPLE__
-# include <AvailabilityMacros.h>
-# if defined(MAC_OS_X_VERSION_10_5) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_5
-#   define MCTX_SS_REG(reg) __ss.__##reg
-# else
-#   define MCTX_SS_REG(reg) ss.reg
-# endif
+# define MCTX_SS_REG(reg) __ss.__##reg
 #endif
 
 #if defined(HAVE_BACKTRACE)
@@ -766,14 +766,13 @@ rb_vmdebug_thread_dump_state(FILE *errout, VALUE self)
 # ifdef HAVE_LIBUNWIND
 #  undef backtrace
 #  define backtrace unw_backtrace
-# elif defined(__APPLE__) && defined(HAVE_LIBUNWIND_H) \
-    && defined(MAC_OS_X_VERSION_10_6) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_6
+# elif defined(__APPLE__) && defined(HAVE_LIBUNWIND_H)
 #  define UNW_LOCAL_ONLY
 #  include <libunwind.h>
 #  include <sys/mman.h>
 #  undef backtrace
 
-#  if defined(__arm64__) || defined(__POWERPC__)
+#  if defined(__arm64__)
 static bool
 is_coroutine_start(unw_word_t ip)
 {
@@ -794,10 +793,12 @@ backtrace(void **trace, int size)
     unw_word_t ip;
     int n = 0;
 
+    if (size <= 0) return 0;
+
     unw_getcontext(&uc);
     unw_init_local(&cursor, &uc);
 #  if defined(__x86_64__)
-    while (unw_step(&cursor) > 0) {
+    while (n < size && unw_step(&cursor) > 0) {
         unw_get_reg(&cursor, UNW_REG_IP, &ip);
         trace[n++] = (void *)ip;
         {
@@ -810,6 +811,7 @@ backtrace(void **trace, int size)
     }
     return n;
 darwin_sigtramp:
+    if (n == size) return n;
     /* darwin's bundled libunwind doesn't support signal trampoline */
     {
         ucontext_t *uctx;
@@ -870,34 +872,32 @@ darwin_sigtramp:
             /* if segv is caused by invalid call or signal received in syscall */
             /* the frame is invalid; skip */
             trace[n++] = (void *)ip;
+            if (n == size) return n;
             ip = *(unw_word_t*)uctx->uc_mcontext->MCTX_SS_REG(rsp);
         }
 
         trace[n++] = (void *)ip;
         unw_set_reg(&cursor, UNW_REG_IP, ip);
     }
-    while (unw_step(&cursor) > 0) {
+    while (n < size && unw_step(&cursor) > 0) {
         unw_get_reg(&cursor, UNW_REG_IP, &ip);
         trace[n++] = (void *)ip;
     }
     return n;
 
-#  elif defined(__arm64__) || defined(__POWERPC__)
+#  elif defined(__arm64__)
     /* Since Darwin arm64's _sigtramp is implemented as normal function,
      * unwind can unwind frames without special code.
      * https://github.com/apple/darwin-libplatform/blob/215b09856ab5765b7462a91be7076183076600df/src/setjmp/generic/sigtramp.c
      */
-    while (unw_step(&cursor) > 0) {
+    while (n < size && unw_step(&cursor) > 0) {
         unw_get_reg(&cursor, UNW_REG_IP, &ip);
-#   if defined(__arm64__)
         // Strip Arm64's pointer authentication.
         // https://developer.apple.com/documentation/security/preparing_your_app_to_work_with_pointer_authentication
         // I wish I could use "ptrauth_strip()" but I get an error:
         // "this target does not support pointer authentication"
         trace[n++] = (void *)(ip & 0x7fffffffffffull);
-#   else
-        trace[n++] = (void *)ip;
-#   endif
+
         // Apple's libunwind can't handle our coroutine switching code
         if (is_coroutine_start(ip)) break;
     }
@@ -1414,15 +1414,19 @@ rb_vm_bugreport(const void *ctx, FILE *errout)
     enum {other_runtime_info = 0};
 #endif
     const rb_vm_t *const vm = GET_VM();
-    const rb_box_t *current_box = rb_current_box_in_crash_report();
     const rb_execution_context_t *ec = rb_current_execution_context(false);
-    VALUE loaded_features;
+    rb_box_t *current_box = NULL;
+    VALUE loaded_features = 0;
+    if (ec) {
+        current_box = (rb_box_t*)rb_current_box_in_crash_report();
+    }
+    else {
+        current_box = (rb_box_t*)rb_main_box();
+        if (!current_box) current_box = (rb_box_t*)rb_root_box();
+    }
 
     if (current_box) {
         loaded_features = current_box->loaded_features;
-    }
-    else {
-        loaded_features = rb_root_box()->loaded_features;
     }
 
     if (vm && ec) {
@@ -1447,6 +1451,20 @@ rb_vm_bugreport(const void *ctx, FILE *errout)
         }
         kputs("\n");
     }
+    else {
+        /* No Ruby level information is available: there is no current execution
+         * context, or the VM is not ready.  State it explicitly instead of
+         * silently jumping to the machine register context. */
+        kprintf("-- Control frame information "
+                "-----------------------------------------------\n");
+        if (!vm) {
+            kprintf("  The VM is not available.\n");
+        }
+        else {
+            kprintf("  No Ruby execution context on the current thread.\n");
+        }
+        kputs("\n");
+    }
 
     rb_dump_machine_register(errout, ctx);
 
@@ -1466,7 +1484,7 @@ rb_vm_bugreport(const void *ctx, FILE *errout)
     if (vm && !rb_during_gc()) {
         int i;
         VALUE name;
-        long len;
+        rb_len_t len;
         const int max_name_length = 1024;
 # define LIMITED_NAME_LENGTH(s) \
         (((len = RSTRING_LEN(s)) > max_name_length) ? max_name_length : (int)len)
@@ -1527,7 +1545,7 @@ rb_vm_bugreport(const void *ctx, FILE *errout)
     }
 
     {
-#ifndef RUBY_ASAN_ENABLED
+#if !defined(RUBY_ASAN_ENABLED) && !USE_MODULAR_GC
 # ifdef PROC_MAPS_NAME
         {
             FILE *fp = fopen(PROC_MAPS_NAME, "r");

@@ -118,7 +118,7 @@ goto :loop ;
   echo>>%confargs%  "--target=%arg:$=$$%" \
 goto :loop ;
 :program_name
-  for /f "delims=- tokens=1,*" %I in ("%opt%") do set "var=%%J"
+  for /f "delims=- tokens=1,*" %%I in ("%opt%") do set "var=%%J"
   if "%var%" == "prefix" (set "var=PROGRAM_PREFIX" & goto :name)
   if "%var%" == "suffix" (set "var=PROGRAM_SUFFIX" & goto :name)
   if "%var%" == "name" (set "var=RUBY_INSTALL_NAME" & goto :name)
@@ -159,13 +159,22 @@ goto :loopend ;
   if "%feature%" == "rubygems" (
      echo>> %config_make% USE_RUBYGEMS = %enable%
   )
+  if "%feature%" == "yjit" if not "%enable%" == "yes" if not "%enable%" == "no" (
+    echo 1>&2 %configure%: --enable-yjit accepts only yes or no, not %enable%
+    exit /b 1
+  )
+  if "%feature%" == "yjit" (
+     echo>> %config_make% YJIT_SUPPORT = %enable%
+  )
 goto :loopend ;
 :withoutarg
+  ::- These take an argument and are recorded in :witharg.  Recording
+  ::- them here too would duplicate them at each reconfiguration.
+  if "%opt%" == "--without-ext" goto :witharg
+  if "%opt%" == "--without-extensions" goto :witharg
   echo>>%confargs%  "%opt%" \
   if "%opt%" == "--without-baseruby" goto :nobaseruby
   if "%opt%" == "--without-git" goto :nogit
-  if "%opt%" == "--without-ext" goto :witharg
-  if "%opt%" == "--without-extensions" goto :witharg
 goto :loop ;
 :witharg
   if "%opt%" == "--with-static-linked-ext" goto :extstatic
@@ -188,7 +197,7 @@ goto :loop ;
 :ntver
   ::- For version constants, see
   ::- https://learn.microsoft.com/en-us/cpp/porting/modifying-winver-and-win32-winnt#remarks
-  if "%eq%" == "" (set "NTVER=%~1" & call :shift) else (set "NTVER=%arg%")
+  set "NTVER=%arg%"
   if /i not "%NTVER:~0,2%" == "0x" if /i not "%NTVER:~0,13%" == "_WIN32_WINNT_" (
     for %%i in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
       call :set NTVER=%%NTVER:%%i=%%i%%
@@ -266,6 +275,7 @@ goto :loop ;
   echo   --without-ext="a,b,..." ignore extensions a, b, ...
   echo   --with-opt-dir="DIR-LIST" add optional headers and libraries directories separated by ';'
   echo   --disable-install-doc   do not install rdoc indexes during install
+  echo   --enable-yjit           enable in-process JIT compiler that requires rustc (x64 only)
   echo   --with-ntver=0xXXXX     target NT version (shouldn't use with old SDK)
   echo   --with-ntver=_WIN32_WINNT_XXXX
   echo   --with-ntver=XXXX       same as --with-ntver=_WIN32_WINNT_XXXX
@@ -311,3 +321,4 @@ nmake -al -f %WIN32DIR%/setup.mak "WIN32DIR=%WIN32DIR%" ^
     %target%
 set error=%ERRORLEVEL%
 if exist %config_make% del /q %config_make%
+exit /b %error%

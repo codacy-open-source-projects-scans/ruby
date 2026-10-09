@@ -14,24 +14,20 @@
 
 #include "id_table.h"
 #include "internal.h"
-#include "internal/array.h"
-#include "internal/class.h"
-#include "internal/gc.h"
 #include "internal/hash.h"
+#include "internal/imemo.h"
 #include "internal/io.h"
+#include "internal/jit.h"
+#include "internal/objspace.h"
 #include "internal/string.h"
 #include "internal/sanitizers.h"
 #include "symbol.h"
 #include "shape.h"
-#include "node.h"
 #include "objspace.h"
 #include "ruby/debug.h"
 #include "ruby/util.h"
 #include "ruby/io.h"
-#include "vm_callinfo.h"
-#include "vm_sync.h"
-
-RUBY_EXTERN const char ruby_hexdigits[];
+#include "vm_core.h"
 
 #define BUFFER_CAPACITY 4096
 
@@ -443,7 +439,7 @@ dump_object(VALUE obj, struct dump_config *dc)
 
         switch (imemo_type(obj)) {
           case imemo_callinfo:
-            mid = vm_ci_mid((const struct rb_callinfo *)obj);
+            mid = rb_imemo_callinfo_mid(obj);
             if (mid != 0) {
                 dump_append(dc, ", \"mid\":");
                 dump_append_id(dc, mid);
@@ -452,9 +448,10 @@ dump_object(VALUE obj, struct dump_config *dc)
 
           case imemo_callcache:
             {
-                VALUE klass = ((const struct rb_callcache *)obj)->klass;
-                if (klass != Qundef) {
-                    mid = vm_cc_cme((const struct rb_callcache *)obj)->called_id;
+                struct rb_imemo_callcache_data data;
+                if (rb_imemo_callcache_get_data(obj, &data)) {
+                    VALUE klass = data.klass;
+                    mid = data.called_id;
                     if (mid != 0) {
                         dump_append(dc, ", \"called_id\":");
                         dump_append_id(dc, mid);
@@ -465,6 +462,22 @@ dump_object(VALUE obj, struct dump_config *dc)
                     dump_append_ref(dc, klass);
                 }
             }
+            break;
+
+          case imemo_iseq:
+#if USE_YJIT || USE_ZJIT
+            {
+                unsigned int jit_call_threshold = rb_jit_call_threshold();
+                if (jit_call_threshold > 0) {
+                    const struct rb_iseq_constant_body *body = ISEQ_BODY((const rb_iseq_t *)obj);
+                    dump_append(dc, ", \"jit_calls\":");
+                    dump_append_lu(dc, body->jit_entry_calls);
+                    if (body->jit_entry_calls >= jit_call_threshold) {
+                        dump_append(dc, ", \"jit_threshold_reached\":true");
+                    }
+                }
+            }
+#endif
             break;
 
           default:
@@ -519,6 +532,11 @@ dump_object(VALUE obj, struct dump_config *dc)
       case T_HASH:
         dump_append(dc, ", \"size\":");
         dump_append_sizet(dc, (size_t)RHASH_SIZE(obj));
+
+        if (RHASH_AR_TABLE_P(obj)) {
+            dump_append(dc, ", \"ar_table\":true");
+        }
+
         if (FL_TEST(obj, RHASH_PROC_DEFAULT)) {
             dump_append(dc, ", \"default\":");
             dump_append_ref(dc, RHASH_IFNONE(obj));
@@ -573,7 +591,7 @@ dump_object(VALUE obj, struct dump_config *dc)
         break;
 
       case T_DATA:
-        if (RTYPEDDATA_P(obj)) {
+        {
             const rb_data_type_t *type = RTYPEDDATA_TYPE(obj);
             dump_append(dc, ", \"struct\":\"");
             dump_append(dc, type->wrap_struct_name);
@@ -591,17 +609,23 @@ dump_object(VALUE obj, struct dump_config *dc)
         dump_append(dc, "\"");
         break;
 
-      case T_OBJECT:
-        if (!FL_TEST_RAW(obj, ROBJECT_HEAP)) {
+      case T_OBJECT: {
+        shape_id_t shape_id = RBASIC_SHAPE_ID(obj);
+
+        if (rb_shape_embedded_p(shape_id)) {
             dump_append(dc, ", \"embedded\":true");
         }
 
         dump_append(dc, ", \"ivars\":");
-        dump_append_lu(dc, ROBJECT_FIELDS_COUNT(obj));
-        if (rb_shape_obj_too_complex_p(obj)) {
-            dump_append(dc, ", \"too_complex_shape\":true");
+        if (rb_shape_complex_p(shape_id)) {
+            dump_append_lu(dc, rb_st_table_size(rb_imemo_fields_complex_tbl(ROBJECT_FIELDS_OBJ(obj))));
+            dump_append(dc, ", \"complex_shape\":true");
+        }
+        else {
+            dump_append_lu(dc, RSHAPE_LEN(shape_id));
         }
         break;
+      }
 
       case T_FILE:
         fptr = RFILE(obj)->fptr;
@@ -820,7 +844,7 @@ shape_id_i(shape_id_t shape_id, void *data)
 
     if (RSHAPE_TYPE(shape_id) != SHAPE_ROOT) {
         dump_append(dc, ", \"parent_id\":");
-        dump_append_lu(dc, RSHAPE_PARENT_RAW_ID(shape_id));
+        dump_append_lu(dc, RSHAPE_PARENT_OFFSET(shape_id));
     }
 
     dump_append(dc, ", \"depth\":");

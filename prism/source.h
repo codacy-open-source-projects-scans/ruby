@@ -24,6 +24,13 @@ typedef struct pm_source_t pm_source_t;
  * This function is used to retrieve a line of input from a stream. It closely
  * mirrors that of fgets so that fgets can be used as the default
  * implementation.
+ *
+ * As with fgets, implementations MUST write at most `size` bytes into
+ * `string`, including the terminating NUL byte (i.e. at most `size - 1` bytes
+ * of data followed by a '\0'). The caller relies on this bound for memory
+ * safety, so an implementation that reads from a source which may return more
+ * data than requested (for example a multi-byte-aware `gets`) is responsible
+ * for clamping the amount it copies. Returns `string`, or NULL on EOF.
  */
 typedef char * (pm_source_stream_fgets_t)(char *string, int size, void *stream);
 
@@ -66,7 +73,7 @@ typedef enum {
  * @param length The length of the source data in bytes.
  * @returns A new source. Aborts on allocation failure.
  */
-PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_constant_new(const uint8_t *data, size_t length);
+PRISM_NODISCARD PRISM_EXPORTED_FUNCTION pm_source_t * pm_source_constant_new(const uint8_t *data, size_t length);
 
 /**
  * Create a new source that wraps existing shared memory. The memory is not
@@ -76,7 +83,7 @@ PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_constant_new(con
  * @param length The length of the source data in bytes.
  * @returns A new source. Aborts on allocation failure.
  */
-PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_shared_new(const uint8_t *data, size_t length);
+PRISM_NODISCARD PRISM_EXPORTED_FUNCTION pm_source_t * pm_source_shared_new(const uint8_t *data, size_t length);
 
 /**
  * Create a new source that owns its memory. The memory will be freed with
@@ -86,7 +93,7 @@ PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_shared_new(const
  * @param length The length of the source data in bytes.
  * @returns A new source. Aborts on allocation failure.
  */
-PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_owned_new(uint8_t *data, size_t length);
+PRISM_NODISCARD PRISM_EXPORTED_FUNCTION pm_source_t * pm_source_owned_new(uint8_t *data, size_t length);
 
 /**
  * Create a new source by reading a file into a heap-allocated buffer.
@@ -95,7 +102,7 @@ PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_owned_new(uint8_
  * @param result Out parameter for the result of the initialization.
  * @returns A new source, or NULL on error (with result written to out param).
  */
-PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_file_new(const char *filepath, pm_source_init_result_t *result) PRISM_NONNULL(1, 2);
+PRISM_NODISCARD PRISM_EXPORTED_FUNCTION pm_source_t * pm_source_file_new(const char *filepath, pm_source_init_result_t *result) PRISM_NONNULL(1, 2);
 
 /**
  * Create a new source by memory-mapping a file. Falls back to file reading on
@@ -110,7 +117,7 @@ PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_file_new(const c
  * @param result Out parameter for the result of the initialization.
  * @returns A new source, or NULL on error (with result written to out param).
  */
-PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_mapped_new(const char *filepath, int open_flags, pm_source_init_result_t *result) PRISM_NONNULL(1, 3);
+PRISM_NODISCARD PRISM_EXPORTED_FUNCTION pm_source_t * pm_source_mapped_new(const char *filepath, int open_flags, pm_source_init_result_t *result) PRISM_NONNULL(1, 3);
 
 /**
  * Create a new source by reading from a stream using the provided callbacks.
@@ -120,7 +127,7 @@ PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_mapped_new(const
  * @param feof The function to use to check if the stream is at EOF.
  * @returns A new source. Aborts on allocation failure.
  */
-PRISM_EXPORTED_FUNCTION PRISM_NODISCARD pm_source_t * pm_source_stream_new(void *stream, pm_source_stream_fgets_t *fgets, pm_source_stream_feof_t *feof);
+PRISM_NODISCARD PRISM_EXPORTED_FUNCTION pm_source_t * pm_source_stream_new(void *stream, pm_source_stream_fgets_t *fgets, pm_source_stream_feof_t *feof);
 
 /**
  * Free the given source and any memory it owns.

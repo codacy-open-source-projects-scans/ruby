@@ -41,6 +41,8 @@ module Prism
       incorrect += [
         # https://bugs.ruby-lang.org/issues/21945
         "and_or_with_suffix.txt",
+        # https://bugs.ruby-lang.org/issues/22310
+        "pattern_alternation_non_captures.txt",
       ]
     end
 
@@ -222,6 +224,34 @@ module Prism
     def test_tokenize
       source = "foo;1;BAZ"
       assert_equal(Ripper.tokenize(source), Translation::Ripper.tokenize(source))
+    end
+
+    def test_encoding
+      source = '"わたし"'.encode(Encoding::Windows_31J)
+      assert_equal(Ripper.tokenize(source), Translation::Ripper.tokenize(source))
+      assert_equal(Ripper.sexp(source), Translation::Ripper.sexp(source))
+    end
+
+    def test_encoding_method
+      source = "foo"
+      assert_equal(Ripper.new(source).tap(&:parse).encoding, Prism::Translation::Ripper.new(source).tap(&:parse).encoding)
+
+      source = "foo".b
+      assert_equal(Ripper.new(source).tap(&:parse).encoding, Prism::Translation::Ripper.new(source).tap(&:parse).encoding)
+
+      source = "# encoding: shift_jis"
+      assert_equal(Ripper.new(source).tap(&:parse).encoding, Prism::Translation::Ripper.new(source).tap(&:parse).encoding)
+
+      source = "# encoding: shift_jis".b
+      assert_equal(Ripper.new(source).tap(&:parse).encoding, Prism::Translation::Ripper.new(source).tap(&:parse).encoding)
+    end
+
+    def test_end_seen
+      source = ""
+      assert_equal(Ripper.new(source).tap(&:parse).end_seen?, Prism::Translation::Ripper.new(source).tap(&:parse).end_seen?)
+
+      source = "__END__"
+      assert_equal(Ripper.new(source).tap(&:parse).end_seen?, Prism::Translation::Ripper.new(source).tap(&:parse).end_seen?)
     end
 
     def test_sexp_coercion

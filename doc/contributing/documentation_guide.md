@@ -4,7 +4,7 @@ This guide discusses recommendations for documenting
 classes, modules, and methods
 in the Ruby core and in the Ruby standard library.
 
-## Generating documentation
+## Generating Documentation
 
 Most Ruby documentation lives in the source files, and is written in RDoc format
 (described in the [RDoc Markup Reference]).
@@ -27,7 +27,7 @@ the browser when you edit source files:
 make html-server
 ```
 
-Then visit http://localhost:4000 in your browser.
+Then visit `http://localhost:4000` in your browser.
 To use a different port: `make html-server RDOC_SERVER_PORT=8080`.
 
 If you don't have a build directory, follow the [quick start
@@ -60,6 +60,55 @@ Use your judgment about what the user needs to know.
     - Overuse of headings.
     - Using US-ASCII-incompatible characters in C source files;
       see [Characters](#label-Characters) below.
+
+### Examples
+
+#### Output from `irb`
+
+For code examples, consider using interactive Ruby,
+[irb].
+
+For a code example that includes `irb` output,
+consider aligning `# => ...` in successive lines.
+Alignment may sometimes aid readability:
+
+```ruby
+a = [1, 2, 3] # => [1, 2, 3]
+a.shuffle!    # => [2, 3, 1]
+a             # => [2, 3, 1]
+```
+
+#### Languages in Examples
+
+For symbols and strings in documentation examples:
+
+- Prefer \English in \English documentation:  <tt>'Hello'</tt>.
+- Prefer Japanese in Japanese documentation:  <tt>'こんにちは'</tt>.
+- If a second language is needed (as, for example, characters with different byte-sizes),
+  prefer Japanese in \English documentation and \English in Japanese documentation.
+- Use other languages examples only as necessary:  see String#capitalize.
+
+#### Cleaning Up
+
+An example that appropriates system resources should "clean up"
+by releasing those resources.
+Let's show good work habits.
+
+Resources that may need to be deleted/unlinked:
+
+- Files
+- Directories
+- Symbolic links
+- UNIX sockets
+- Block-special devices
+- Character-special devices
+- Named pipes
+
+Objects that may need to be closed:
+
+- Dir
+- IO
+- Tempfile
 
 ### Characters
 
@@ -116,21 +165,6 @@ Ruby is documented using RDoc.
 For information on RDoc syntax and features,
 see the [RDoc Markup Reference].
 
-### Output from `irb`
-
-For code examples, consider using interactive Ruby,
-[irb].
-
-For a code example that includes `irb` output,
-consider aligning `# => ...` in successive lines.
-Alignment may sometimes aid readability:
-
-```ruby
-a = [1, 2, 3] #=> [1, 2, 3]
-a.shuffle!    #=> [2, 3, 1]
-a             #=> [2, 3, 1]
-```
-
 ### Headings
 
 Organize a long discussion for a class or module with [headings].
@@ -165,7 +199,7 @@ For a method name in text:
 ### Embedded Code and Commands
 
 Code or commands embedded in running text (i.e., not in a code block)
-should marked up as
+should be marked up as
 [monofont].
 
 Code that is a simple string should include the quote marks.
@@ -347,21 +381,11 @@ Alternatives:
     - Example {source}[https://github.com/ruby/ruby/blob/34d802f32f00df1ac0220b62f72605827c16bad8/file.c#L6570-L6596].
     - Corresponding {output}[rdoc-ref:File@ReadWrite+Mode].
 
-- (Markdown format only): A {Github Flavored Markdown (GFM) table}[https://github.github.com/gfm/#tables-extension-],
+- (Markdown format only): A {GitHub Flavored Markdown (GFM) table}[https://github.github.com/gfm/#tables-extension-],
   using special formatting for the text:
 
     - Example {source}[https://github.com/ruby/ruby/blob/34d802f32f00df1ac0220b62f72605827c16bad8/doc/contributing/glossary.md?plain=1].
     - Corresponding {output}[https://docs.ruby-lang.org/en/master/contributing/glossary_md.html].
-
-### Languages in Examples
-
-For symbols and strings in documentation examples:
-
-- Prefer \English in \English documentation:  <tt>'Hello'</tt>.
-- Prefer Japanese in Japanese documentation:  <tt>'こんにちは'</tt>.
-- If a second language is needed (as, for example, characters with different byte-sizes),
-  prefer Japanese in \English documentation and \English in Japanese documentation.
-- Use other languages examples only as necessary:  see String#capitalize.
 
 ## Documenting Classes and Modules
 
@@ -612,7 +636,7 @@ For corner cases of methods, such as atypical usage, briefly mention
 the behavior, but do not provide any examples.
 
 Only document exceptions raised if they are not obvious.  For example,
-if you have stated earlier than an argument type must be an integer,
+if you have stated earlier that an argument type must be an integer,
 you do not need to document that a `TypeError` is raised if a non-integer
 is passed.  Do not provide examples of exceptions being raised unless
 that is a common case, such as `Hash#fetch` raising a `KeyError`.

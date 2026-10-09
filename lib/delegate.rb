@@ -40,7 +40,7 @@
 #
 class Delegator < BasicObject
   # The version string
-  VERSION = "0.6.1"
+  VERSION = "0.7.0"
 
   kernel = ::Kernel.dup
   kernel.class_eval do
@@ -251,6 +251,8 @@ end
 # delegate all supported method calls to the object passed into the constructor
 # and even to change the object being delegated to at a later time with
 # #__setobj__.
+#
+#   require 'date'
 #
 #   class User
 #     def born_on

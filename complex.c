@@ -40,7 +40,6 @@ static VALUE RFLOAT_0;
 VALUE rb_cComplex;
 
 static ID id_abs, id_arg,
-    id_denominator, id_numerator,
     id_real_p, id_i_real, id_i_imag,
     id_finite_p, id_infinite_p, id_rationalize,
     id_PI;
@@ -1729,7 +1728,7 @@ nucomp_marshal_load(VALUE self, VALUE a)
 {
     Check_Type(a, T_ARRAY);
     if (RARRAY_LEN(a) != 2)
-        rb_raise(rb_eArgError, "marshaled complex must have an array whose length is 2 but %ld", RARRAY_LEN(a));
+        rb_raise(rb_eArgError, "marshaled complex must have an array whose length is 2 but %"PRIdLEN, RARRAY_LEN(a));
     rb_ivar_set(self, id_i_real, RARRAY_AREF(a, 0));
     rb_ivar_set(self, id_i_imag, RARRAY_AREF(a, 1));
     return self;
@@ -2696,8 +2695,6 @@ Init_Complex(void)
     VALUE compat;
     id_abs = rb_intern_const("abs");
     id_arg = rb_intern_const("arg");
-    id_denominator = rb_intern_const("denominator");
-    id_numerator = rb_intern_const("numerator");
     id_real_p = rb_intern_const("real?");
     id_i_real = rb_intern_const("@real");
     id_i_imag = rb_intern_const("@image"); /* @image, not @imag */

@@ -33,11 +33,10 @@ i386-mswin32: -prologue- -i386- -epilogue-
 i486-mswin32: -prologue- -i486- -epilogue-
 i586-mswin32: -prologue- -i586- -epilogue-
 i686-mswin32: -prologue- -i686- -epilogue-
-alpha-mswin32: -prologue- -alpha- -epilogue-
 x64-mswin64: -prologue- -x64- -epilogue-
 arm64-mswin64: -prologue- -arm64- -epilogue-
 
--prologue-: -basic-vars- -baseruby- -gmp-
+-prologue-: -basic-vars- -baseruby- -dependencies- -gmp-
 -generic-: -osname-
 
 -basic-vars-: nul
@@ -54,6 +53,16 @@ prefix = $(prefix:\=/)
 -baseruby-: nul
 !if "$(HAVE_BASERUBY)" != "no"
 	@cd $(srcdir:/=\)\tool && $(BASERUBY:/=\) missing-baseruby.bat --verbose || exit $(HAVE_BASERUBY:yes=non-)0
+!endif
+
+# Unlike -baseruby-, this runs in the build directory, where a just
+# built `ruby.exe` would be found prior to $PATH but cannot load the
+# standard library yet.
+-dependencies-: -baseruby-
+!if "$(HAVE_BASERUBY)" != "no"
+	@$(COMSPEC) /C "set NoDefaultCurrentDirectoryInExePath=1& \
+	$(BASERUBY:/=\) $(srcdir)/tool/mkdepend.rb --root=$(srcdir) \
+	    --scope=core --nmake --output=.deps"
 !endif
 
 -gmp-:
@@ -160,11 +169,10 @@ main(void)
     return c != value_nan();
 }
 <<
-	@( \
-	  $(CC) -O2 $@.c && .\$@ || \
-	  (set bug=%ERRORLEVEL% & \
-	  echo This compiler has an optimization bug) \
-	) & $(WIN32DIR:/=\)\rm.bat $@.* & exit /b %bug%
+	@($(CC) -O2 $@.c && .\$@) || \
+	  (echo This compiler has an optimization bug & \
+	  $(WIN32DIR:/=\)\rm.bat $@.* & exit /b 1)
+	@$(WIN32DIR:/=\)\rm.bat $@.*
 
 -version-: nul verconf.mk
 
@@ -174,7 +182,7 @@ revision_opt = -DRUBY_REVISION=0
 
 verconf.mk: nul
 	@findstr /R /C:"^#define RUBY_ABI_VERSION " $(srcdir:/=\)\include\ruby\internal\abi.h > $(@)
-	@$(CPP) -I$(srcdir) -I$(srcdir)/include $(revision_opt) <<"Creating $(@)" > $(*F).bat && cmd /c $(*F).bat > $(@)
+	@$(CPP) -I$(srcdir) -I$(srcdir)/include $(revision_opt) <<"Creating $(@)" > $(*F).bat && cmd /c .\$(*F).bat > $(@)
 @echo off
 #define STRINGIZE0(expr) #expr
 #define STRINGIZE(x) STRINGIZE0(x)
@@ -212,11 +220,11 @@ set /a MSC_VER = _MSC_VER
 #elif _MSC_VER >= 1920
 set /a MSC_VER_LOWER = MSC_VER/20*20+0
 set /a MSC_VER_UPPER = MSC_VER/20*20+19
-#elif _MSC_VER >= 1900
+#elif _MSC_VER >= 1915
 set /a MSC_VER_LOWER = MSC_VER/10*10+0
 set /a MSC_VER_UPPER = MSC_VER/10*10+9
-#elif _MSC_VER < 1400
-# error Unsupported VC++ compiler
+#else
+# error MSVC 1915 (Visual Studio 2017 version 15.8) or later is required
 #endif
 set MSC_VER
 del %0 & exit
@@ -233,14 +241,6 @@ MACHINE = x86
 !if defined($(CPU))
 $(CPU) = $(PROCESSOR_LEVEL)
 !endif
-#endif
-
--alpha-: -osname32-
-	@$(CPP) -Tc <<"checking if compiler is for $(@:-=)" >>$(MAKEFILE)
-#ifndef _M_ALPHA
-#error Not compiler for $(@:-=)
-#else
-MACHINE = $(@:-=)
 #endif
 <<
 
@@ -293,7 +293,7 @@ MACHINE = $(@:-=)
 
 # RUBY_INSTALL_NAME = ruby
 # RUBY_SO_NAME = $$(RT)-$$(RUBY_INSTALL_NAME)$$(MAJOR)$$(MINOR)
-# CFLAGS = $$(RUNTIMEFLAG) $$(DEBUGFLAGS) $$(WARNFLAGS) $$(OPTFLAGS) $$(PROCESSOR_FLAG) $$(COMPILERFLAG)
+# CFLAGS = $$(RUNTIMEFLAG) $$(DEBUGFLAGS) $$(WARNFLAGS) $$(OPTFLAGS) $$(COMPILERFLAG)
 # CPPFLAGS =
 # STACK = 0x2000000
 # LDFLAGS = $$(CFLAGS) -Fm

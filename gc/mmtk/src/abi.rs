@@ -1,6 +1,6 @@
+use crate::Ruby;
 use crate::api::RubyMutator;
 use crate::extra_assert;
-use crate::Ruby;
 use libc::c_int;
 use mmtk::scheduler::GCWorker;
 use mmtk::util::Address;
@@ -291,7 +291,6 @@ impl From<Vec<ObjectReference>> for RawVecOfObjRef {
 #[repr(C)]
 #[derive(Clone)]
 pub struct RubyBindingOptions {
-    pub ractor_check_mode: bool,
     pub suffix_size: usize,
 }
 

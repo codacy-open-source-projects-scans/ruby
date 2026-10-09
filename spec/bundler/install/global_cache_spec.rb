@@ -9,10 +9,11 @@ RSpec.describe "global gem caching" do
     let(:source2) { "http://gemserver.example.org" }
 
     def cache_base
-      # Use the unified global gem cache path if available (from RubyGems),
-      # otherwise fall back to the Bundler-specific cache location
-      if Gem.respond_to?(:global_gem_cache_path)
-        Pathname.new(Gem.global_gem_cache_path)
+      # Gem.global_gem_cache_path first ships in RubyGems 4.1. Older RubyGems
+      # fall back to the Bundler-specific cache location. The suite clears
+      # XDG_CACHE_HOME, so the path resolves to the ~/.cache default.
+      if exercised_rubygems_version >= Gem::Version.new("4.1.0.a")
+        home(".cache", "gem", "gems")
       else
         home(".bundle", "cache", "gems")
       end
@@ -49,8 +50,6 @@ RSpec.describe "global gem caching" do
     end
 
     it "shows a proper error message if a cached gem is corrupted" do
-      skip "This example is not working on ruby/ruby repo" if ruby_core?
-
       source_global_cache.mkpath
       FileUtils.touch(source_global_cache("myrack-1.0.0.gem"))
 
@@ -63,6 +62,7 @@ RSpec.describe "global gem caching" do
     end
 
     it "uses a shorter path for the cache to not hit filesystem limits" do
+      skip "Windows without long path support cannot create the long cache path" if Gem.win_platform?
       install_gemfile <<-G, artifice: "compact_index", verbose: true
         source "http://#{"a" * 255}.test"
         gem "myrack"
@@ -82,17 +82,19 @@ RSpec.describe "global gem caching" do
       # the more verbose and explicit approach. This whole ensure block can be
       # removed once/if https://bugs.ruby-lang.org/issues/21177 is fixed, and
       # once the fix propagates to all supported rubies.
-      File.delete cached_gem
-      Dir.rmdir source_cache
+      if cached_gem
+        File.delete cached_gem
+        Dir.rmdir source_cache
 
-      File.delete compact_index_cache_path.join(source_segment, "info", "myrack")
-      Dir.rmdir compact_index_cache_path.join(source_segment, "info")
-      File.delete compact_index_cache_path.join(source_segment, "info-etags", "myrack-92f3313ce5721296f14445c3a6b9c073")
-      Dir.rmdir compact_index_cache_path.join(source_segment, "info-etags")
-      Dir.rmdir compact_index_cache_path.join(source_segment, "info-special-characters")
-      File.delete compact_index_cache_path.join(source_segment, "versions")
-      File.delete compact_index_cache_path.join(source_segment, "versions.etag")
-      Dir.rmdir compact_index_cache_path.join(source_segment)
+        File.delete compact_index_cache_path.join(source_segment, "info", "myrack")
+        Dir.rmdir compact_index_cache_path.join(source_segment, "info")
+        File.delete compact_index_cache_path.join(source_segment, "info-etags", "myrack-92f3313ce5721296f14445c3a6b9c073")
+        Dir.rmdir compact_index_cache_path.join(source_segment, "info-etags")
+        Dir.rmdir compact_index_cache_path.join(source_segment, "info-special-characters")
+        File.delete compact_index_cache_path.join(source_segment, "versions")
+        File.delete compact_index_cache_path.join(source_segment, "versions.etag")
+        Dir.rmdir compact_index_cache_path.join(source_segment)
+      end
     end
 
     describe "when the same gem from different sources is installed" do
@@ -257,7 +259,6 @@ RSpec.describe "global gem caching" do
   describe "extension caching" do
     it "works" do
       skip "gets incorrect ref in path" if Gem.win_platform?
-      skip "fails for unknown reason when run by ruby-core" if ruby_core?
 
       build_git "very_simple_git_binary", &:add_c_extension
       build_lib "very_simple_path_binary", &:add_c_extension
@@ -285,7 +286,8 @@ RSpec.describe "global gem caching" do
       R
       expect(out).to eq "VERY_SIMPLE_BINARY_IN_C\nVERY_SIMPLE_GIT_BINARY_IN_C"
 
-      FileUtils.rm_r Dir[home(".bundle", "cache", "extensions", "**", "*binary_c*")]
+      # Not a recursive glob, which also matches files inside the .dSYM that dsymutil creates on macOS
+      FileUtils.rm_r cached_extensions.flat_map {|dir| dir.glob("*binary_c*") }
 
       gem_binary_cache.join("very_simple_binary_c.rb").open("w") {|f| f << "puts File.basename(__FILE__)" }
       git_binary_cache.join("very_simple_git_binary_c.rb").open("w") {|f| f << "puts File.basename(__FILE__)" }

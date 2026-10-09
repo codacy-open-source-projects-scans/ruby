@@ -247,6 +247,37 @@ class TestPack < Test::Unit::TestCase
     end
   end
 
+  def test_format_string_modified_by_to_str
+    fmt = "a" + " " * 1_000_000
+    o = Object.new
+    o.define_singleton_method(:to_str) do
+      fmt.clear
+      "A"
+    end
+    assert_raise_with_message(RuntimeError, /format string modified/) do
+      [o].pack(fmt)
+    end
+  end
+
+  def test_unpack_with_block_modifying_string
+    # [Bug #22315]
+    s = "C" * 4000
+    assert_raise_with_message(RuntimeError, /string modified/) {
+      s.unpack("L*") { s.clear }
+    }
+    s = "ABCD"
+    assert_raise_with_message(RuntimeError, /string modified/) {
+      s.unpack("C*") { s << "E" * 100 }
+    }
+  end
+
+  def test_unpack_with_block_modifying_format
+    fmt = "C" * 1_000_000
+    assert_raise_with_message(RuntimeError, /format string modified/) {
+      ("A" * 4000).unpack(fmt) { fmt.clear }
+    }
+  end
+
   def test_comment
     assert_equal("\0\1", [0,1].pack("  C  #foo \n  C  "))
     assert_equal([0,1], "\0\1".unpack("  C  #foo \n  C  "))
@@ -913,28 +944,45 @@ EXPECTED
 
   def test_unpack1_offset
     assert_equal 65, "ZA".unpack1("C", offset: 1)
+    assert_equal 65, "ZA".unpack1("C", offset: -1)
     assert_equal "01000001", "YZA".unpack1("B*", offset: 2)
     assert_nil "abc".unpack1("C", offset: 3)
-    assert_raise_with_message(ArgumentError, /offset can't be negative/) {
-      "a".unpack1("C", offset: -1)
-    }
     assert_raise_with_message(ArgumentError, /offset outside of string/) {
       "a".unpack1("C", offset: 2)
+    }
+    assert_raise_with_message(ArgumentError, /offset outside of string/) {
+      "a".unpack1("C", offset: -2)
     }
     assert_nil "a".unpack1("C", offset: 1)
   end
 
   def test_unpack_offset
     assert_equal [65], "ZA".unpack("C", offset: 1)
+    assert_equal [65], "ZA".unpack("C", offset: -1)
     assert_equal ["01000001"], "YZA".unpack("B*", offset: 2)
     assert_equal [nil, nil, nil], "abc".unpack("CCC", offset: 3)
-    assert_raise_with_message(ArgumentError, /offset can't be negative/) {
-      "a".unpack("C", offset: -1)
-    }
     assert_raise_with_message(ArgumentError, /offset outside of string/) {
       "a".unpack("C", offset: 2)
     }
+    assert_raise_with_message(ArgumentError, /offset outside of string/) {
+      "a".unpack("C", offset: -2)
+    }
     assert_equal [nil], "a".unpack("C", offset: 1)
+  end
+
+  def test_pack_alignment
+    assert_equal "\x01\x00\x00\x00\x02".b, [1, 2].pack("C x!4 C")
+    assert_equal [1, 2], "\x01\x00\x00\x00\x02".b.unpack("C x!4 C")
+
+    buffer = +"z"
+    [1, 2].pack("C x!4 C", buffer: buffer)
+    assert_equal "z\x01\x00\x00\x00\x02".b, buffer
+    assert_equal [1, 2], buffer.unpack("C x!4 C", offset: 1)
+
+    buffer = +"z"
+    [1, 2].pack("C @!4 C", buffer: buffer)
+    assert_equal "z\x01\x00\x00\x02".b, buffer
+    assert_equal [1, 2], buffer.unpack("C @!4 C", offset: 1)
   end
 
   def test_monkey_pack
@@ -976,6 +1024,20 @@ EXPECTED
 
       assert_equal "oh no", v
     end;
+  end
+
+  def test_pack_modify_buffer_r_R
+    buf = "x" * 10_000
+    o = Object.new
+    o.define_singleton_method(:to_int) { buf.clear; 1 }
+    [o, 42].pack("R R", buffer: buf)
+    assert_equal "\x01\x2A".b, buf
+
+    buf = "x" * 10_000
+    o = Object.new
+    o.define_singleton_method(:to_int) { buf.clear; -2 }
+    [o].pack("r", buffer: buf)
+    assert_equal "\x7E".b, buf
   end
 
   def test_unpack_broken_R

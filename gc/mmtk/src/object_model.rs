@@ -1,15 +1,15 @@
 use std::ptr::copy_nonoverlapping;
 
+use crate::Ruby;
 use crate::abi;
-use crate::abi::RubyObjectAccess;
 use crate::abi::MIN_OBJ_ALIGN;
 use crate::abi::OBJREF_OFFSET;
-use crate::Ruby;
+use crate::abi::RubyObjectAccess;
+use mmtk::util::Address;
+use mmtk::util::ObjectReference;
 use mmtk::util::constants::BITS_IN_BYTE;
 use mmtk::util::copy::CopySemantics;
 use mmtk::util::copy::GCWorkerCopyContext;
-use mmtk::util::Address;
-use mmtk::util::ObjectReference;
 use mmtk::vm::*;
 
 pub struct VMObjectModel {}
@@ -19,6 +19,8 @@ impl VMObjectModel {
 }
 
 impl ObjectModel<Ruby> for VMObjectModel {
+    const GLOBAL_FIELD_UNLOG_BIT_SPEC: VMGlobalFieldUnlogBitSpec =
+        VMGlobalFieldUnlogBitSpec::side_first();
     const GLOBAL_LOG_BIT_SPEC: VMGlobalLogBitSpec = VMGlobalLogBitSpec::side_first();
 
     // We overwrite the prepended word which were used to hold object sizes.
@@ -76,6 +78,14 @@ impl ObjectModel<Ruby> for VMObjectModel {
         }
 
         to_obj
+    }
+
+    fn try_copy(
+        from: ObjectReference,
+        semantics: CopySemantics,
+        copy_context: &mut GCWorkerCopyContext<Ruby>,
+    ) -> Option<ObjectReference> {
+        Some(Self::copy(from, semantics, copy_context))
     }
 
     fn copy_to(_from: ObjectReference, _to: ObjectReference, _region: Address) -> Address {

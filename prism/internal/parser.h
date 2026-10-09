@@ -9,6 +9,7 @@
 #include "prism/internal/list.h"
 #include "prism/internal/options.h"
 #include "prism/internal/static_literals.h"
+#include "prism/internal/strpbrk.h"
 
 #include "prism/ast.h"
 #include "prism/line_offset_list.h"
@@ -156,6 +157,22 @@ typedef struct pm_lex_mode {
             bool interpolation;
 
             /*
+             * Whether any token has been emitted from this list. A word
+             * separator delimits the opener from the first word, so one
+             * without source characters is emitted when the list does not
+             * start with whitespace.
+             */
+            bool started;
+
+            /*
+             * Whether the previously emitted token was a word separator. A
+             * word separator delimits the last word from the terminator, so
+             * one without source characters is emitted when the list does
+             * not end with whitespace.
+             */
+            bool separated;
+
+            /*
              * When lexing a list, it takes into account balancing the
              * terminator if the terminator is one of (), [], {}, or <>.
              */
@@ -168,7 +185,7 @@ typedef struct pm_lex_mode {
              * This is the character set that should be used to delimit the
              * tokens within the list.
              */
-            uint8_t breakpoints[11];
+            uint8_t breakpoints[PM_STRPBRK_CACHE_SIZE];
         } list;
 
         struct {
@@ -190,7 +207,7 @@ typedef struct pm_lex_mode {
              * This is the character set that should be used to delimit the
              * tokens within the regular expression.
              */
-            uint8_t breakpoints[7];
+            uint8_t breakpoints[PM_STRPBRK_CACHE_SIZE];
         } regexp;
 
         struct {
@@ -223,7 +240,7 @@ typedef struct pm_lex_mode {
              * This is the character set that should be used to delimit the
              * tokens within the string.
              */
-            uint8_t breakpoints[7];
+            uint8_t breakpoints[PM_STRPBRK_CACHE_SIZE];
         } string;
 
         struct {
@@ -431,6 +448,9 @@ typedef enum {
 
     /* a while statement */
     PM_CONTEXT_WHILE,
+
+    /* the number of contexts, which is not itself a context */
+    PM_CONTEXT_MAXIMUM,
 } pm_context_t;
 
 /* This is a node in a linked list of contexts. */
@@ -440,6 +460,9 @@ typedef struct pm_context_node {
 
     /* A pointer to the previous context in the linked list. */
     struct pm_context_node *prev;
+
+    /* One bit set per context in this list, including one for this node. */
+    uint64_t mask;
 } pm_context_node_t;
 
 /* The type of shareable constant value that can be set. */
@@ -687,15 +710,6 @@ struct pm_parser_t {
 
     /* The current parsing context. */
     pm_context_node_t *current_context;
-
-    /*
-     * The hash keys for the hash that is currently being parsed. This is not
-     * usually necessary because it can pass it down the various call chains,
-     * but in the event that you're parsing a hash that is being directly
-     * pushed into another hash with **, we need to share the hash keys so that
-     * we can warn for the nested hash as well.
-     */
-    pm_static_literals_t *current_hash_keys;
 
     /*
      * The encoding functions for the current file is attached to the parser as

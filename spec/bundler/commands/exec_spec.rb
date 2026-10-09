@@ -72,15 +72,16 @@ RSpec.describe "bundle exec" do
   end
 
   it "works when exec'ing to rubygems" do
+    skip "https://github.com/ruby/rubygems/issues/3351" if mswin?
     install_gemfile "source \"https://gem.repo1\"; gem \"myrack\""
     bundle "exec #{gem_cmd} --version"
-    expect(out).to eq(Gem::VERSION)
+    expect(out).to eq(exercised_rubygems_version.to_s)
   end
 
   it "works when exec'ing to rubygems through sh -c" do
     install_gemfile "source \"https://gem.repo1\"; gem \"myrack\""
     bundle "exec sh -c '#{gem_cmd} --version'"
-    expect(out).to eq(Gem::VERSION)
+    expect(out).to eq(exercised_rubygems_version.to_s)
   end
 
   it "works when exec'ing back to bundler to run a remote resolve" do
@@ -204,6 +205,7 @@ RSpec.describe "bundle exec" do
       end
 
       it "uses version provided by ruby" do
+        skip "https://github.com/ruby/rubygems/issues/3351" if mswin?
         bundle "exec erb --version"
 
         expect(stdboth).to eq(default_erb_version)
@@ -339,6 +341,32 @@ RSpec.describe "bundle exec" do
 
     bundle "exec echolib", env: { "RUBYLIB" => rubylib }
     expect(out).to include(rubylib)
+  end
+
+  it "does not duplicate a relative path prefix when exec'ing to a relative path" do
+    skip "https://github.com/ruby/rubygems/issues/3351" if Gem.win_platform?
+
+    create_file("script", "#!/usr/bin/env ruby\nputs $0")
+
+    install_gemfile <<-G
+      source "https://gem.repo1"
+    G
+
+    bundle "exec ./script", env: { "BUNDLE_DISABLE_EXEC_LOAD" => "true" }
+    expect(out).to eq("./script")
+  end
+
+  it "prepends a relative path prefix when exec'ing to a hidden file in the current directory" do
+    skip "https://github.com/ruby/rubygems/issues/3351" if Gem.win_platform?
+
+    create_file(".script", "#!/usr/bin/env ruby\nputs $0")
+
+    install_gemfile <<-G
+      source "https://gem.repo1"
+    G
+
+    bundle "exec .script", env: { "BUNDLE_DISABLE_EXEC_LOAD" => "true" }
+    expect(out).to eq("./.script")
   end
 
   it "errors nicely when the argument doesn't exist" do
@@ -632,6 +660,7 @@ RSpec.describe "bundle exec" do
 
   describe "with gems bundled via :path with invalid gemspecs" do
     it "outputs the gemspec validation errors" do
+      skip "https://github.com/ruby/rubygems/issues/3351" if mswin?
       build_lib "foo"
 
       gemspec = lib_path("foo-1.0").join("foo.gemspec").to_s
@@ -692,6 +721,7 @@ RSpec.describe "bundle exec" do
     end
 
     it "works" do
+      skip "https://github.com/ruby/rubygems/issues/3351" if mswin?
       bundle "exec #{gem_cmd} uninstall foo"
       expect(out).to eq("Successfully uninstalled foo-1.0")
     end
@@ -713,6 +743,7 @@ RSpec.describe "bundle exec" do
     end
 
     it "does not load plugins outside of the bundle" do
+      skip "https://github.com/ruby/rubygems/issues/3351" if mswin?
       bundle "exec #{gem_cmd} -v"
       expect(out).not_to include("FAIL")
     end
@@ -1242,7 +1273,7 @@ RSpec.describe "bundle exec" do
           expect(run(file.read, artifice: nil, env: env)).to eq(default_openssl_version)
         end
 
-        skip "ruby_core has openssl and rubygems in the same folder, and this test needs rubygems require but default openssl not in a directly added entry in $LOAD_PATH" if ruby_core?
+        skip "the default openssl on RUBYLIB takes precedence over the installed openssl gem" if rubylib_provides?("openssl")
         # sanity check that we get the newer, custom version without bundler
         sys_exec "#{Gem.ruby} #{file}", env: env, raise_on_error: false
         expect(err).to include("custom openssl should not be loaded")

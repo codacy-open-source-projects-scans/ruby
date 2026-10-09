@@ -24,6 +24,7 @@
 #endif
 
 #include "ruby/internal/config.h"
+#include "internal/thread.h"
 
 #include <errno.h>
 
@@ -41,11 +42,13 @@
 #else
 
 #include "internal.h"
+#include "internal/array.h"
 #include "internal/compile.h"
 #include "internal/compilers.h"
 #include "internal/complex.h"
 #include "internal/encoding.h"
 #include "internal/error.h"
+#include "internal/gc.h"
 #include "internal/hash.h"
 #include "internal/io.h"
 #include "internal/numeric.h"
@@ -55,7 +58,6 @@
 #include "internal/ruby_parser.h"
 #include "internal/symbol.h"
 #include "internal/thread.h"
-#include "internal/variable.h"
 #include "node.h"
 #include "parser_node.h"
 #include "probes.h"
@@ -515,6 +517,14 @@ struct parser_params {
         /* track the nest level of only braces "{}" */
         int brace_nest;
     } lex;
+    /* Cache the tail of the and/or chain most recently built by logop(), so a
+     * left-associative chain does not rescan its right branch on every
+     * operator. head is the chain's top node, tail the node whose nd_2nd is the
+     * next insertion point. */
+    struct {
+        NODE *head;
+        NODE *tail;
+    } logop;
     stack_type cond_stack;
     stack_type cmdarg_stack;
     int tokidx;
@@ -578,6 +588,9 @@ struct parser_params {
 # endif
     unsigned int error_p: 1;
     unsigned int cr_seen: 1;
+
+    /* Streaming hash state of the source bytes read so far. */
+    rb_source_hash_state_t source_hash;
 
 #ifndef RIPPER
     /* Ruby core only */
@@ -719,7 +732,7 @@ after_pop_stack(int len, struct parser_params *p)
 static inline int
 char_at_end(struct parser_params *p, VALUE str, int when_empty)
 {
-    long len = RSTRING_LEN(str);
+    rb_len_t len = RSTRING_LEN(str);
     return len > 0 ? (unsigned char)RSTRING_PTR(str)[len-1] : when_empty;
 }
 #endif
@@ -1427,6 +1440,7 @@ static NODE *call_uni_op(struct parser_params*,NODE*,ID,const YYLTYPE*,const YYL
 static NODE *new_qcall(struct parser_params* p, ID atype, NODE *recv, ID mid, NODE *args, const YYLTYPE *op_loc, const YYLTYPE *loc);
 static NODE *new_command_qcall(struct parser_params* p, ID atype, NODE *recv, ID mid, NODE *args, NODE *block, const YYLTYPE *op_loc, const YYLTYPE *loc);
 static NODE *method_add_block(struct parser_params*p, NODE *m, NODE *b, const YYLTYPE *loc) {RNODE_ITER(b)->nd_iter = m; b->nd_loc = *loc; return b;}
+static NODE *command_add_block(struct parser_params*p, NODE *m, NODE *b, const YYLTYPE *loc);
 
 static bool args_info_empty_p(struct rb_args_info *args);
 static rb_node_args_t *new_args(struct parser_params*,rb_node_args_aux_t*,rb_node_opt_arg_t*,ID,rb_node_args_aux_t*,rb_node_args_t*,const YYLTYPE*);
@@ -1754,18 +1768,10 @@ extern const ID id_warn, id_warning, id_gets, id_assoc;
 # define PRIsWARN PRIsVALUE
 # define WARN_ARGS(fmt,n) p->value, id_warn, n, rb_usascii_str_new_lit(fmt)
 # define WARN_ARGS_L(l,fmt,n) WARN_ARGS(fmt,n)
-# ifdef HAVE_VA_ARGS_MACRO
 # define WARN_CALL(...) rb_funcall(__VA_ARGS__)
-# else
-# define WARN_CALL rb_funcall
-# endif
 # define WARNING_ARGS(fmt,n) p->value, id_warning, n, rb_usascii_str_new_lit(fmt)
 # define WARNING_ARGS_L(l, fmt,n) WARNING_ARGS(fmt,n)
-# ifdef HAVE_VA_ARGS_MACRO
 # define WARNING_CALL(...) rb_funcall(__VA_ARGS__)
-# else
-# define WARNING_CALL rb_funcall
-# endif
 # define compile_error ripper_compile_error
 #else
 # define WARN_S_L(s,l) s
@@ -2045,8 +2051,14 @@ rb_parser_encoding_string_new(rb_parser_t *p, const char *ptr, long len, rb_enco
 rb_parser_string_t *
 rb_str_to_parser_string(rb_parser_t *p, VALUE str)
 {
+#if SIZEOF_RB_LEN_T > SIZEOF_LONG
+    /* rb_parser_string_t holds its length as a long. */
+    if (RSTRING_LEN(str) > LONG_MAX) {
+        rb_raise(rb_eArgError, "string size too big");
+    }
+#endif
     /* Type check */
-    rb_parser_string_t *ret = rb_parser_encoding_string_new(p, RSTRING_PTR(str), RSTRING_LEN(str), rb_enc_get(str));
+    rb_parser_string_t *ret = rb_parser_encoding_string_new(p, RSTRING_PTR(str), (long)RSTRING_LEN(str), rb_enc_get(str));
     RB_GC_GUARD(str);
     return ret;
 }
@@ -3296,6 +3308,9 @@ allow_exits	: {$$ = allow_block_exit(p);};
 
 k_END		: keyword_END lex_ctxt
                     {
+                        if (p->ctxt.in_def) {
+                            rb_warn0("END in method; use at_exit");
+                        }
                         $$ = $2;
                         p->ctxt.in_rescue = before_rescue;
                     /*% ripper: $:2 %*/
@@ -3360,7 +3375,7 @@ stmt		: keyword_alias[kw] fitem[new] {SET_LEX_STATE(EXPR_FNAME|EXPR_FITEM);} fit
                     }
                 | stmt[body] modifier_until[mod] expr_value[cond_expr]
                     {
-                        clear_block_exit(p, false);
+                        clear_block_exit(p, 0);
                         if ($body && nd_type_p($body, NODE_BEGIN)) {
                             $$ = NEW_UNTIL(cond(p, $cond_expr, &@cond_expr), RNODE_BEGIN($body)->nd_body, 0, &@$, &@mod, &NULL_LOC);
                         }
@@ -3378,12 +3393,10 @@ stmt		: keyword_alias[kw] fitem[new] {SET_LEX_STATE(EXPR_FNAME|EXPR_FITEM);} fit
                         $$ = NEW_RESCUE(remove_begin($body), resq, 0, &@$);
                     /*% ripper: rescue_mod!($:body, $:resbody) %*/
                     }
-                | k_END[k_end] allow_exits[allow] '{'[lbrace] compstmt(stmts)[body] '}'[rbrace]
+                | k_END[k_end] block_open[lbrace] compstmt(stmts)[body] '}'[rbrace]
                     {
-                        if (p->ctxt.in_def) {
-                            rb_warn0("END in method; use at_exit");
-                        }
-                        restore_block_exit(p, $allow);
+                        clear_block_exit(p, true);
+                        restore_block_exit(p, $block_open);
                         p->ctxt = $k_end;
                         {
                             NODE *scope = NEW_SCOPE2(0 /* tbl */, 0 /* args */, $body /* body */, NULL /* parent */, &@$);
@@ -5152,13 +5165,7 @@ do_block	: k_do_block do_body k_end
 
 block_call	: command do_block
                     {
-                        if (nd_type_p($1, NODE_YIELD)) {
-                            compile_error(p, "block given to yield");
-                        }
-                        else {
-                            block_dup_check(p, get_nd_args(p, $1), $2);
-                        }
-                        $$ = method_add_block(p, $1, $2, &@$);
+                        $$ = command_add_block(p, $1, $2, &@$);
                         fixpos($$, $1);
                     /*% ripper: method_add_block!($:1, $:2) %*/
                     }
@@ -6067,6 +6074,10 @@ string_content	: tSTRING_CONTENT[content]
                         p->lex.brace_nest = 0;
                     }[brace]<num>
                     {
+                        $$ = p->lex.lpar_beg;
+                        p->lex.lpar_beg = -1;
+                    }[lpar]<num>
+                    {
                         $$ = p->heredoc_indent;
                         p->heredoc_indent = 0;
                     }[indent]<num>
@@ -6077,6 +6088,7 @@ string_content	: tSTRING_CONTENT[content]
                         p->lex.strterm = $term;
                         SET_LEX_STATE($state);
                         p->lex.brace_nest = $brace;
+                        p->lex.lpar_beg = $lpar;
                         p->heredoc_indent = $indent;
                         p->heredoc_line_indent = -1;
                         if ($compstmt) nd_unset_fl_newline($compstmt);
@@ -6609,13 +6621,11 @@ assocs		: assoc
                             assocs = tail;
                         }
                         else if (tail) {
-                            if (RNODE_LIST(assocs)->nd_head) {
-                                NODE *n = RNODE_LIST(tail)->nd_next;
-                                if (!RNODE_LIST(tail)->nd_head && nd_type_p(n, NODE_LIST) &&
-                                    nd_type_p((n = RNODE_LIST(n)->nd_head), NODE_HASH)) {
-                                    /* DSTAR */
-                                    tail = RNODE_HASH(n)->nd_head;
-                                }
+                            NODE *n = RNODE_LIST(tail)->nd_next;
+                            if (!RNODE_LIST(tail)->nd_head && nd_type_p(n, NODE_LIST) &&
+                                nd_type_p((n = RNODE_LIST(n)->nd_head), NODE_HASH)) {
+                                /* DSTAR */
+                                tail = RNODE_HASH(n)->nd_head;
                             }
                             if (tail) {
                                 assocs = list_concat(assocs, tail);
@@ -6821,7 +6831,7 @@ rb_parser_str_escape(struct parser_params *p, rb_parser_string_t *str)
             if (pend < ptr + n)
                 n = (int)(pend - ptr);
             while (n--) {
-                c = *ptr & 0xf0 >> 4;
+                c = ((unsigned char)*ptr >> 4) & 0x0f;
                 charbuf[2] = (c < 10) ? '0' + c : 'A' + c - 10;
                 c = *ptr & 0x0f;
                 charbuf[3] = (c < 10) ? '0' + c : 'A' + c - 10;
@@ -7463,6 +7473,8 @@ yycompile(struct parser_params *p, VALUE fname, int line)
 
     p->ast = ast = rb_ast_new();
     compile_callback(yycompile0, (VALUE)p);
+    ast->body.source_hash = rb_source_hash_finalize(&p->source_hash);
+    ast->body.has_source_hash = 1;
     p->ast = 0;
 
     while (p->lvtbl) {
@@ -7489,6 +7501,7 @@ lex_getline(struct parser_params *p)
     rb_parser_string_t *line = (*p->lex.gets)(p, p->lex.input, p->line_count);
     if (!line) return 0;
     p->line_count++;
+    rb_source_hash_update(&p->source_hash, (const uint8_t *)line->ptr, (size_t)line->len);
     string_buffer_append(p, line);
     must_be_ascii_compatible(p, line);
     return line;
@@ -7735,7 +7748,7 @@ tokspace(struct parser_params *p, int n)
     p->tokidx += n;
 
     if (p->tokidx >= p->toksiz) {
-        do {p->toksiz *= 2;} while (p->toksiz < p->tokidx);
+        do {p->toksiz *= 2;} while (p->toksiz <= p->tokidx);
         REALLOC_N(p->tokenbuf, char, p->toksiz);
     }
     return &p->tokenbuf[p->tokidx-n];
@@ -9178,12 +9191,7 @@ static int
 arg_ambiguous(struct parser_params *p, char c)
 {
 #ifndef RIPPER
-    if (c == '/') {
-        rb_warning1("ambiguity between regexp and two divisions: wrap regexp in parentheses or add a space after '%c' operator", WARN_I(c));
-    }
-    else {
-        rb_warning1("ambiguous first argument; put parentheses or a space even after '%c' operator", WARN_I(c));
-    }
+    rb_warning1("ambiguous first argument; put parentheses or a space even after '%c' operator", WARN_I(c));
 #else
     dispatch1(arg_ambiguous, rb_usascii_str_new(&c, 1));
 #endif
@@ -9891,6 +9899,7 @@ parse_numeric(struct parser_params *p, int c)
             type = tRATIONAL;
         }
         else {
+            errno = 0;
             strtod(tok(p), 0);
             if (errno == ERANGE) {
                 rb_warning1("Float %s out of range", WARN_S(tok(p)));
@@ -11023,7 +11032,6 @@ parser_yylex(struct parser_params *p)
         }
         pushback(p, c);
         if (IS_SPCARG(c)) {
-            arg_ambiguous(p, '/');
             p->lex.strterm = NEW_STRTERM(str_regexp, '/', 0);
             return tREGEXP_BEG;
         }
@@ -12831,6 +12839,39 @@ new_locations_lambda_body(struct parser_params* p, NODE *node, const YYLTYPE *lo
     return body;
 }
 
+static NODE *
+command_add_block(struct parser_params*p, NODE *m, NODE *b, const YYLTYPE *loc)
+{
+    NODE **body;
+    enum node_type type = nd_type(m);
+    switch (type) {
+      case NODE_YIELD:
+        compile_error(p, "block given to yield");
+        return m;
+      case NODE_RETURN:
+        body = &RNODE_RETURN(m)->nd_stts;
+        break;
+      case NODE_BREAK:
+      case NODE_NEXT:
+        body = &RNODE_EXITS(m)->nd_stts;
+        break;
+      case NODE_REDO:           /* `redo` has no argument */
+        compile_error(p, "command_add_block: unexpected node: NODE_REDO");
+        return m;
+      case NODE_RETRY:          /* `retry` has no argument */
+        compile_error(p, "command_add_block: unexpected node: NODE_RETRY");
+        return m;
+      default:
+        block_dup_check(p, get_nd_args(p, m), b);
+        return method_add_block(p, m, b, loc);
+    }
+    RUBY_ASSERT(*body, "no argument %s with do_block", parser_node_name(type));
+    YYLTYPE b_loc = code_loc_gen(&(*body)->nd_loc, loc);
+    *body = command_add_block(p, *body, b, &b_loc);
+    m->nd_loc.end_pos = loc->end_pos;
+    return m;
+}
+
 #define nd_once_body(node) (nd_type_p((node), NODE_ONCE) ? RNODE_ONCE(node)->nd_body : node)
 
 static NODE*
@@ -13890,8 +13931,10 @@ value_expr_check(struct parser_params *p, NODE *node)
 
           case NODE_AND:
           case NODE_OR:
-            node = RNODE_AND(node)->nd_1st;
-            break;
+            /* The left operand was already checked for a value when logop()
+             * built this node, so stop here instead of re-reporting the same
+             * void value once per operator in a chain. */
+            return NULL;
 
           case NODE_LASGN:
           case NODE_DASGN:
@@ -14058,8 +14101,12 @@ reduce_nodes(struct parser_params *p, NODE **body)
     while (node) {
         int newline = (int)nd_fl_newline(node);
         switch (nd_type(node)) {
-          end:
           case NODE_NIL:
+            // Keep an explicit nil in a method's tail (value) position when it
+            // is on its own line, so it still emits a :line event and records
+            // line coverage for that line. [Bug #22302]
+            if (newline) return;
+          end:
             *body = 0;
             return;
           case NODE_BEGIN:
@@ -14312,25 +14359,70 @@ new_unless(struct parser_params *p, NODE *cc, NODE *left, NODE *right, const YYL
 
 #define NEW_AND_OR(type, f, s, loc, op_loc) (type == NODE_AND ? NEW_AND(f,s,loc,op_loc) : NEW_OR(f,s,loc,op_loc))
 
+/* A cached logop tail is usable only if it is still a node of the chain's type
+ * whose nd_2nd is the insertion point, i.e. not itself another node of that
+ * type. This rejects a stale cache left over from an earlier parse. */
+static int
+logop_valid_tail(NODE *tail, enum node_type type)
+{
+    NODE *second;
+    return tail && nd_type_p(tail, type) &&
+        ((second = RNODE_AND(tail)->nd_2nd) == 0 || !nd_type_p(second, type));
+}
+
 static NODE*
 logop(struct parser_params *p, ID id, NODE *left, NODE *right,
           const YYLTYPE *op_loc, const YYLTYPE *loc)
 {
     enum node_type type = id == idAND || id == idANDOP ? NODE_AND : NODE_OR;
     NODE *op;
+    /* Snapshot the cache from the previous logop() call before overwriting it. */
+    NODE *prev_head = p->logop.head;
+    NODE *prev_tail = p->logop.tail;
+    NODE *node, *second;
     value_expr(p, left);
     if (left && nd_type_p(left, type)) {
-        NODE *node = left, *second;
-        while ((second = RNODE_AND(node)->nd_2nd) != 0 && nd_type_p(second, type)) {
-            node = second;
+        /* The insertion point is the far end of left's right branch.
+         * Reusing the cached tail keeps a chain such as `a && a && ... && a`
+         * linear instead of rescanning the whole branch on every operator. The
+         * cache is validated (its nd_2nd is not another node of the same type)
+         * so a stale entry falls back to the scan. */
+        if (left == prev_head && logop_valid_tail(prev_tail, type)) {
+            node = prev_tail;
         }
+        else {
+            node = left;
+            while ((second = RNODE_AND(node)->nd_2nd) != 0 && nd_type_p(second, type)) {
+                node = second;
+            }
+        }
+        second = RNODE_AND(node)->nd_2nd;
         RNODE_AND(node)->nd_2nd = NEW_AND_OR(type, second, right, loc, op_loc);
         nd_set_line(RNODE_AND(node)->nd_2nd, op_loc->beg_pos.lineno);
         left->nd_loc.end_pos = loc->end_pos;
+        p->logop.head = left;
+        p->logop.tail = RNODE_AND(node)->nd_2nd;
         return left;
     }
     op = NEW_AND_OR(type, left, right, loc, op_loc);
     nd_set_line(op, op_loc->beg_pos.lineno);
+    /* Record where the next operator will extend op, mirroring the scan the
+     * chained branch above would perform: if right is itself a chain of the
+     * same type (from parentheses), its far end; otherwise op itself. */
+    p->logop.head = op;
+    if (right == prev_head && logop_valid_tail(prev_tail, type)) {
+        p->logop.tail = prev_tail;
+    }
+    else if (right && nd_type_p(right, type)) {
+        node = right;
+        while ((second = RNODE_AND(node)->nd_2nd) != 0 && nd_type_p(second, type)) {
+            node = second;
+        }
+        p->logop.tail = node;
+    }
+    else {
+        p->logop.tail = op;
+    }
     return op;
 }
 
@@ -14740,19 +14832,25 @@ new_op_assign(struct parser_params *p, NODE *lhs, ID op, NODE *rhs, struct lex_c
     if (lhs) {
         ID vid = get_nd_vid(p, lhs);
         YYLTYPE lhs_loc = lhs->nd_loc;
+        /* A constant read can raise NameError. Prism has no separate read node
+         * for `Const op= value` and reports the whole expression, so give the
+         * NODE_CONST the location of the whole operator assignment as well,
+         * for consistent Thread::Backtrace::Location#source_range between both
+         * parsers. */
+        const YYLTYPE *read_loc = nd_type_p(lhs, NODE_CDECL) ? loc : &lhs_loc;
         if (op == tOROP) {
             set_nd_value(p, lhs, rhs);
             nd_set_loc(lhs, loc);
-            asgn = NEW_OP_ASGN_OR(gettable(p, vid, &lhs_loc), lhs, loc);
+            asgn = NEW_OP_ASGN_OR(gettable(p, vid, read_loc), lhs, loc);
         }
         else if (op == tANDOP) {
             set_nd_value(p, lhs, rhs);
             nd_set_loc(lhs, loc);
-            asgn = NEW_OP_ASGN_AND(gettable(p, vid, &lhs_loc), lhs, loc);
+            asgn = NEW_OP_ASGN_AND(gettable(p, vid, read_loc), lhs, loc);
         }
         else {
             asgn = lhs;
-            rhs = NEW_CALL(gettable(p, vid, &lhs_loc), op, NEW_LIST(rhs, &rhs->nd_loc), loc);
+            rhs = NEW_CALL(gettable(p, vid, read_loc), op, NEW_LIST(rhs, &rhs->nd_loc), loc);
             set_nd_value(p, asgn, rhs);
             nd_set_loc(asgn, loc);
         }
@@ -15501,6 +15599,7 @@ parser_initialize(struct parser_params *p)
     p->node_id = 0;
     p->delayed.token = NULL;
     p->frozen_string_literal = -1; /* not specified */
+    rb_source_hash_init(&p->source_hash);
 #ifndef RIPPER
     p->error_buffer = Qfalse;
     p->end_expect_token_locations = NULL;

@@ -47,6 +47,35 @@ module Prism
       end
     end
 
+    def test_lex_encoding
+      tokens = Prism.lex('"わたし"', encoding: Encoding::Windows_31J).value
+      tokens.each do |t|
+        assert_equal(Encoding::Windows_31J, t.value.encoding)
+      end
+
+      # Shebangs must appear on the first line. For these cases, the encoding
+      # comment may appear second, but it should still change encoding.
+      tokens = Prism.lex(<<~RUBY, encoding: Encoding::Windows_31J).value
+        #! /usr/bin/env ruby
+        # encoding: utf-8
+        "わたし"
+      RUBY
+      tokens.each do |t|
+        assert_equal(Encoding::UTF_8, t.value.encoding)
+      end
+    end
+
+    def test_lex_legacy
+      tokens = Prism.lex("foo").value
+
+      tokens.each do |token, state|
+        assert_nil(state)
+        assert_equal(token, token[0])
+        assert(token[1])
+        assert_equal(token, token.first)
+      end
+    end
+
     if RUBY_VERSION >= "3.3"
       def test_lex_compat
         source = "foo bar"
@@ -99,7 +128,7 @@ module Prism
     end
 
     def token_types(code)
-      Prism.lex(code).value.map { |token, _state| token.type }
+      Prism.lex(code).value.map(&:type)
     end
   end
 end

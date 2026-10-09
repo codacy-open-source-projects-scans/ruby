@@ -31,15 +31,36 @@ STRINGIO_VERSION = "3.2.1.dev";
 # define RB_INTEGER_TYPE_P(c) (FIXNUM_P(c) || RB_TYPE_P(c, T_BIGNUM))
 #endif
 
+/* strio_free may run on any thread, so the refcount shared by #initialize_copy must be atomic */
+#ifdef RUBY_TYPED_THREAD_SAFE_FREE
+# include "ruby/atomic.h"
+typedef rb_atomic_t strio_refcnt_t;
+# define STRIO_REFCNT_INC(ptr) RUBY_ATOMIC_INC((ptr)->count)
+# define STRIO_REFCNT_DEC(ptr) (RUBY_ATOMIC_FETCH_SUB((ptr)->count, 1) == 1)
+#else
+# define RUBY_TYPED_THREAD_SAFE_FREE RUBY_TYPED_FREE_IMMEDIATELY
+typedef int strio_refcnt_t;
+# define STRIO_REFCNT_INC(ptr) ((void)++(ptr)->count)
+# define STRIO_REFCNT_DEC(ptr) (--(ptr)->count <= 0)
+#endif
+
 #ifndef RB_PASS_CALLED_KEYWORDS
 # define rb_funcallv_kw(recv, mid, arg, argv, kw_splat) rb_funcallv(recv, mid, arg, argv)
 # define rb_class_new_instance_kw(argc, argv, klass, kw_splat) rb_class_new_instance(argc, argv, klass)
 #endif
 
+#ifndef ULEN2NUM
+# define ULEN2NUM ULONG2NUM
+#endif
+
 static inline bool
 str_chilled_p(VALUE str)
 {
-#if (RUBY_API_VERSION_MAJOR == 3 && RUBY_API_VERSION_MINOR >= 4) || RUBY_API_VERSION_MAJOR >= 4
+#if RUBY_API_VERSION_CODE >= 40100
+    // Do not attempt to modify chilled strings on Ruby 4.1+
+    // RUBY_FL_USER2 == STR_CHILLED
+    return FL_TEST_RAW(str, RUBY_FL_USER2);
+#elif RUBY_API_VERSION_CODE >= 30400
     // Do not attempt to modify chilled strings on Ruby 3.4+
     // RUBY_FL_USER2 == STR_CHILLED_LITERAL
     // RUBY_FL_USER3 == STR_CHILLED_SYMBOL_TO_S
@@ -59,7 +80,7 @@ struct StringIO {
     long pos;
     long lineno;
     rb_io_mode_t flags;
-    int count;
+    strio_refcnt_t count;
 };
 
 static struct StringIO *get_strio_for_read(VALUE self);
@@ -101,8 +122,8 @@ static void
 strio_free(void *p)
 {
     struct StringIO *ptr = p;
-    if (--ptr->count <= 0) {
-	xfree(ptr);
+    if (STRIO_REFCNT_DEC(ptr)) {
+        xfree(ptr);
     }
 }
 
@@ -119,7 +140,7 @@ static const rb_data_type_t strio_data_type = {
 	strio_free,
 	strio_memsize,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
+    0, 0, RUBY_TYPED_THREAD_SAFE_FREE | RUBY_TYPED_WB_PROTECTED
 };
 
 #define check_strio(self) ((struct StringIO*)rb_check_typeddata((self), &strio_data_type))
@@ -159,6 +180,19 @@ strio_substr(struct StringIO *ptr, long pos, long len, rb_encoding *enc)
     if (len < 0) len = 0;
     if (len == 0) return rb_enc_str_new(0, 0, enc);
     return enc_subseq(str, pos, len, enc);
+}
+
+static VALUE
+strio_readbuf(struct StringIO *ptr, VALUE str)
+{
+    if (!NIL_P(str)) {
+	StringValue(str);
+	rb_str_modify(str);
+	if (str == ptr->string) {
+	    rb_raise(rb_eArgError, "cannot read into the underlying string");
+	}
+    }
+    return str;
 }
 
 #define StringIO(obj) get_strio(obj)
@@ -757,7 +791,7 @@ strio_copy(VALUE copy, VALUE orig)
     RB_OBJ_WRITTEN(copy, old_string, ptr->string);
     RB_FL_UNSET_RAW(copy, STRIO_READWRITE);
     RB_FL_SET_RAW(copy, RB_FL_TEST_RAW(orig, STRIO_READWRITE));
-    ++ptr->count;
+    STRIO_REFCNT_INC(ptr);
     return copy;
 }
 
@@ -1430,7 +1464,8 @@ strio_getline(struct getline_arg *arg, struct StringIO *ptr)
 		p = RSTRING_PTR(str);
 		bm_init_skip(skip, p, n);
 		if ((pos = bm_search(p, n, s, e - s, skip)) >= 0) {
-		    e = s + pos + (arg->chomp ? 0 : n);
+		    e = s + pos + n;
+		    if (arg->chomp) w = n;
 		}
 	    }
 	}
@@ -1684,11 +1719,7 @@ strio_read(int argc, VALUE *argv, VALUE self)
 
     switch (argc) {
       case 2:
-	str = argv[1];
-	if (!NIL_P(str)) {
-	    StringValue(str);
-	    rb_str_modify(str);
-	}
+	str = strio_readbuf(ptr, argv[1]);
 	/* fall through */
       case 1:
 	if (!NIL_P(argv[0])) {
@@ -1753,6 +1784,8 @@ static VALUE
 strio_pread(int argc, VALUE *argv, VALUE self)
 {
     VALUE rb_len, rb_offset, rb_buf;
+    struct StringIO *ptr = readable(self);
+
     rb_scan_args(argc, argv, "21", &rb_len, &rb_offset, &rb_buf);
     long len = NUM2LONG(rb_len);
     long offset = NUM2LONG(rb_offset);
@@ -1761,18 +1794,18 @@ strio_pread(int argc, VALUE *argv, VALUE self)
 	rb_raise(rb_eArgError, "negative string size (or size too big): %" PRIsVALUE, rb_len);
     }
 
+    if (offset < 0) {
+	rb_syserr_fail_str(EINVAL, rb_sprintf("pread: Invalid offset argument: %" PRIsVALUE, rb_offset));
+    }
+
+    rb_buf = strio_readbuf(ptr, rb_buf);
+
     if (len == 0) {
 	if (NIL_P(rb_buf)) {
 	    return rb_str_new("", 0);
 	}
 	return rb_buf;
     }
-
-    if (offset < 0) {
-	rb_syserr_fail_str(EINVAL, rb_sprintf("pread: Invalid offset argument: %" PRIsVALUE, rb_offset));
-    }
-
-    struct StringIO *ptr = readable(self);
 
     if (outside_p(ptr, offset)) {
 	rb_eof_error();
@@ -1876,7 +1909,7 @@ strio_size(VALUE self)
     if (NIL_P(string)) {
 	return INT2FIX(0);
     }
-    return ULONG2NUM(RSTRING_LEN(string));
+    return ULEN2NUM(RSTRING_LEN(string));
 }
 
 /*

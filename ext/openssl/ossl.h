@@ -22,6 +22,9 @@
 #else
 #define RUBY_TYPED_FROZEN_SHAREABLE 0
 #endif
+#if !defined(RUBY_TYPED_THREAD_SAFE_FREE)
+#define RUBY_TYPED_THREAD_SAFE_FREE RUBY_TYPED_FREE_IMMEDIATELY
+#endif
 
 #include <openssl/opensslv.h>
 
@@ -59,12 +62,6 @@
       (LIBRESSL_VERSION_NUMBER >= ((maj << 28) | (min << 20) | (pat << 12)))
 #endif
 
-#if OSSL_OPENSSL_PREREQ(3, 0, 0)
-# define OSSL_3_const const
-#else
-# define OSSL_3_const /* const */
-#endif
-
 #if !defined(OPENSSL_NO_ENGINE) && !OSSL_OPENSSL_PREREQ(3, 0, 0)
 # define OSSL_USE_ENGINE
 #endif
@@ -98,14 +95,18 @@ extern VALUE eOSSLError;
     }\
 } while (0)
 
+void ossl_want_uninitialized(VALUE self, const rb_data_type_t *type);
+
 /*
  * Type conversions
  */
 #if !defined(NUM2UINT64T) /* in case Ruby starts to provide */
 #  if SIZEOF_LONG == 8
 #    define NUM2UINT64T(x) ((uint64_t)NUM2ULONG(x))
+#    define UINT64T2NUM(x) ULONG2NUM(x)
 #  elif defined(HAVE_LONG_LONG) && SIZEOF_LONG_LONG == 8
 #    define NUM2UINT64T(x) ((uint64_t)NUM2ULL(x))
+#    define UINT64T2NUM(x) ULL2NUM(x)
 #  else
 #    error "unknown platform; no 64-bit width integer"
 #  endif
@@ -192,6 +193,7 @@ extern VALUE dOSSL;
 #include "ossl_digest.h"
 #include "ossl_engine.h"
 #include "ossl_hmac.h"
+#include "ossl_hpke.h"
 #include "ossl_kdf.h"
 #include "ossl_ns_spki.h"
 #include "ossl_ocsp.h"

@@ -7,7 +7,7 @@ require_relative 'ruby_vm/helpers/c_escape'
 
 SUBLIBS = {}
 REQUIRED = {}
-BUILTIN_ATTRS = %w[leaf inline_block use_block c_trace without_interrupts]
+BUILTIN_ATTRS = %w[leaf inline_block use_block c_trace without_interrupts caller_user_box]
 
 module CompileWarning
   @@warnings = 0
@@ -105,6 +105,10 @@ def visit_call_node(source, node, name, locals, requires, bs, inlines)
       end
 
       return true
+    when "local_self"
+      raise "`local_self` args must be empty" if argc != 0
+      raise "`local_self` requires `self` local to be present" unless locals.include?(:self)
+      return true
     when "mandatory_only"
       # This is a call to Primitive.mandatory_only?. This method does not
       # require any further processing.
@@ -116,7 +120,9 @@ def visit_call_node(source, node, name, locals, requires, bs, inlines)
       # an inline function, and then continue the visit.
       raise "argc (#{argc}) of inline! should be 1" if argc != 1
 
-      text = extract_string_literal(args[0]).rstrip
+      # The string literal keeps the line endings of the source file; normalize
+      # them so the generated code does not depend on how it was checked out.
+      text = extract_string_literal(args[0]).encode(universal_newline: true).rstrip
       lineno = line_number(source, node)
 
       case primitive_macro
@@ -184,7 +190,10 @@ def collect_builtins(dump_ast, file)
     exit(1)
   end
 
-  source = File.read(file)
+  # dump_ast reports byte offsets against the raw file bytes, so the source
+  # must be read in binary mode; text mode would convert CRLF to LF on Windows
+  # and shift every offset.
+  source = File.binread(file)
   root = JSON.parse(stdout)
   visit_node(source, root, "top", nil, requires = [], builtins = [], inlines = [])
 
@@ -256,10 +265,7 @@ def generate_cexpr(ofile, lineno, line_file, body_lineno, text, locals, func_nam
 
   # Avoid generating fetches of lvars we don't need. This is imperfect as it
   # will match text inside strings or other false positives.
-  local_ptrs = []
-  local_candidates = text.gsub(/\bLOCAL_PTR\(\K[a-zA-Z_][a-zA-Z0-9_]*(?=\))/) {
-    local_ptrs << $&; ''
-  }.scan(/[a-zA-Z_][a-zA-Z0-9_]*/)
+  local_candidates = text.scan(/[a-zA-Z_][a-zA-Z0-9_]*/)
 
   f.puts '{'
   lineno += 1
@@ -267,11 +273,9 @@ def generate_cexpr(ofile, lineno, line_file, body_lineno, text, locals, func_nam
   locals&.reverse_each&.with_index{|param, i|
     next unless Symbol === param
     param = param.to_s
-    lvar = local_candidates.include?(param)
-    next unless lvar or local_ptrs.include?(param)
-    f.puts "VALUE *const #{param}__ptr = (VALUE *)&ec->cfp->ep[#{-3 - i}];"
-    f.puts "MAYBE_UNUSED(const VALUE) #{param} = *#{param}__ptr;" if lvar
-    lineno += lvar ? 2 : 1
+    next unless local_candidates.include?(param)
+    f.puts "MAYBE_UNUSED(const VALUE) #{param} = ec->cfp->ep[#{-3 - i}];"
+    lineno += 1
   }
   f.puts "#line #{body_lineno} \"#{line_file}\""
   lineno += 1

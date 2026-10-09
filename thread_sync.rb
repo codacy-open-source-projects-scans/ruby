@@ -11,23 +11,23 @@ class Thread
   #
   #  Example:
   #
-  #    	queue = Thread::Queue.new
+  #     queue = Thread::Queue.new
   #
-  #	    producer = Thread.new do
-  #	      5.times do |i|
-  #	        sleep rand(i) # simulate expense
-  #	        queue << i
-  #	        puts "#{i} produced"
-  #	      end
-  #	    end
+  #     producer = Thread.new do
+  #       5.times do |i|
+  #         sleep rand(i) # simulate expense
+  #         queue << i
+  #         puts "#{i} produced"
+  #       end
+  #     end
   #
-  #	    consumer = Thread.new do
-  #	      5.times do |i|
-  #	        value = queue.pop
-  #	        sleep rand(i/2) # simulate expense
-  #	        puts "consumed #{value}"
-  #	      end
-  #	    end
+  #     consumer = Thread.new do
+  #       5.times do |i|
+  #         value = queue.pop
+  #         sleep rand(i/2) # simulate expense
+  #         puts "consumed #{value}"
+  #       end
+  #     end
   #
   #     consumer.join
   class Queue
@@ -42,13 +42,13 @@ class Thread
     #
     # Example:
     #
-    #    	q = Thread::Queue.new
+    #     q = Thread::Queue.new
     #     #=> #<Thread::Queue:0x00007ff7501110d0>
     #     q.empty?
     #     #=> true
     #
-    #    	q = Thread::Queue.new([1, 2, 3])
-    #    	#=> #<Thread::Queue:0x00007ff7500ec500>
+    #     q = Thread::Queue.new([1, 2, 3])
+    #     #=> #<Thread::Queue:0x00007ff7500ec500>
     #     q.empty?
     #     #=> false
     #     q.pop
@@ -113,7 +113,7 @@ class Thread
     #
     # Example:
     #
-    #    	q = Thread::Queue.new
+    #      q = Thread::Queue.new
     #      Thread.new{
     #        while e = q.deq # wait for nil to break loop
     #          # ...
@@ -145,7 +145,7 @@ class Thread
     #
     # Returns the length of the queue.
     def length
-      Primitive.cexpr!('LONG2NUM(queue_ptr(self)->len)')
+      Primitive.cexpr!('LEN2NUM(queue_ptr(self)->len)')
     end
     alias_method :size, :length
 
@@ -284,7 +284,7 @@ class Thread
 
     # Returns the maximum size of the queue.
     def max
-      Primitive.cexpr!('LONG2NUM(szqueue_ptr(self)->max)')
+      Primitive.cexpr!('LEN2NUM(szqueue_ptr(self)->max)')
     end
 
     # call-seq: max=(number)
@@ -292,12 +292,12 @@ class Thread
     # Sets the maximum size of the queue to the given +number+.
     def max=(vmax)
       Primitive.cstmt! %{
-        long max = NUM2LONG(vmax);
+        rb_len_t max = NUM2LEN(vmax);
         if (max <= 0) {
             rb_raise(rb_eArgError, "queue size must be positive");
         }
 
-        long diff = 0;
+        rb_len_t diff = 0;
         struct rb_szqueue *sq = szqueue_ptr(self);
 
         if (max > sq->max) {
@@ -371,10 +371,10 @@ class Thread
     end
 
     # call-seq:
-    #    mutex.lock  -> self
+    #    mutex.unlock  -> self
     #
-    # Attempts to grab the lock and waits if it isn't available.
-    # Raises +ThreadError+ if +mutex+ was locked by the current thread.
+    # Releases the lock.
+    # Raises +ThreadError+ if +mutex+ wasn't locked by the current thread.
     def unlock
       Primitive.rb_mut_unlock
     end

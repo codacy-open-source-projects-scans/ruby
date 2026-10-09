@@ -223,14 +223,23 @@ module OpenSSL
         to_io.close_on_exec?
       end
 
+      # Calls IO#wait on the underlying socket.
+      #
+      # Note that this method may block even when there is data immediately
+      # available to read, unlike IO#wait_readable.
       def wait(*args)
         to_io.wait(*args)
       end
 
+      # Calls IO#wait_readable on the underlying socket.
+      #
+      # Note that this method may block even when there is data immediately
+      # available to read, unlike IO#wait_readable.
       def wait_readable(*args)
         to_io.wait_readable(*args)
       end
 
+      # Calls IO#wait_writable on the underlying socket.
       def wait_writable(*args)
         to_io.wait_writable(*args)
       end
@@ -475,9 +484,19 @@ module OpenSSL
 
     ##
     # SSLServer represents a TCP/IP server socket with Secure Sockets Layer.
+    #
+    # *Deprecated.* Use TCPServer or Socket to accept a TCP connection, and
+    # then wrap it with OpenSSL::SSL::SSLSocket.
+    # See also OpenSSL::SSL::SSLSocket#accept.
     class SSLServer
       include SocketForwarder
-      # When true then #accept works exactly the same as TCPServer#accept
+
+      # When set to +true+, #accept will immediately perform the SSL/TLS
+      # handshake after accepting a TCP connection. Defaults to +true+.
+      #
+      # *NOTE*: #accept performs the SSL/TLS handshake synchronously. A slow
+      # client can therefore prevent the server from accepting new connections
+      # indefinitely. For this reason, SSLServer is deprecated.
       attr_accessor :start_immediately
 
       # Creates a new instance of SSLServer.
@@ -486,7 +505,7 @@ module OpenSSL
       def initialize(svr, ctx)
         @svr = svr
         @ctx = ctx
-        unless ctx.session_id_context
+        if !ctx.frozen? && !ctx.session_id_context
           # see #6137 - session id may not exceed 32 bytes
           prng = ::Random.new($0.hash)
           session_id = prng.bytes(16).unpack1('H*')
@@ -511,6 +530,8 @@ module OpenSSL
       end
 
       # Works similar to TCPServer#accept.
+      #
+      # *NOTE*: SSLServer is deprecated. See #start_immediately for details.
       def accept
         # Socket#accept returns [socket, addrinfo].
         # TCPServer#accept returns a socket.

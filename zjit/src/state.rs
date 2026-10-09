@@ -1,6 +1,6 @@
 //! Runtime state of ZJIT.
 
-use crate::codegen::{gen_entry_trampoline, gen_exit_trampoline, gen_exit_trampoline_with_counter, gen_function_stub_hit_trampoline};
+use crate::codegen::{gen_entry_trampoline, gen_exit_trampoline, gen_function_stub_hit_trampoline, gen_materialize_exit_trampoline, gen_materialize_exit_trampoline_with_counter};
 use crate::cruby::{self, rb_bug_panic_hook, rb_vm_insn_count, src_loc, EcPtr, Qnil, Qtrue, rb_profile_frames, rb_profile_frame_full_label, rb_profile_frame_absolute_path, rb_profile_frame_path, VALUE, VM_INSTRUCTION_SIZE, with_vm_lock, rust_str_to_id, rb_funcallv, rb_const_get, rb_cRubyVM};
 use crate::cruby_methods;
 use cruby::{ID, rb_callable_method_entry, get_def_method_serial, rb_gc_register_mark_object, ruby_str_to_rust_string_result};
@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use crate::invariants::Invariants;
 use crate::asm::CodeBlock;
 use crate::options::{get_option, rb_zjit_prepare_options};
-use crate::jit_frame::JITFrame;
+use crate::jit_frame::{JITFrame, JITFrameAllocator};
 use crate::stats::{Counters, InsnCounters, PerfettoTracer};
 use crate::virtualmem::CodePtr;
 use std::sync::atomic::AtomicUsize;
@@ -19,6 +19,15 @@ use std::ptr::null;
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut rb_zjit_entry: *const u8 = null();
+
+/// Whether ZJIT is compiling. Starts as false until ZJIT is enabled, so the
+/// interpreter doesn't need to check rb_zjit_enabled_p before it. Set back to
+/// false when we run out of executable memory, in which case the interpreter
+/// stops incrementing ISEQ call counters so that ISEQs that will never be
+/// compiled stop dirtying CoW pages after fork.
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut rb_zjit_compiling_p: bool = false;
 
 /// Like rb_zjit_enabled_p, but for Rust code.
 pub fn zjit_enabled_p() -> bool {
@@ -51,8 +60,11 @@ pub struct ZJITState {
     /// Trampoline to side-exit without restoring PC or the stack
     exit_trampoline: CodePtr,
 
-    /// Trampoline to side-exit and increment exit_compilation_failure
-    exit_trampoline_with_counter: CodePtr,
+    /// Trampoline to materialize JIT frames before side-exiting
+    materialize_exit_trampoline: CodePtr,
+
+    /// Trampoline to materialize JIT frames and increment exit_compilation_failure
+    materialize_exit_trampoline_with_counter: CodePtr,
 
     /// Trampoline to call function_stub_hit
     function_stub_hit_trampoline: CodePtr,
@@ -74,6 +86,11 @@ pub struct ZJITState {
 
     /// Frame metadata for ISEQ and C calls that are known at compile time
     jit_frames: Vec<*mut JITFrame>,
+
+    /// Bump allocator that serves JITFrame allocations from address space below
+    /// INT32_MAX, so that call sites can store frame pointers as 32-bit immediates.
+    /// None when the platform cannot provide low memory.
+    jit_frame_allocator: Option<JITFrameAllocator>,
 }
 
 /// Tracks the initialization progress
@@ -126,9 +143,10 @@ impl ZJITState {
 
         let entry_trampoline = gen_entry_trampoline(&mut cb).unwrap().raw_ptr(&cb);
         let exit_trampoline = gen_exit_trampoline(&mut cb).unwrap();
+        let materialize_exit_trampoline = gen_materialize_exit_trampoline(&mut cb, exit_trampoline).unwrap();
         let function_stub_hit_trampoline = gen_function_stub_hit_trampoline(&mut cb).unwrap();
 
-        let perfetto_tracer = if get_option!(trace_side_exits).is_some() || get_option!(trace_compiles) || get_option!(trace_invalidation) {
+        let perfetto_tracer = if get_option!(trace_side_exits).is_some() || get_option!(trace_compiles) || get_option!(trace_invalidation) || get_option!(trace_fallbacks) {
             Some(PerfettoTracer::new())
         } else {
             None
@@ -144,14 +162,16 @@ impl ZJITState {
             assert_compiles: false,
             method_annotations,
             exit_trampoline,
+            materialize_exit_trampoline,
+            materialize_exit_trampoline_with_counter: materialize_exit_trampoline,
             function_stub_hit_trampoline,
-            exit_trampoline_with_counter: exit_trampoline,
             full_frame_cfunc_counter_pointers: HashMap::new(),
             not_annotated_frame_cfunc_counter_pointers: HashMap::new(),
             ccall_counter_pointers: HashMap::new(),
             iseq_calls_count_pointers: HashMap::new(),
             perfetto_tracer,
             jit_frames: vec![],
+            jit_frame_allocator: JITFrameAllocator::new(),
         };
         unsafe { ZJIT_STATE = Enabled(zjit_state); }
 
@@ -160,8 +180,8 @@ impl ZJITState {
         // on the counter, so ZJIT_STATE needs to be initialized first.
         if get_option!(stats) {
             let cb = ZJITState::get_code_block();
-            let code_ptr = gen_exit_trampoline_with_counter(cb, exit_trampoline).unwrap();
-            ZJITState::get_instance().exit_trampoline_with_counter = code_ptr;
+            let code_ptr = gen_materialize_exit_trampoline_with_counter(cb, materialize_exit_trampoline).unwrap();
+            ZJITState::get_instance().materialize_exit_trampoline_with_counter = code_ptr;
         }
 
         entry_trampoline
@@ -193,6 +213,11 @@ impl ZJITState {
 
     pub fn get_jit_frames() -> &'static mut Vec<*mut JITFrame> {
         &mut ZJITState::get_instance().jit_frames
+    }
+
+    /// Get a mutable reference to the JITFrame allocator
+    pub fn get_jit_frame_allocator() -> Option<&'static mut JITFrameAllocator> {
+        ZJITState::get_instance().jit_frame_allocator.as_mut()
     }
 
     pub fn get_method_annotations() -> &'static cruby_methods::Annotations {
@@ -288,9 +313,14 @@ impl ZJITState {
         ZJITState::get_instance().exit_trampoline
     }
 
-    /// Return a code pointer to the exit trampoline for function stubs
-    pub fn get_exit_trampoline_with_counter() -> CodePtr {
-        ZJITState::get_instance().exit_trampoline_with_counter
+    /// Return a code pointer to the materialize_exit trampoline
+    pub fn get_materialize_exit_trampoline() -> CodePtr {
+        ZJITState::get_instance().materialize_exit_trampoline
+    }
+
+    /// Return a code pointer to the materialize_exit trampoline for function stubs
+    pub fn get_materialize_exit_trampoline_with_counter() -> CodePtr {
+        ZJITState::get_instance().materialize_exit_trampoline_with_counter
     }
 
     /// Return a code pointer to the function stub hit trampoline
@@ -400,7 +430,10 @@ fn zjit_enable() {
 
         // ZJIT enabled and initialized successfully
         assert!(unsafe{ rb_zjit_entry == null() });
-        unsafe { rb_zjit_entry = zjit_entry; }
+        unsafe {
+            rb_zjit_entry = zjit_entry;
+            rb_zjit_compiling_p = true;
+        }
     });
 
     if result.is_err() {
@@ -439,7 +472,7 @@ pub extern "C" fn rb_zjit_assert_compiles(_ec: EcPtr, _self: VALUE) -> VALUE {
 }
 
 /// Resolve a profile frame VALUE to a human-readable "label (path)" string.
-fn resolve_frame_label(frame: VALUE) -> String {
+fn resolve_frame_label(frame: VALUE, line_number: i32) -> String {
     unsafe {
         let label_str = ruby_str_to_rust_string_result(rb_profile_frame_full_label(frame)).unwrap_or("<unknown>".into());
 
@@ -447,7 +480,7 @@ fn resolve_frame_label(frame: VALUE) -> String {
         let path = if path.nil_p() { rb_profile_frame_path(frame) } else { path };
         let path_str = ruby_str_to_rust_string_result(path).unwrap_or("<unknown>".into());
 
-        format!("{label_str} ({path_str})")
+        format!("{label_str} ({path_str}:{line_number})")
     }
 }
 
@@ -486,25 +519,63 @@ pub extern "C" fn rb_zjit_record_exit_stack(reason: *const std::ffi::c_char) {
     tracer.write_event("side_exit", reason_str, &frames);
 }
 
+/// Record a backtrace with ZJIT fallbacks as a Perfetto trace event
+#[unsafe(no_mangle)]
+pub extern "C" fn rb_zjit_record_fallback_stack(reason: *const std::ffi::c_char) {
+    if !zjit_enabled_p() || !get_option!(trace_fallbacks) {
+        return;
+    }
+
+    let tracer = match ZJITState::get_tracer() {
+        Some(t) => t,
+        None => return,
+    };
+
+    // When `trace_fallbacks_sample_interval` is non-zero, apply sampling.
+    if get_option!(trace_fallbacks_sample_interval) != 0 {
+        if tracer.skipped_samples < get_option!(trace_fallbacks_sample_interval) {
+            tracer.skipped_samples += 1;
+            return;
+        } else {
+            tracer.skipped_samples = 0;
+        }
+    }
+
+    // Collect profile frames
+    let frames = capture_ruby_frames();
+
+    // Get the reason string
+    let reason_str = if reason.is_null() {
+        "unknown"
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(reason).to_str().unwrap_or("unknown") }
+    };
+
+    tracer.write_event("fallback", reason_str, &frames);
+}
+
 /// Wrap a closure in a Perfetto duration event with category "invalidation"
 /// and a Ruby backtrace captured on the begin event.
-pub fn trace_invalidation<F, R>(reason: &str, func: F) -> R where F: FnOnce() -> R {
+pub fn trace_invalidation<RF, F, R>(reason_func: RF, func: F) -> R
+    where RF: FnOnce() -> String, F: FnOnce() -> R {
     if !get_option!(trace_invalidation) {
         return func();
     }
 
     // Capture backtrace and emit begin event before patching
     let frames = capture_ruby_frames();
+    let mut reason: String = "".into();
     if let Some(tracer) = ZJITState::get_tracer() {
         let ts = tracer.elapsed_ns();
-        tracer.write_duration_begin("invalidation", reason, ts, &frames);
+        reason = reason_func();
+        tracer.write_duration_begin("invalidation", &reason, ts, &frames);
     }
 
     let result = func();
 
     if let Some(tracer) = ZJITState::get_tracer() {
         let ts = tracer.elapsed_ns();
-        tracer.write_duration_end("invalidation", reason, ts);
+        tracer.write_duration_end("invalidation", &reason, ts);
     }
     result
 }
@@ -526,6 +597,6 @@ fn capture_ruby_frames() -> Vec<String> {
 
     // Resolve each frame to a human-readable string (top frame first)
     (0..stack_length as usize)
-        .map(|i| resolve_frame_label(frames_buffer[i]))
+        .map(|i| resolve_frame_label(frames_buffer[i], lines_buffer[i]))
         .collect()
 }

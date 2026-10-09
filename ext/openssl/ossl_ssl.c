@@ -36,7 +36,8 @@ VALUE cSSLSocket;
 static VALUE eSSLErrorWaitReadable;
 static VALUE eSSLErrorWaitWritable;
 
-static ID id_call, ID_callback_state, id_npn_protocols_encoded, id_each;
+static ID id_call, ID_callback_state, id_npn_protocols_encoded, id_each,
+          id_original_context;
 static VALUE sym_exception, sym_wait_readable, sym_wait_writable;
 
 static ID id_i_cert_store, id_i_ca_file, id_i_ca_path, id_i_verify_mode,
@@ -56,7 +57,7 @@ static void
 ossl_sslctx_mark(void *ptr)
 {
     SSL_CTX *ctx = ptr;
-    rb_gc_mark((VALUE)SSL_CTX_get_ex_data(ctx, ossl_sslctx_ex_ptr_idx));
+    rb_gc_mark_movable((VALUE)SSL_CTX_get_ex_data(ctx, ossl_sslctx_ex_ptr_idx));
 }
 
 static void
@@ -65,12 +66,25 @@ ossl_sslctx_free(void *ptr)
     SSL_CTX_free(ptr);
 }
 
+static void
+ossl_sslctx_compact(void *ptr)
+{
+    SSL_CTX *ctx = ptr;
+    VALUE self = (VALUE)SSL_CTX_get_ex_data(ctx, ossl_sslctx_ex_ptr_idx);
+    if (self) {
+        (void)SSL_CTX_set_ex_data(ctx, ossl_sslctx_ex_ptr_idx,
+                                  (void *)rb_gc_location(self));
+    }
+}
+
 static const rb_data_type_t ossl_sslctx_type = {
-    "OpenSSL/SSL/CTX",
-    {
-        ossl_sslctx_mark, ossl_sslctx_free,
+    .wrap_struct_name = "OpenSSL/SSL/CTX",
+    .function = {
+        .dmark = ossl_sslctx_mark,
+        .dfree = ossl_sslctx_free,
+        .dcompact = ossl_sslctx_compact,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED,
+    .flags = RUBY_TYPED_THREAD_SAFE_FREE | RUBY_TYPED_WB_PROTECTED,
 };
 
 static VALUE
@@ -566,12 +580,21 @@ ssl_npn_select_cb_common(SSL *ssl, VALUE cb, const unsigned char **out,
     return SSL_TLSEXT_ERR_OK;
 }
 
+static VALUE
+ossl_sslctx_obj_from_ssl(const SSL *ssl)
+{
+    SSL_CTX *ctx = SSL_get_SSL_CTX(ssl);
+
+    return (VALUE)SSL_CTX_get_ex_data(ctx, ossl_sslctx_ex_ptr_idx);
+}
+
 #ifdef OSSL_USE_NEXTPROTONEG
 static int
 ssl_npn_advertise_cb(SSL *ssl, const unsigned char **out, unsigned int *outlen,
                      void *arg)
 {
-    VALUE protocols = rb_attr_get((VALUE)arg, id_npn_protocols_encoded);
+    VALUE protocols = rb_attr_get(ossl_sslctx_obj_from_ssl(ssl),
+                                  id_npn_protocols_encoded);
 
     *out = (const unsigned char *) RSTRING_PTR(protocols);
     *outlen = RSTRING_LENINT(protocols);
@@ -585,7 +608,7 @@ ssl_npn_select_cb(SSL *ssl, unsigned char **out, unsigned char *outlen,
 {
     VALUE sslctx_obj, cb;
 
-    sslctx_obj = (VALUE) arg;
+    sslctx_obj = ossl_sslctx_obj_from_ssl(ssl);
     cb = rb_attr_get(sslctx_obj, id_i_npn_select_cb);
 
     return ssl_npn_select_cb_common(ssl, cb, (const unsigned char **)out,
@@ -599,7 +622,7 @@ ssl_alpn_select_cb(SSL *ssl, const unsigned char **out, unsigned char *outlen,
 {
     VALUE sslctx_obj, cb;
 
-    sslctx_obj = (VALUE) arg;
+    sslctx_obj = ossl_sslctx_obj_from_ssl(ssl);
     cb = rb_attr_get(sslctx_obj, id_i_alpn_select_cb);
 
     return ssl_npn_select_cb_common(ssl, cb, out, outlen, in, inlen);
@@ -627,11 +650,21 @@ ossl_sslctx_get_options(VALUE self)
 {
     SSL_CTX *ctx;
     GetSSLCTX(self, ctx);
+
     /*
-     * Do explicit cast because SSL_CTX_get_options() returned (signed) long in
-     * OpenSSL before 1.1.0.
+     * SSL_CTX_get_options() returns different types in libssl variants, and
+     * we want to treat them as a non-negative Integer in Ruby:
+     *   - uint64_t in OpenSSL >= 3
+     *   - unsigned long in OpenSSL >= 1.1
+     *   - long in OpenSSL <= 1.0.2 and LibreSSL 4.3 (latest), with all 32 bits
+     *     used for options.
+     *   - uint32_t in AWS-LC 5.0.0 (latest)
      */
-    return ULONG2NUM((unsigned long)SSL_CTX_get_options(ctx));
+#ifdef OSSL_SIZEOF_SSL_OPTIONS_IS_8
+    return UINT64T2NUM((uint64_t)SSL_CTX_get_options(ctx));
+#else
+    return UINT2NUM((uint32_t)SSL_CTX_get_options(ctx));
+#endif
 }
 
 /*
@@ -655,13 +688,13 @@ ossl_sslctx_set_options(VALUE self, VALUE options)
     rb_check_frozen(self);
     GetSSLCTX(self, ctx);
 
+#ifdef OSSL_SIZEOF_SSL_OPTIONS_IS_8
+    uint64_t opts = NIL_P(options) ? SSL_OP_ALL : NUM2UINT64T(options);
+#else
+    uint32_t opts = NIL_P(options) ? SSL_OP_ALL : NUM2UINT(options);
+#endif
     SSL_CTX_clear_options(ctx, SSL_CTX_get_options(ctx));
-
-    if (NIL_P(options)) {
-        SSL_CTX_set_options(ctx, SSL_OP_ALL);
-    } else {
-        SSL_CTX_set_options(ctx, NUM2ULONG(options));
-    }
+    SSL_CTX_set_options(ctx, opts);
 
     return self;
 }
@@ -784,11 +817,11 @@ ossl_sslctx_setup(VALUE self)
     if (!NIL_P(val)) {
         VALUE encoded = ssl_encode_npn_protocols(val);
         rb_ivar_set(self, id_npn_protocols_encoded, encoded);
-        SSL_CTX_set_next_protos_advertised_cb(ctx, ssl_npn_advertise_cb, (void *)self);
+        SSL_CTX_set_next_protos_advertised_cb(ctx, ssl_npn_advertise_cb, NULL);
         OSSL_Debug("SSL NPN advertise callback added");
     }
     if (RTEST(rb_attr_get(self, id_i_npn_select_cb))) {
-        SSL_CTX_set_next_proto_select_cb(ctx, ssl_npn_select_cb, (void *) self);
+        SSL_CTX_set_next_proto_select_cb(ctx, ssl_npn_select_cb, NULL);
         OSSL_Debug("SSL NPN select callback added");
     }
 #endif
@@ -804,7 +837,7 @@ ossl_sslctx_setup(VALUE self)
         OSSL_Debug("SSL ALPN values added");
     }
     if (RTEST(rb_attr_get(self, id_i_alpn_select_cb))) {
-        SSL_CTX_set_alpn_select_cb(ctx, ssl_alpn_select_cb, (void *) self);
+        SSL_CTX_set_alpn_select_cb(ctx, ssl_alpn_select_cb, NULL);
         OSSL_Debug("SSL ALPN select callback added");
     }
 
@@ -887,11 +920,16 @@ parse_proto_version(VALUE str)
  * call-seq:
  *    ctx.min_version = OpenSSL::SSL::TLS1_2_VERSION
  *    ctx.min_version = :TLS1_2
+ *    ctx.min_version = 0
  *    ctx.min_version = nil
  *
- * Sets the lower bound on the supported SSL/TLS protocol version. The
+ * Sets the lower bound of the supported SSL/TLS protocol version range. The
  * version may be specified by an integer constant named
- * OpenSSL::SSL::*_VERSION, a Symbol, or +nil+ which means "any version".
+ * OpenSSL::SSL::*_VERSION or a Symbol. A value of +0+ or +nil+ leaves the
+ * lower bound unspecified.
+ *
+ * See also #security_level=, which may further restrict the available protocol
+ * versions.
  *
  * === Example
  *   ctx = OpenSSL::SSL::SSLContext.new
@@ -920,9 +958,10 @@ ossl_sslctx_set_min_version(VALUE self, VALUE v)
  * call-seq:
  *    ctx.max_version = OpenSSL::SSL::TLS1_2_VERSION
  *    ctx.max_version = :TLS1_2
+ *    ctx.max_version = 0
  *    ctx.max_version = nil
  *
- * Sets the upper bound of the supported SSL/TLS protocol version. See
+ * Sets the upper bound of the supported SSL/TLS protocol version range. See
  * #min_version= for the possible values.
  */
 static VALUE
@@ -1140,11 +1179,13 @@ ossl_sslctx_set_client_sigalgs(VALUE self, VALUE v)
  *
  * Added in version 3.0. See also the man page SSL_CTX_set0_tmp_dh_pkey(3).
  *
- * Example:
+ * === Example
  *   ctx = OpenSSL::SSL::SSLContext.new
- *   ctx.tmp_dh = OpenSSL::DH.generate(2048)
- *   svr = OpenSSL::SSL::SSLServer.new(tcp_svr, ctx)
- *   Thread.new { svr.accept }
+ *   ctx.tmp_dh = OpenSSL::PKey::DH.generate(2048)
+ *   Thread.new {
+ *     ssl = OpenSSL::SSL::SSLSocket.new(tcp_svr.accept, ctx)
+ *     ssl.accept
+ *   }
  */
 static VALUE
 ossl_sslctx_set_tmp_dh(VALUE self, VALUE arg)
@@ -1192,9 +1233,11 @@ ossl_sslctx_set_tmp_dh(VALUE self, VALUE arg)
  *
  * === Example
  *   ctx1 = OpenSSL::SSL::SSLContext.new
- *   ctx1.groups = "X25519:P-256:P-224"
- *   svr = OpenSSL::SSL::SSLServer.new(tcp_svr, ctx1)
- *   Thread.new { svr.accept }
+ *   ctx1.groups = "X25519:P-256"
+ *   Thread.new {
+ *     ssl = OpenSSL::SSL::SSLSocket.new(tcp_svr.accept, ctx1)
+ *     ssl.accept
+ *   }
  *
  *   ctx2 = OpenSSL::SSL::SSLContext.new
  *   ctx2.groups = "P-256"
@@ -1567,7 +1610,7 @@ static void
 ossl_ssl_mark(void *ptr)
 {
     SSL *ssl = ptr;
-    rb_gc_mark((VALUE)SSL_get_ex_data(ssl, ossl_ssl_ex_ptr_idx));
+    rb_gc_mark_movable((VALUE)SSL_get_ex_data(ssl, ossl_ssl_ex_ptr_idx));
 }
 
 static void
@@ -1576,12 +1619,25 @@ ossl_ssl_free(void *ssl)
     SSL_free(ssl);
 }
 
+static void
+ossl_ssl_compact(void *ptr)
+{
+    SSL *ssl = ptr;
+    VALUE self = (VALUE)SSL_get_ex_data(ssl, ossl_ssl_ex_ptr_idx);
+    if (self) {
+        (void)SSL_set_ex_data(ssl, ossl_ssl_ex_ptr_idx,
+                              (void *)rb_gc_location(self));
+    }
+}
+
 const rb_data_type_t ossl_ssl_type = {
-    "OpenSSL/SSL",
-    {
-        ossl_ssl_mark, ossl_ssl_free,
+    .wrap_struct_name = "OpenSSL/SSL",
+    .function = {
+        .dmark = ossl_ssl_mark,
+        .dfree = ossl_ssl_free,
+        .dcompact = ossl_ssl_compact,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED,
+    .flags = RUBY_TYPED_THREAD_SAFE_FREE | RUBY_TYPED_WB_PROTECTED,
 };
 
 static VALUE
@@ -1643,24 +1699,22 @@ ossl_ssl_initialize(int argc, VALUE *argv, VALUE self)
     SSL *ssl;
     SSL_CTX *ctx;
 
-    TypedData_Get_Struct(self, SSL, &ossl_ssl_type, ssl);
-    if (ssl)
-        ossl_raise(eSSLError, "SSL already initialized");
-
-    if (rb_scan_args(argc, argv, "11:", &io, &v_ctx, &opts) == 1)
-        v_ctx = rb_funcall(cSSLContext, rb_intern("new"), 0);
-
+    argc = rb_scan_args(argc, argv, "11:", &io, &v_ctx, &opts);
     if (!kw_ids[0]) {
         kw_ids[0] = rb_intern_const("sync_close");
     }
-
     rb_get_kwargs(opts, kw_ids, 0, 1, kw_args);
+    ossl_want_uninitialized(self, &ossl_ssl_type);
+
+    if (argc == 1)
+        v_ctx = rb_funcall(cSSLContext, rb_intern("new"), 0);
     if (kw_args[0] != Qundef) {
         rb_ivar_set(self, id_i_sync_close, kw_args[0]);
     }
 
     GetSSLCTX(v_ctx, ctx);
     rb_ivar_set(self, id_i_context, v_ctx);
+    rb_ivar_set(self, id_original_context, v_ctx);
     ossl_sslctx_setup(v_ctx);
 
     if (rb_respond_to(io, rb_intern("nonblock=")))
@@ -1826,13 +1880,15 @@ ossl_start_ssl(VALUE self, int (*func)(SSL *), const char *funcname, VALUE opts)
             io_wait_readable(io);
             continue;
           case SSL_ERROR_SYSCALL:
+            if (saved_errno) {
+                ossl_clear_error();
 #ifdef __APPLE__
-            /* See ossl_ssl_write_internal() */
-            if (saved_errno == EPROTOTYPE)
-                continue;
+                /* See ossl_ssl_write_internal() */
+                if (saved_errno == EPROTOTYPE)
+                    continue;
 #endif
-            if (saved_errno)
                 rb_exc_raise(rb_syserr_new(saved_errno, funcname));
+            }
             /* fallthrough */
           default: {
               VALUE error_append = Qnil;
@@ -2030,20 +2086,20 @@ ossl_ssl_read_internal(int argc, VALUE *argv, VALUE self, int nonblock)
             io_wait_readable(io);
             break;
           case SSL_ERROR_SYSCALL:
+            if (saved_errno) {
+                ossl_clear_error();
+                rb_exc_raise(rb_syserr_new(saved_errno, "SSL_read"));
+            }
             if (!ERR_peek_error()) {
-                if (saved_errno)
-                    rb_exc_raise(rb_syserr_new(saved_errno, "SSL_read"));
-                else {
-                    /*
-                     * The underlying BIO returned 0. This is actually a
-                     * protocol error. But unfortunately, not all
-                     * implementations cleanly shutdown the TLS connection
-                     * but just shutdown/close the TCP connection. So report
-                     * EOF for now...
-                     */
-                    if (no_exception_p(opts)) { return Qnil; }
-                    rb_eof_error();
-                }
+                /*
+                 * The underlying BIO returned 0. This is actually a
+                 * protocol error. But unfortunately, not all
+                 * implementations cleanly shutdown the TLS connection
+                 * but just shutdown/close the TCP connection. So report
+                 * EOF for now...
+                 */
+                if (no_exception_p(opts)) { return Qnil; }
+                rb_eof_error();
             }
             /* fall through */
           default:
@@ -2140,18 +2196,20 @@ ossl_ssl_write_internal_safe(VALUE _args)
             io_wait_readable(io);
             continue;
           case SSL_ERROR_SYSCALL:
+            if (saved_errno) {
+                ossl_clear_error();
 #ifdef __APPLE__
-            /*
-             * It appears that send syscall can return EPROTOTYPE if the
-             * socket is being torn down. Retry to get a proper errno to
-             * make the error handling in line with the socket library.
-             * [Bug #14713] https://bugs.ruby-lang.org/issues/14713
-             */
-            if (saved_errno == EPROTOTYPE)
-                continue;
+                /*
+                 * It appears that send syscall can return EPROTOTYPE if the
+                 * socket is being torn down. Retry to get a proper errno to
+                 * make the error handling in line with the socket library.
+                 * [Bug #14713] https://bugs.ruby-lang.org/issues/14713
+                 */
+                if (saved_errno == EPROTOTYPE)
+                    continue;
 #endif
-            if (saved_errno)
                 rb_exc_raise(rb_syserr_new(saved_errno, "SSL_write"));
+            }
             /* fallthrough */
           default:
             ossl_raise(eSSLError, "SSL_write");
@@ -2196,9 +2254,12 @@ ossl_ssl_write(VALUE self, VALUE str)
 /*
  * call-seq:
  *    ssl.syswrite_nonblock(string) => Integer
+ *    ssl.syswrite_nonblock(string, opts) => Integer
  *
  * Writes _string_ to the SSL connection in a non-blocking manner.  Raises an
- * SSLError if writing would block.
+ * SSLError if writing would block.  If "exception: false" is passed, this
+ * method returns a symbol of :wait_readable or :wait_writable, rather than
+ * raising an exception.
  */
 static VALUE
 ossl_ssl_write_nonblock(int argc, VALUE *argv, VALUE self)
@@ -2385,7 +2446,14 @@ ossl_ssl_get_state(VALUE self)
  * call-seq:
  *    ssl.pending => Integer
  *
- * The number of bytes that are immediately available for reading.
+ * Returns the number of bytes buffered by the OpenSSL library and immediately
+ * available for reading with #sysread.
+ *
+ * This does not include data read ahead and buffered by SSLSocket. It may
+ * therefore return 0 even when data is available for reading with methods
+ * that are aware of the SSLSocket buffer, such as #read or #gets.
+ *
+ * See also the man page SSL_pending(3).
  */
 static VALUE
 ossl_ssl_pending(VALUE self)
@@ -2482,16 +2550,15 @@ ossl_ssl_get_verify_result(VALUE self)
 
 /*
  * call-seq:
- *    ssl.finished_message => "finished message"
+ *    ssl.finished_message -> string or nil
  *
- * Returns the last *Finished* message sent
- *
+ * Returns the contents of the last +Finished+ message sent to the peer.
  */
 static VALUE
 ossl_ssl_get_finished(VALUE self)
 {
     SSL *ssl;
-    char sizer[1], *buf;
+    char sizer[1];
     size_t len;
 
     GetSSL(self, ssl);
@@ -2500,23 +2567,23 @@ ossl_ssl_get_finished(VALUE self)
     if (len == 0)
         return Qnil;
 
-    buf = ALLOCA_N(char, len);
-    SSL_get_finished(ssl, buf, len);
-    return rb_str_new(buf, len);
+    VALUE str = rb_str_new(NULL, len);
+    SSL_get_finished(ssl, RSTRING_PTR(str), len);
+    return str;
 }
 
 /*
  * call-seq:
- *    ssl.peer_finished_message => "peer finished message"
+ *    ssl.peer_finished_message -> string or nil
  *
- * Returns the last *Finished* message received
- *
+ * Returns the contents of the last +Finished+ message expected to be sent
+ * by the peer.
  */
 static VALUE
 ossl_ssl_get_peer_finished(VALUE self)
 {
     SSL *ssl;
-    char sizer[1], *buf;
+    char sizer[1];
     size_t len;
 
     GetSSL(self, ssl);
@@ -2525,9 +2592,9 @@ ossl_ssl_get_peer_finished(VALUE self)
     if (len == 0)
         return Qnil;
 
-    buf = ALLOCA_N(char, len);
-    SSL_get_peer_finished(ssl, buf, len);
-    return rb_str_new(buf, len);
+    VALUE str = rb_str_new(NULL, len);
+    SSL_get_peer_finished(ssl, RSTRING_PTR(str), len);
+    return str;
 }
 
 /*
@@ -2749,8 +2816,8 @@ Init_ossl_ssl(void)
     /* Document-module: OpenSSL::SSL
      *
      * Use SSLContext to set up the parameters for a TLS (former SSL)
-     * connection. Both client and server TLS connections are supported,
-     * SSLSocket and SSLServer may be used in conjunction with an instance
+     * connection. Both client and server TLS connections are supported.
+     * SSLSocket may be used in conjunction with a TCPServer and an instance
      * of SSLContext to set up connections.
      */
     mSSL = rb_define_module_under(mOSSL, "SSL");
@@ -3176,98 +3243,128 @@ Init_ossl_ssl(void)
     rb_define_const(mSSL, "VERIFY_FAIL_IF_NO_PEER_CERT", INT2NUM(SSL_VERIFY_FAIL_IF_NO_PEER_CERT));
     rb_define_const(mSSL, "VERIFY_CLIENT_ONCE", INT2NUM(SSL_VERIFY_CLIENT_ONCE));
 
-    rb_define_const(mSSL, "OP_ALL", ULONG2NUM(SSL_OP_ALL));
+    rb_define_const(mSSL, "OP_ALL", UINT64T2NUM(SSL_OP_ALL));
+#ifdef SSL_OP_NO_EXTENDED_MASTER_SECRET /* OpenSSL 3.0 */
+    rb_define_const(mSSL, "OP_NO_EXTENDED_MASTER_SECRET", UINT64T2NUM(SSL_OP_NO_EXTENDED_MASTER_SECRET));
+#endif
 #ifdef SSL_OP_CLEANSE_PLAINTEXT /* OpenSSL 3.0 */
-    rb_define_const(mSSL, "OP_CLEANSE_PLAINTEXT", ULONG2NUM(SSL_OP_CLEANSE_PLAINTEXT));
+    rb_define_const(mSSL, "OP_CLEANSE_PLAINTEXT", UINT64T2NUM(SSL_OP_CLEANSE_PLAINTEXT));
 #endif
-    rb_define_const(mSSL, "OP_LEGACY_SERVER_CONNECT", ULONG2NUM(SSL_OP_LEGACY_SERVER_CONNECT));
+    rb_define_const(mSSL, "OP_LEGACY_SERVER_CONNECT", UINT64T2NUM(SSL_OP_LEGACY_SERVER_CONNECT));
 #ifdef SSL_OP_ENABLE_KTLS /* OpenSSL 3.0 */
-    rb_define_const(mSSL, "OP_ENABLE_KTLS", ULONG2NUM(SSL_OP_ENABLE_KTLS));
+    rb_define_const(mSSL, "OP_ENABLE_KTLS", UINT64T2NUM(SSL_OP_ENABLE_KTLS));
 #endif
-    rb_define_const(mSSL, "OP_TLSEXT_PADDING", ULONG2NUM(SSL_OP_TLSEXT_PADDING));
-    rb_define_const(mSSL, "OP_SAFARI_ECDHE_ECDSA_BUG", ULONG2NUM(SSL_OP_SAFARI_ECDHE_ECDSA_BUG));
+    rb_define_const(mSSL, "OP_TLSEXT_PADDING", UINT64T2NUM(SSL_OP_TLSEXT_PADDING));
+    rb_define_const(mSSL, "OP_SAFARI_ECDHE_ECDSA_BUG", UINT64T2NUM(SSL_OP_SAFARI_ECDHE_ECDSA_BUG));
 #ifdef SSL_OP_IGNORE_UNEXPECTED_EOF /* OpenSSL 3.0 */
-    rb_define_const(mSSL, "OP_IGNORE_UNEXPECTED_EOF", ULONG2NUM(SSL_OP_IGNORE_UNEXPECTED_EOF));
+    rb_define_const(mSSL, "OP_IGNORE_UNEXPECTED_EOF", UINT64T2NUM(SSL_OP_IGNORE_UNEXPECTED_EOF));
 #endif
 #ifdef SSL_OP_ALLOW_CLIENT_RENEGOTIATION /* OpenSSL 3.0 */
-    rb_define_const(mSSL, "OP_ALLOW_CLIENT_RENEGOTIATION", ULONG2NUM(SSL_OP_ALLOW_CLIENT_RENEGOTIATION));
+    rb_define_const(mSSL, "OP_ALLOW_CLIENT_RENEGOTIATION", UINT64T2NUM(SSL_OP_ALLOW_CLIENT_RENEGOTIATION));
 #endif
 #ifdef SSL_OP_DISABLE_TLSEXT_CA_NAMES /* OpenSSL 3.0 */
-    rb_define_const(mSSL, "OP_DISABLE_TLSEXT_CA_NAMES", ULONG2NUM(SSL_OP_DISABLE_TLSEXT_CA_NAMES));
+    rb_define_const(mSSL, "OP_DISABLE_TLSEXT_CA_NAMES", UINT64T2NUM(SSL_OP_DISABLE_TLSEXT_CA_NAMES));
 #endif
 #ifdef SSL_OP_ALLOW_NO_DHE_KEX /* OpenSSL 1.1.1, missing in LibreSSL */
-    rb_define_const(mSSL, "OP_ALLOW_NO_DHE_KEX", ULONG2NUM(SSL_OP_ALLOW_NO_DHE_KEX));
+    rb_define_const(mSSL, "OP_ALLOW_NO_DHE_KEX", UINT64T2NUM(SSL_OP_ALLOW_NO_DHE_KEX));
 #endif
-    rb_define_const(mSSL, "OP_DONT_INSERT_EMPTY_FRAGMENTS", ULONG2NUM(SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS));
-    rb_define_const(mSSL, "OP_NO_TICKET", ULONG2NUM(SSL_OP_NO_TICKET));
-    rb_define_const(mSSL, "OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION", ULONG2NUM(SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION));
-    rb_define_const(mSSL, "OP_NO_COMPRESSION", ULONG2NUM(SSL_OP_NO_COMPRESSION));
-    rb_define_const(mSSL, "OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION", ULONG2NUM(SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION));
+    rb_define_const(mSSL, "OP_DONT_INSERT_EMPTY_FRAGMENTS", UINT64T2NUM(SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS));
+    rb_define_const(mSSL, "OP_NO_TICKET", UINT64T2NUM(SSL_OP_NO_TICKET));
+    rb_define_const(mSSL, "OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION", UINT64T2NUM(SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION));
+    rb_define_const(mSSL, "OP_NO_COMPRESSION", UINT64T2NUM(SSL_OP_NO_COMPRESSION));
+    rb_define_const(mSSL, "OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION", UINT64T2NUM(SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION));
 #ifdef SSL_OP_NO_ENCRYPT_THEN_MAC /* OpenSSL 1.1.1, missing in LibreSSL */
-    rb_define_const(mSSL, "OP_NO_ENCRYPT_THEN_MAC", ULONG2NUM(SSL_OP_NO_ENCRYPT_THEN_MAC));
+    rb_define_const(mSSL, "OP_NO_ENCRYPT_THEN_MAC", UINT64T2NUM(SSL_OP_NO_ENCRYPT_THEN_MAC));
 #endif
 #ifdef SSL_OP_ENABLE_MIDDLEBOX_COMPAT /* OpenSSL 1.1.1, missing in LibreSSL */
-    rb_define_const(mSSL, "OP_ENABLE_MIDDLEBOX_COMPAT", ULONG2NUM(SSL_OP_ENABLE_MIDDLEBOX_COMPAT));
+    rb_define_const(mSSL, "OP_ENABLE_MIDDLEBOX_COMPAT", UINT64T2NUM(SSL_OP_ENABLE_MIDDLEBOX_COMPAT));
 #endif
 #ifdef SSL_OP_PRIORITIZE_CHACHA /* OpenSSL 1.1.1, missing in LibreSSL */
-    rb_define_const(mSSL, "OP_PRIORITIZE_CHACHA", ULONG2NUM(SSL_OP_PRIORITIZE_CHACHA));
+    rb_define_const(mSSL, "OP_PRIORITIZE_CHACHA", UINT64T2NUM(SSL_OP_PRIORITIZE_CHACHA));
 #endif
 #ifdef SSL_OP_NO_ANTI_REPLAY /* OpenSSL 1.1.1, missing in LibreSSL */
-    rb_define_const(mSSL, "OP_NO_ANTI_REPLAY", ULONG2NUM(SSL_OP_NO_ANTI_REPLAY));
+    rb_define_const(mSSL, "OP_NO_ANTI_REPLAY", UINT64T2NUM(SSL_OP_NO_ANTI_REPLAY));
 #endif
-    rb_define_const(mSSL, "OP_NO_SSLv3", ULONG2NUM(SSL_OP_NO_SSLv3));
-    rb_define_const(mSSL, "OP_NO_TLSv1", ULONG2NUM(SSL_OP_NO_TLSv1));
-    rb_define_const(mSSL, "OP_NO_TLSv1_1", ULONG2NUM(SSL_OP_NO_TLSv1_1));
-    rb_define_const(mSSL, "OP_NO_TLSv1_2", ULONG2NUM(SSL_OP_NO_TLSv1_2));
-    rb_define_const(mSSL, "OP_NO_TLSv1_3", ULONG2NUM(SSL_OP_NO_TLSv1_3));
-    rb_define_const(mSSL, "OP_CIPHER_SERVER_PREFERENCE", ULONG2NUM(SSL_OP_CIPHER_SERVER_PREFERENCE));
-    rb_define_const(mSSL, "OP_TLS_ROLLBACK_BUG", ULONG2NUM(SSL_OP_TLS_ROLLBACK_BUG));
-#ifdef SSL_OP_NO_RENEGOTIATION /* OpenSSL 1.1.1, missing in LibreSSL */
-    rb_define_const(mSSL, "OP_NO_RENEGOTIATION", ULONG2NUM(SSL_OP_NO_RENEGOTIATION));
+    rb_define_const(mSSL, "OP_NO_SSLv3", UINT64T2NUM(SSL_OP_NO_SSLv3));
+    rb_define_const(mSSL, "OP_NO_TLSv1", UINT64T2NUM(SSL_OP_NO_TLSv1));
+    rb_define_const(mSSL, "OP_NO_TLSv1_1", UINT64T2NUM(SSL_OP_NO_TLSv1_1));
+    rb_define_const(mSSL, "OP_NO_TLSv1_2", UINT64T2NUM(SSL_OP_NO_TLSv1_2));
+    rb_define_const(mSSL, "OP_NO_TLSv1_3", UINT64T2NUM(SSL_OP_NO_TLSv1_3));
+    rb_define_const(mSSL, "OP_CIPHER_SERVER_PREFERENCE", UINT64T2NUM(SSL_OP_CIPHER_SERVER_PREFERENCE));
+    rb_define_const(mSSL, "OP_TLS_ROLLBACK_BUG", UINT64T2NUM(SSL_OP_TLS_ROLLBACK_BUG));
+#ifdef SSL_OP_NO_RENEGOTIATION /* OpenSSL 1.1.1 and LibreSSL 4.1.1 */
+    rb_define_const(mSSL, "OP_NO_RENEGOTIATION", UINT64T2NUM(SSL_OP_NO_RENEGOTIATION));
 #endif
-    rb_define_const(mSSL, "OP_CRYPTOPRO_TLSEXT_BUG", ULONG2NUM(SSL_OP_CRYPTOPRO_TLSEXT_BUG));
+    rb_define_const(mSSL, "OP_CRYPTOPRO_TLSEXT_BUG", UINT64T2NUM(SSL_OP_CRYPTOPRO_TLSEXT_BUG));
+#ifdef SSL_OP_NO_TX_CERTIFICATE_COMPRESSION /* OpenSSL 3.2 */
+    rb_define_const(mSSL, "OP_NO_TX_CERTIFICATE_COMPRESSION", UINT64T2NUM(SSL_OP_NO_TX_CERTIFICATE_COMPRESSION));
+#endif
+#ifdef SSL_OP_NO_RX_CERTIFICATE_COMPRESSION /* OpenSSL 3.2 */
+    rb_define_const(mSSL, "OP_NO_RX_CERTIFICATE_COMPRESSION", UINT64T2NUM(SSL_OP_NO_RX_CERTIFICATE_COMPRESSION));
+#endif
+#ifdef SSL_OP_ENABLE_KTLS_TX_ZEROCOPY_SENDFILE /* OpenSSL 3.2 */
+    rb_define_const(mSSL, "OP_ENABLE_KTLS_TX_ZEROCOPY_SENDFILE", UINT64T2NUM(SSL_OP_ENABLE_KTLS_TX_ZEROCOPY_SENDFILE));
+#endif
+#ifdef SSL_OP_PREFER_NO_DHE_KEX /* OpenSSL 3.3 */
+    rb_define_const(mSSL, "OP_PREFER_NO_DHE_KEX", UINT64T2NUM(SSL_OP_PREFER_NO_DHE_KEX));
+#endif
+#ifdef SSL_OP_LEGACY_EC_POINT_FORMATS /* OpenSSL 3.6 */
+    rb_define_const(mSSL, "OP_LEGACY_EC_POINT_FORMATS", UINT64T2NUM(SSL_OP_LEGACY_EC_POINT_FORMATS));
+#endif
+#ifdef SSL_OP_ECH_GREASE /* OpenSSL 4.0 */
+    rb_define_const(mSSL, "OP_ECH_GREASE", UINT64T2NUM(SSL_OP_ECH_GREASE));
+#endif
+#ifdef SSL_OP_ECH_TRIALDECRYPT /* OpenSSL 4.0 */
+    rb_define_const(mSSL, "OP_ECH_TRIALDECRYPT", UINT64T2NUM(SSL_OP_ECH_TRIALDECRYPT));
+#endif
+#ifdef SSL_OP_ECH_IGNORE_CID /* OpenSSL 4.0 */
+    rb_define_const(mSSL, "OP_ECH_IGNORE_CID", UINT64T2NUM(SSL_OP_ECH_IGNORE_CID));
+#endif
+#ifdef SSL_OP_ECH_GREASE_RETRY_CONFIG /* OpenSSL 4.0 */
+    rb_define_const(mSSL, "OP_ECH_GREASE_RETRY_CONFIG", UINT64T2NUM(SSL_OP_ECH_GREASE_RETRY_CONFIG));
+#endif
 
     /* SSL_OP_* flags for DTLS */
 #if 0
-    rb_define_const(mSSL, "OP_NO_QUERY_MTU", ULONG2NUM(SSL_OP_NO_QUERY_MTU));
-    rb_define_const(mSSL, "OP_COOKIE_EXCHANGE", ULONG2NUM(SSL_OP_COOKIE_EXCHANGE));
-    rb_define_const(mSSL, "OP_CISCO_ANYCONNECT", ULONG2NUM(SSL_OP_CISCO_ANYCONNECT));
+    rb_define_const(mSSL, "OP_NO_QUERY_MTU", UINT64T2NUM(SSL_OP_NO_QUERY_MTU));
+    rb_define_const(mSSL, "OP_COOKIE_EXCHANGE", UINT64T2NUM(SSL_OP_COOKIE_EXCHANGE));
+    rb_define_const(mSSL, "OP_CISCO_ANYCONNECT", UINT64T2NUM(SSL_OP_CISCO_ANYCONNECT));
 #endif
 
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_MICROSOFT_SESS_ID_BUG", ULONG2NUM(SSL_OP_MICROSOFT_SESS_ID_BUG));
+    rb_define_const(mSSL, "OP_MICROSOFT_SESS_ID_BUG", UINT64T2NUM(SSL_OP_MICROSOFT_SESS_ID_BUG));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_NETSCAPE_CHALLENGE_BUG", ULONG2NUM(SSL_OP_NETSCAPE_CHALLENGE_BUG));
+    rb_define_const(mSSL, "OP_NETSCAPE_CHALLENGE_BUG", UINT64T2NUM(SSL_OP_NETSCAPE_CHALLENGE_BUG));
     /* Deprecated in OpenSSL 0.9.8q and 1.0.0c. */
-    rb_define_const(mSSL, "OP_NETSCAPE_REUSE_CIPHER_CHANGE_BUG", ULONG2NUM(SSL_OP_NETSCAPE_REUSE_CIPHER_CHANGE_BUG));
+    rb_define_const(mSSL, "OP_NETSCAPE_REUSE_CIPHER_CHANGE_BUG", UINT64T2NUM(SSL_OP_NETSCAPE_REUSE_CIPHER_CHANGE_BUG));
     /* Deprecated in OpenSSL 1.0.1h and 1.0.2. */
-    rb_define_const(mSSL, "OP_SSLREF2_REUSE_CERT_TYPE_BUG", ULONG2NUM(SSL_OP_SSLREF2_REUSE_CERT_TYPE_BUG));
+    rb_define_const(mSSL, "OP_SSLREF2_REUSE_CERT_TYPE_BUG", UINT64T2NUM(SSL_OP_SSLREF2_REUSE_CERT_TYPE_BUG));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_MICROSOFT_BIG_SSLV3_BUFFER", ULONG2NUM(SSL_OP_MICROSOFT_BIG_SSLV3_BUFFER));
+    rb_define_const(mSSL, "OP_MICROSOFT_BIG_SSLV3_BUFFER", UINT64T2NUM(SSL_OP_MICROSOFT_BIG_SSLV3_BUFFER));
     /* Deprecated in OpenSSL 0.9.7h and 0.9.8b. */
-    rb_define_const(mSSL, "OP_MSIE_SSLV2_RSA_PADDING", ULONG2NUM(SSL_OP_MSIE_SSLV2_RSA_PADDING));
+    rb_define_const(mSSL, "OP_MSIE_SSLV2_RSA_PADDING", UINT64T2NUM(SSL_OP_MSIE_SSLV2_RSA_PADDING));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_SSLEAY_080_CLIENT_DH_BUG", ULONG2NUM(SSL_OP_SSLEAY_080_CLIENT_DH_BUG));
+    rb_define_const(mSSL, "OP_SSLEAY_080_CLIENT_DH_BUG", UINT64T2NUM(SSL_OP_SSLEAY_080_CLIENT_DH_BUG));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_TLS_D5_BUG", ULONG2NUM(SSL_OP_TLS_D5_BUG));
+    rb_define_const(mSSL, "OP_TLS_D5_BUG", UINT64T2NUM(SSL_OP_TLS_D5_BUG));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_TLS_BLOCK_PADDING_BUG", ULONG2NUM(SSL_OP_TLS_BLOCK_PADDING_BUG));
+    rb_define_const(mSSL, "OP_TLS_BLOCK_PADDING_BUG", UINT64T2NUM(SSL_OP_TLS_BLOCK_PADDING_BUG));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_SINGLE_ECDH_USE", ULONG2NUM(SSL_OP_SINGLE_ECDH_USE));
+    rb_define_const(mSSL, "OP_SINGLE_ECDH_USE", UINT64T2NUM(SSL_OP_SINGLE_ECDH_USE));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_SINGLE_DH_USE", ULONG2NUM(SSL_OP_SINGLE_DH_USE));
+    rb_define_const(mSSL, "OP_SINGLE_DH_USE", UINT64T2NUM(SSL_OP_SINGLE_DH_USE));
     /* Deprecated in OpenSSL 1.0.1k and 1.0.2. */
-    rb_define_const(mSSL, "OP_EPHEMERAL_RSA", ULONG2NUM(SSL_OP_EPHEMERAL_RSA));
+    rb_define_const(mSSL, "OP_EPHEMERAL_RSA", UINT64T2NUM(SSL_OP_EPHEMERAL_RSA));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_NO_SSLv2", ULONG2NUM(SSL_OP_NO_SSLv2));
+    rb_define_const(mSSL, "OP_NO_SSLv2", UINT64T2NUM(SSL_OP_NO_SSLv2));
     /* Deprecated in OpenSSL 1.0.1. */
-    rb_define_const(mSSL, "OP_PKCS1_CHECK_1", ULONG2NUM(SSL_OP_PKCS1_CHECK_1));
+    rb_define_const(mSSL, "OP_PKCS1_CHECK_1", UINT64T2NUM(SSL_OP_PKCS1_CHECK_1));
     /* Deprecated in OpenSSL 1.0.1. */
-    rb_define_const(mSSL, "OP_PKCS1_CHECK_2", ULONG2NUM(SSL_OP_PKCS1_CHECK_2));
+    rb_define_const(mSSL, "OP_PKCS1_CHECK_2", UINT64T2NUM(SSL_OP_PKCS1_CHECK_2));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_NETSCAPE_CA_DN_BUG", ULONG2NUM(SSL_OP_NETSCAPE_CA_DN_BUG));
+    rb_define_const(mSSL, "OP_NETSCAPE_CA_DN_BUG", UINT64T2NUM(SSL_OP_NETSCAPE_CA_DN_BUG));
     /* Deprecated in OpenSSL 1.1.0. */
-    rb_define_const(mSSL, "OP_NETSCAPE_DEMO_CIPHER_CHANGE_BUG", ULONG2NUM(SSL_OP_NETSCAPE_DEMO_CIPHER_CHANGE_BUG));
+    rb_define_const(mSSL, "OP_NETSCAPE_DEMO_CIPHER_CHANGE_BUG", UINT64T2NUM(SSL_OP_NETSCAPE_DEMO_CIPHER_CHANGE_BUG));
 
 
     /*
@@ -3294,6 +3391,7 @@ Init_ossl_ssl(void)
 
     id_npn_protocols_encoded = rb_intern_const("npn_protocols_encoded");
     id_each = rb_intern_const("each");
+    id_original_context = rb_intern_const("original_context");
 
 #define DefIVarID(name) do \
     id_i_##name = rb_intern_const("@"#name); while (0)

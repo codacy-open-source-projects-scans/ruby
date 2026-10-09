@@ -50,6 +50,11 @@ class TestVariable < Test::Unit::TestCase
   end
 
   Zeus = Gods.clone
+  class Zeus
+    def ruler5
+      @@rule
+    end
+  end
 
   def test_cloned_allows_setting_cvar
     Zeus.class_variable_set(:@@rule, "Athena")
@@ -58,8 +63,33 @@ class TestVariable < Test::Unit::TestCase
     zeus = Zeus.new.ruler0
 
     assert_equal "Cronus", god
-    assert_equal "Athena", zeus
-    assert_not_equal god.object_id, zeus.object_id
+    assert_equal "Cronus", zeus
+
+    assert_equal "Athena", Zeus.new.ruler5
+
+    assert_equal "Cronus", Gods.class_variable_get(:@@rule)
+    assert_equal "Athena", Zeus.class_variable_get(:@@rule)
+  end
+
+  def test_raw_object_smallest_slot
+    assert_separately([], <<-"end;")
+      require 'objspace'
+      base_size = ObjectSpace.memsize_of(Object.new)
+
+      assert_equal base_size, ObjectSpace.memsize_of(Object.new)
+
+      object = Object.new
+      10.times do |i|
+        object.instance_variable_set("@iv_\#{i}", i)
+      end
+
+      assert_equal base_size, ObjectSpace.memsize_of(Object.new)
+
+      class TestClass
+      end
+
+      assert_equal base_size, ObjectSpace.memsize_of(TestClass.new)
+    end;
   end
 
   def test_singleton_class_included_class_variable
@@ -491,7 +521,6 @@ class TestVariable < Test::Unit::TestCase
   end
 
   def test_exivar_resize_with_compaction_stress
-    omit "compaction doesn't work well on s390x" if RUBY_PLATFORM =~ /s390x/ # https://github.com/ruby/ruby/pull/5077
     objs = 10_000.times.map do
       ExIvar.new
     end

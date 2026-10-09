@@ -9,6 +9,7 @@
 ************************************************/
 
 #include "rubysocket.h"
+#include <signal.h>
 
 // GETADDRINFO_IMPL == 0 : call getaddrinfo/getnameinfo directly
 // GETADDRINFO_IMPL == 1 : call getaddrinfo/getnameinfo without gvl (but uncancellable)
@@ -601,13 +602,9 @@ start:
     if (need_free) free_getaddrinfo_arg(arg);
 
     if (timedout) {
-        if (arg->ai) {
-            rsock_raise_user_specified_timeout(arg->ai, Qnil, Qnil);
-        } else {
-            VALUE host = rb_str_new_cstr(hostp);
-            VALUE port = rb_str_new_cstr(portp);
-            rsock_raise_user_specified_timeout(NULL, host, port);
-        }
+        VALUE host = rb_str_new_cstr(hostp);
+        VALUE port = rb_str_new_cstr(portp);
+        rsock_raise_user_specified_timeout(NULL, host, port);
     }
 
     // If the current thread is interrupted by asynchronous exception, the following raises the exception.
@@ -1295,7 +1292,7 @@ addrinfo_memsize(const void *ptr)
 static const rb_data_type_t addrinfo_type = {
     "socket/addrinfo",
     {addrinfo_mark, addrinfo_free, addrinfo_memsize,},
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_FROZEN_SHAREABLE | RUBY_TYPED_WB_PROTECTED,
+    0, 0, RUBY_TYPED_THREAD_SAFE_FREE | RUBY_TYPED_FROZEN_SHAREABLE | RUBY_TYPED_WB_PROTECTED,
 };
 
 static VALUE
@@ -1899,15 +1896,12 @@ rsock_inspect_sockaddr(struct sockaddr *sockaddr_arg, socklen_t socklen, VALUE r
 
 #if defined(AF_LINK) && defined(HAVE_TYPE_STRUCT_SOCKADDR_DL)
           /* AF_LINK is defined in 4.4BSD derivations since Net2.
-             link_ntoa is also defined at Net2.
-             However Debian GNU/kFreeBSD defines AF_LINK but
-             don't have link_ntoa.  */
+             link_ntoa is also defined at Net2.  */
           case AF_LINK:
           {
             /*
              * Simple implementation using link_ntoa():
-             * This doesn't work on Debian GNU/kFreeBSD 6.0.7 (squeeze).
-             * Also, the format is bit different.
+             * The format is bit different.
              *
              * rb_str_catf(ret, "LINK %s", link_ntoa(&sockaddr->dl));
              * break;
@@ -3175,7 +3169,6 @@ do_fast_fallback_getaddrinfo(void *ptr)
         IPV6_HOSTNAME_RESOLVED : IPV4_HOSTNAME_RESOLVED;
 
         if (shared->notify != -1 && (write(shared->notify, &notification, 1)) < 0) {
-            entry->err = errno;
             entry->has_syserr = true;
         }
         if (--(entry->refcount) == 0) {

@@ -50,8 +50,6 @@ wmap_memsize(const void *ptr)
     size_t size = 0;
     if (w->table) {
         size += st_memsize(w->table);
-        /* The key and value of the table each take sizeof(VALUE) in size. */
-        size += st_table_size(w->table) * (2 * sizeof(VALUE));
     }
 
     return size;
@@ -93,7 +91,7 @@ wmap_compact_table_replace_i(st_data_t *k, st_data_t *v, st_data_t d, int existi
 {
     RUBY_ASSERT((VALUE)*k == rb_gc_location((VALUE)*k));
 
-    *v = (st_data_t)rb_gc_location((VALUE)*v);
+    rb_gc_update_moved((VALUE *)v);
 
     return ST_CONTINUE;
 }
@@ -132,7 +130,7 @@ wmap_handle_weak_references(void *ptr)
     st_foreach(w->table, rb_wmap_handle_weak_references_i, (st_data_t)0);
 }
 
-const rb_data_type_t rb_weakmap_type = {
+static const rb_data_type_t rb_weakmap_type = {
     "weakmap",
     {
         NULL,
@@ -141,7 +139,7 @@ const rb_data_type_t rb_weakmap_type = {
         wmap_compact,
         wmap_handle_weak_references,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
+    0, 0, RUBY_TYPED_THREAD_SAFE_FREE | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
 
 static int
@@ -561,8 +559,6 @@ wkmap_memsize(const void *ptr)
     size_t size = 0;
     if (w->table) {
         size += st_memsize(w->table);
-        /* Each key of the table takes sizeof(VALUE) in size. */
-        size += st_table_size(w->table) * sizeof(VALUE);
     }
 
     return size;
@@ -583,8 +579,8 @@ wkmap_compact_table_replace(st_data_t *key_ptr, st_data_t *val_ptr, st_data_t _d
 {
     RUBY_ASSERT(existing);
 
-    *key_ptr = (st_data_t)rb_gc_location((VALUE)*key_ptr);
-    *val_ptr = (st_data_t)rb_gc_location((VALUE)*val_ptr);
+    rb_gc_update_moved((VALUE *)key_ptr);
+    rb_gc_update_moved((VALUE *)val_ptr);
 
     return ST_CONTINUE;
 }
@@ -627,7 +623,7 @@ static const rb_data_type_t rb_weakkeymap_type = {
         wkmap_compact,
         wkmap_handle_weak_references,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
+    0, 0, RUBY_TYPED_THREAD_SAFE_FREE | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
 
 static int
@@ -842,7 +838,7 @@ wkmap_clear(VALUE self)
  *  call-seq:
  *    map.inspect -> new_string
  *
- *  Returns a new String containing informations about the map:
+ *  Returns a new String containing information about the map:
  *
  *    m = ObjectSpace::WeakKeyMap.new
  *    m[key] = value

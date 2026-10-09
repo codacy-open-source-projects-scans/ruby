@@ -465,10 +465,10 @@ class TestHash < Test::Unit::TestCase
   def test_each_value
     res = []
     @cls[].each_value { |v| res << v }
-    assert_equal(0, [].length)
+    assert_equal(0, res.length)
 
     @h.each_value { |v| res << v }
-    assert_equal(0, [].length)
+    assert_equal(@h.size, res.length)
 
     expected = []
     @h.each { |k, v| expected << v }
@@ -617,7 +617,10 @@ class TestHash < Test::Unit::TestCase
   end
 
   def hash_hint hv
-    hv & 0xff
+    hint = hv & 0xff
+    # hash.c's ar_do_hash_hint() substitutes RHASH_AR_CLEARED_HINT (0x00)
+    # with RHASH_AR_SUBSTITUTION_HINT (0x01), so those two alias.
+    hint == 0 ? 1 : hint
   end
 
   def test_rehash
@@ -1327,6 +1330,11 @@ class TestHash < Test::Unit::TestCase
     assert_equal({1=>8, 2=>4, 3=>4, 5=>7}, h1.merge(h2, h3) {|k, v1, v2| k + v1 + v2 })
   end
 
+  def test_merge_during_gc
+    hash = @cls[a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8]
+    assert_equal(9, EnvUtil.under_gc_stress(0x04) { hash.merge(i: 9) }[:i])
+  end
+
   def test_merge_on_identhash
     h = @cls[1=>2,3=>4,5=>6]
     h.compare_by_identity
@@ -1958,10 +1966,23 @@ class TestHashOnly < Test::Unit::TestCase
       end
     end
     obj.hash_calls = 0
-    hash = {obj => 42}
+
+    ar_hash = {obj => 42}
     assert_equal(1, obj.hash_calls)
-    yield hash
+    yield ar_hash
     assert_equal(1, obj.hash_calls)
+
+    st_hash = {a:1, b:2, c:3, d:4, e:5, f:6, g:7, h:8, obj => 42}
+    assert_equal(2, obj.hash_calls)
+    yield st_hash
+    assert_equal(2, obj.hash_calls)
+
+    st_hash.keys.first(8).each do |key|
+      st_hash.delete(key)
+    end
+    assert_equal(2, obj.hash_calls)
+    yield st_hash
+    assert_equal(2, obj.hash_calls)
   end
 
   def test_select_reject_will_not_rehash
@@ -2102,6 +2123,36 @@ class TestHashOnly < Test::Unit::TestCase
     h1 = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 }
     # AR hash
     h2 = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 }
+    # Replace ST hash with AR hash
+    h1.replace(h2)
+    assert_equal(h2, h1)
+  end
+
+  def test_replace_ar_with_st
+    # AR hash
+    h1 = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 }
+    # ST hash
+    h2 = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 }
+    # Replace AR hash with ST hash
+    h1.replace(h2)
+    assert_equal(h2, h1)
+  end
+
+  def test_replace_ar_with_ar
+    # AR hash
+    h1 = { a: 1, b: 2 }
+    # AR hash
+    h2 = { a: 1 }
+    # Replace AR hash with AR hash
+    h1.replace(h2)
+    assert_equal(h2, h1)
+  end
+
+  def test_replace_st_with_st
+    # ST hash
+    h1 = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 }
+    # ST hash
+    h2 = { a: 9, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 }
     # Replace ST hash with AR hash
     h1.replace(h2)
     assert_equal(h2, h1)
@@ -2430,5 +2481,34 @@ class TestHashOnly < Test::Unit::TestCase
       hash[klass.new(val)] = val
     end
     assert_equal values, hash.values, "[ruby-core:121239] [Bug #21170]"
+  end
+
+  def test_ar_find_entry_hint_eql_mutates_hash
+    # ar_find_entry_hint caches bound and hints, then calls #eql? which
+    # can mutate the hash. If #eql? triggers AR->ST conversion the loop
+    # would read st_table memory as ar_table pairs.
+    key_class = Class.new do
+      attr_reader :v
+      def initialize(v, h = nil)
+        @v = v
+        @h = h
+      end
+      def hash; 0; end
+      def eql?(other)
+        if @h
+          # Trigger AR->ST conversion
+          @h[42] = 42
+        end
+        other.is_a?(self.class) && @v == other.v
+      end
+    end
+
+    h = {}
+    8.times { |i| h[key_class.new(i)] = i }
+
+    # Not in the hash, so ar_find_entry_hint checks every entry.
+    lookup_key = key_class.new(-1, h)
+
+    assert_equal nil, h[lookup_key]
   end
 end

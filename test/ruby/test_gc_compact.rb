@@ -1,11 +1,6 @@
 # frozen_string_literal: true
 require 'test/unit'
 
-if RUBY_PLATFORM =~ /s390x/
-  warn "Currently, it is known that the compaction does not work well on s390x; contribution is welcome https://github.com/ruby/ruby/pull/5077"
-  return
-end
-
 class TestGCCompact < Test::Unit::TestCase
   module CompactionSupportInspector
     def supports_compact?
@@ -108,6 +103,48 @@ class TestGCCompact < Test::Unit::TestCase
     def test_gc_verify_compaction_references_not_implemented
       assert_not_implemented(:verify_compaction_references)
     end
+  end
+
+  def test_global_compaction_cpu_intervals_do_not_overlap
+    omit 'default GC only' unless GC.config[:implementation] == 'default'
+    omit 'stress' if GC.stress
+    omit 'thread CPU clock unavailable' unless Process.const_defined?(:CLOCK_THREAD_CPUTIME_ID)
+    begin
+      Process.clock_gettime(Process::CLOCK_THREAD_CPUTIME_ID, :nanosecond)
+      Process.clock_getres(Process::CLOCK_THREAD_CPUTIME_ID, :nanosecond)
+    rescue SystemCallError, ArgumentError, NotImplementedError
+      omit 'thread CPU clock unavailable'
+    end
+
+    assert_separately([{'RUBY_MN_THREADS' => '0'}], __FILE__, __LINE__, <<~'RUBY', timeout: 60)
+      Warning[:experimental] = false
+      GC.disable
+      GC.measure_total_time = true
+      ready = Ractor::Port.new
+      worker = Ractor.new(ready) do |reply|
+        GC.disable
+        GC.measure_total_time = true
+        _objects = Array.new(100_000) { Object.new }
+        before = GC.total_time
+        reply << :ready
+        Ractor.receive
+        GC.total_time - before
+      end
+      ready.receive
+
+      clock = Process::CLOCK_THREAD_CPUTIME_ID
+      cpu_before = Process.clock_gettime(clock, :nanosecond)
+      gc_before = GC.total_time
+      5.times { GC.compact }
+      gc_ns = GC.total_time - gc_before
+      cpu_ns = Process.clock_gettime(clock, :nanosecond) - cpu_before
+
+      worker.send(:finish)
+      gc_ns += worker.value
+      allowance_ns = [1_000_000, 64 * Process.clock_getres(clock, :nanosecond)].max
+      assert_operator gc_ns, :>, 0
+      assert_operator gc_ns, :<=, cpu_ns + allowance_ns
+    RUBY
   end
 
   def test_gc_compact_stats
@@ -469,7 +506,7 @@ class TestGCCompact < Test::Unit::TestCase
     end;
   end
 
-  def test_moving_too_complex_generic_ivar
+  def test_moving_complex_generic_ivar
     omit "not compiled with SHAPE_DEBUG" unless defined?(RubyVM::Shape)
 
     assert_separately([], <<~RUBY)
@@ -483,6 +520,55 @@ class TestGCCompact < Test::Unit::TestCase
 
       assert_equal(123, obj.instance_variable_get(:@fixnum))
       assert_equal("hello", obj.instance_variable_get(:@str))
+    RUBY
+  end
+
+  def test_object_reembedding
+    assert_separately([], <<~'RUBY')
+      GC.auto_compact = true
+
+      objs = []
+      30.times.map { Class.new }.map do |k|
+        50.times.each do
+          obj = k.new
+          rand(0..30).times do |i|
+            obj.instance_variable_set(:"@v#{i}", i)
+          end
+          objs << obj
+        end
+      end
+
+      GC.verify_compaction_references(expand_heap: true, toward: :empty)
+      assert :ok
+    RUBY
+  end
+
+  # Regression test for [Bug #22237]
+  def test_str_and_ary_ptr_references_dont_go_stale_after_compaction
+    assert_separately([], <<~'RUBY')
+      input = "aaa"
+      iterations = 20_000
+      GC.auto_compact = true
+      Object.new # increases chance of memory corruption or segfault
+
+      iterations.times do |i|
+        s = input.tr("\u0080", "\u20AC").dup
+        assert_equal input, s
+      end
+    RUBY
+  end
+
+  def test_compact_with_ractor_blocked_in_receive
+    assert_normal_exit(<<~'RUBY', '[Bug #22389]', timeout: 30)
+      ready = Ractor::Port.new
+      Ractor.new(ready) do |port|
+        Array.new(10_000) { Object.new }
+        port << true
+        Ractor.receive
+      end
+      ready.receive
+      Thread.new { GC.compact }.join
+      GC.compact
     RUBY
   end
 end

@@ -701,6 +701,18 @@ end.join
     assert_equal(level, e.backtrace.size, feature6216)
   end
 
+  def test_stackoverflow_during_optional_arg_setup
+    # Filling in missing optional arguments of a block call must not
+    # clobber the caller's control frame when the VM stack is exhausted.
+    assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}", timeout: 60)
+    begin;
+      pr = proc {|a=1,b=1,c=1,d=1,e=1,f=1,g=1,h=1,i=1,j=1| pr.call }
+      40.times do |k|
+        eval((0...k).map { "v#{_1}=0;" }.join + "begin; pr.call; rescue SystemStackError => e; e.backtrace; end")
+      end
+    end;
+  end
+
   def test_machine_stackoverflow
     bug9109 = '[ruby-dev:47804] [Bug #9109]'
     assert_separately([], <<-SRC)
@@ -823,6 +835,43 @@ end.join
     ]
     assert_in_out_err([], <<-'end;', [], errs)
       END{n}; END{return}
+    end;
+  end
+
+  def test_multiple_error_handle
+    errs = [
+      /.*END3 \(RuntimeError\).*\n/,
+      /.*END2 \(RuntimeError\).*\n/,
+      /.*END1 \(RuntimeError\).*\n/,
+      /.*EXIT \(RuntimeError\).*\n/,
+    ]
+    assert_in_out_err([], <<-'end;', [], errs, success: false)
+      Signal.trap(:EXIT) {raise "EXIT"}
+      END{raise "END1"};
+      END{raise "END2"};
+      END{raise "END3"};
+    end;
+  end
+
+  def test_cause_in_exit_handler
+    errs = [
+      /.*outer \(RuntimeError\).*\n/,
+      /.*inner \(RuntimeError\).*\n/,
+    ]
+    assert_in_out_err([], <<-'end;', [], errs, success: false)
+      END{begin; raise "inner"; rescue; raise "outer"; end}
+    end;
+    assert_in_out_err([], <<-'end;', [], errs, success: false)
+      Signal.trap(:EXIT) {begin; raise "inner"; rescue; raise "outer"; end}
+    end;
+    errs = [
+      /.*previous \(RuntimeError\).*\n/,
+      /.*outer \(RuntimeError\).*\n/,
+      /.*middle \(RuntimeError\).*\n/,
+    ]
+    assert_in_out_err([], <<-'end;', [], errs, success: false)
+      END{begin; raise "middle"; rescue => e; raise "outer", cause: e; end}
+      END{raise "previous"}
     end;
   end
 
@@ -1441,7 +1490,11 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
   end
 
   def test_detailed_message_under_gc_compact_stress
-    omit "compaction doesn't work well on s390x" if RUBY_PLATFORM =~ /s390x/ # https://github.com/ruby/ruby/pull/5077
+    # The first error display lazily requires did_you_mean and friends; inside the
+    # block that library load costs one full mark+compact per allocation, enough to
+    # trip the parallel runner's no-response timeout.  Load it here instead.
+    RuntimeError.new("").detailed_message
+
     EnvUtil.under_gc_compact_stress do
       e = RuntimeError.new("foo\nbar\nbaz")
       assert_equal("foo (RuntimeError)\nbar\nbaz", e.detailed_message)

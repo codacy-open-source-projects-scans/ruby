@@ -145,7 +145,6 @@ getblockparamproxy
 (lindex_t idx, rb_num_t level)
 ()
 (VALUE val)
-// attr bool zjit_profile = true;
 {
     const VALUE *ep = vm_get_ep(GET_EP(), level);
     VM_ASSERT(VM_ENV_LOCAL_P(ep));
@@ -373,7 +372,7 @@ putspecialobject
 
 /* put string val. string will be copied. */
 DEFINE_INSN
-putstring
+dupstring
 (VALUE str)
 ()
 (VALUE val)
@@ -383,7 +382,7 @@ putstring
 
 /* put chilled string val. string will be copied but frozen in the future. */
 DEFINE_INSN
-putchilledstring
+dupchilledstring
 (VALUE str)
 ()
 (VALUE val)
@@ -429,9 +428,7 @@ toregexp
 // attr bool leaf = false;
 // attr rb_snum_t sp_inc = 1 - (rb_snum_t)cnt;
 {
-    const VALUE ary = rb_ary_tmp_new_from_values(0, cnt, STACK_ADDR_FROM_TOP(cnt));
-    val = rb_reg_new_ary(ary, (int)opt);
-    rb_ary_clear(ary);
+    val = rb_reg_new_from_values(cnt, STACK_ADDR_FROM_TOP(cnt), (int)opt);
 }
 
 /* intern str to Symbol and push it. */
@@ -440,6 +437,9 @@ intern
 ()
 (VALUE str)
 (VALUE sym)
+/* This instruction can raise EncodingError, thus can call
+ * EncodingError#initialize. */
+// attr bool leaf = false;
 {
     sym = rb_str_intern(str);
 }
@@ -591,11 +591,10 @@ newhash
     RUBY_DTRACE_CREATE_HOOK(HASH, num);
 
     if (num) {
-        val = rb_hash_new_with_size(num / 2);
-        rb_hash_bulk_insert(num, STACK_ADDR_FROM_TOP(num), val);
+        val = rb_hash_new_with_bulk_insert(num, STACK_ADDR_FROM_TOP(num));
     }
     else {
-        val = rb_hash_new();
+        val = rb_hash_new_capa(0);
     }
 }
 
@@ -1102,9 +1101,24 @@ invokesuper
 // attr rb_snum_t comptime_sp_inc = sp_inc_of_sendish(ci);
 // attr bool zjit_profile = true;
 {
-    VALUE bh = vm_caller_setup_arg_block(ec, GET_CFP(), cd->ci, blockiseq, true);
-    val = vm_sendish(ec, GET_CFP(), cd, bh, mexp_search_super);
+    struct rb_callinfo adjusted_ci = VM_CI_ON_STACK(vm_ci_mid(cd->ci),
+                                                   vm_ci_flag(cd->ci),
+                                                   vm_ci_argc(cd->ci),
+                                                   vm_ci_kwarg(cd->ci));
+    const struct rb_callcache *original_cc = rbimpl_atomic_ptr_load((void **)&cd->cc, RBIMPL_ATOMIC_ACQUIRE);
+    struct rb_call_data adjusted_cd = {
+        .ci = &adjusted_ci,
+        .cc = original_cc,
+    };
+
+    VALUE bh = vm_caller_setup_arg_block(ec, GET_CFP(), adjusted_cd.ci, blockiseq, true);
+    val = vm_sendish(ec, GET_CFP(), &adjusted_cd, bh, mexp_search_super);
     JIT_EXEC(ec, val);
+
+    if (original_cc != adjusted_cd.cc && vm_cc_markable(adjusted_cd.cc)) {
+        rbimpl_atomic_ptr_store((volatile void **)&cd->cc, (void *)adjusted_cd.cc, RBIMPL_ATOMIC_RELEASE);
+        RB_OBJ_WRITTEN(GET_ISEQ(), Qundef, adjusted_cd.cc);
+    }
 
     if (UNDEF_P(val)) {
         RESTORE_REGS();
@@ -1343,6 +1357,7 @@ opt_case_dispatch
 (..., VALUE key)
 ()
 // attr rb_snum_t sp_inc = -1;
+// attr bool zjit_profile = true;
 {
     OFFSET dst = vm_case_dispatch(hash, else_offset, key);
 

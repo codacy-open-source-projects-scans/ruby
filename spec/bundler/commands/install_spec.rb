@@ -1306,11 +1306,53 @@ RSpec.describe "bundle install with gem sources" do
     end
   end
 
+  describe "when using umask 002 and setgid bit", :permissions do
+    let(:gems_path) { bundled_app("vendor/#{Bundler.ruby_scope}/gems") }
+    let(:foo_path) { gems_path.join("foo-1.0.0") }
+
+    before do
+      build_repo4 do
+        build_gem "foo", "1.0.0" do |s|
+          s.write "CHANGELOG.md", "foo"
+        end
+      end
+
+      gemfile <<-G
+        source "https://gem.repo4"
+        gem 'foo'
+      G
+
+      FileUtils.mkdir_p(gems_path)
+      FileUtils.chmod("g+s", gems_path)
+    end
+
+    it "should create the gem directory with proper permissions" do
+      with_umask(0o002) do
+        bundle_config "path vendor"
+        bundle :install
+        expect(out).to include("Bundle complete!")
+        expect(err).to be_empty
+        # Linux's SysV-derived mkdir(2) propagates the set-group-ID bit
+        # from the parent directory to newly created subdirectories. BSD
+        # (including macOS) inherits the parent's group via mkdir(2) but
+        # does not copy the set-group-ID bit itself, so the expected
+        # mode differs by platform.
+        expected = RUBY_PLATFORM.include?("darwin") ? 0o0775 : 0o2775
+        expect(File.stat(foo_path).mode & 0o7777).to eq(expected)
+      end
+    end
+  end
+
   describe "parallel make" do
     before do
       unless Gem::Installer.private_method_defined?(:build_jobs)
         skip "This example is runnable when RubyGems::Installer implements `build_jobs`"
       end
+
+      # The make jobserver is a GNU make feature. On Windows extensions are built
+      # with nmake, which has no `-j` jobserver (and an inherited `-j` MAKEFLAGS
+      # even breaks nmake), so the slot count these examples assert never appears.
+      skip "The make jobserver is not available on Windows (nmake)" if mswin?
 
       @old_makeflags = ENV["MAKEFLAGS"]
       @gemspec = nil
@@ -1327,8 +1369,16 @@ RSpec.describe "bundle install with gem sources" do
           s.extensions = extension
 
           s.write(extension, extconf_code)
+          # A successful build no longer leaves gem_make.out behind. Force the
+          # build to fail at the make stage so the make command line, including
+          # the jobserver `-j`, is recorded in build_info for these assertions.
+          s.write("ext/mypsych/mypsych.c", "#error forced build failure for test")
         end
       end
+    end
+
+    def gem_make_out
+      File.read(File.join(@gemspec.build_info_dir, "#{@gemspec.full_name}.gem_make.out"))
     end
 
     after do
@@ -1339,43 +1389,37 @@ RSpec.describe "bundle install with gem sources" do
       end
     end
 
-    it "doesn't pass down -j to make when MAKEFLAGS is set" do
+    it "doesn't pass down -j to make when MAKEFLAGS is set", rubygems: ">= 4.1.0.a" do
       ENV["MAKEFLAGS"] = "-j1"
 
-      install_gemfile(<<~G, env: { "BUNDLE_JOBS" => "8" })
+      install_gemfile(<<~G, env: { "BUNDLE_JOBS" => "8" }, raise_on_error: false)
         source "https://gem.repo4"
         gem "mypsych"
       G
-
-      gem_make_out = File.read(File.join(@gemspec.extension_dir, "gem_make.out"))
 
       expect(gem_make_out).not_to include("make -j8")
     end
 
-    it "pass down the BUNDLE_JOBS to RubyGems when running the compilation of an extension" do
+    it "uses 3 slots from the available pool when running the compilation of an extension", rubygems: ">= 4.1.0.a" do
       ENV.delete("MAKEFLAGS")
 
-      install_gemfile(<<~G, env: { "BUNDLE_JOBS" => "8" })
+      install_gemfile(<<~G, env: { "BUNDLE_JOBS" => "8" }, raise_on_error: false)
         source "https://gem.repo4"
         gem "mypsych"
       G
 
-      gem_make_out = File.read(File.join(@gemspec.extension_dir, "gem_make.out"))
-
-      expect(gem_make_out).to include("make -j8")
+      expect(gem_make_out).to include("make -j3")
     end
 
-    it "uses nprocessors by default" do
+    it "consumes 3 slots from the pool when BUNDLE_JOBS isn't set", rubygems: ">= 4.1.0.a" do
       ENV.delete("MAKEFLAGS")
 
-      install_gemfile(<<~G)
+      install_gemfile(<<~G, raise_on_error: false)
         source "https://gem.repo4"
         gem "mypsych"
       G
 
-      gem_make_out = File.read(File.join(@gemspec.extension_dir, "gem_make.out"))
-
-      expect(gem_make_out).to include("make -j#{Etc.nprocessors + 1}")
+      expect(gem_make_out).to include("make -j3")
     end
   end
 
@@ -2018,6 +2062,41 @@ RSpec.describe "bundle install with gem sources" do
     expected_executables = [vendored_gems("bin/kamal").to_s]
     expected_executables << vendored_gems("bin/kamal.bat").to_s if Gem.win_platform?
     expect(Dir.glob(vendored_gems("bin/*"))).to eq(expected_executables)
+  end
+
+  it "preserves bundled native extensions when BUNDLE_CLEAN removes another gem" do
+    # The command-line/RUBYOPT -r bypasses gem activation under RUBY_BOX=1
+    # (https://bugs.ruby-lang.org/issues/22295)
+    skip "-r cannot activate gems under Ruby::Box" if defined?(Ruby::Box) && Ruby::Box.enabled?
+
+    build_repo4 do
+      build_gem "native_child", "1.0", &:add_c_extension
+      build_gem "native_parent", "1.0" do |s|
+        s.add_dependency "native_child", "1.0"
+      end
+      build_gem "cleanup_target", "1.0"
+      build_gem "cleanup_target", "2.0"
+    end
+
+    system_gems %w[native_child-1.0 native_parent-1.0 cleanup_target-1.0], gem_repo: gem_repo4
+
+    install_gemfile <<~G, env: { "BUNDLE_CLEAN" => "false", "BUNDLE_PATH" => "vendor/bundle" }
+      source "https://gem.repo4"
+      gem "native_parent"
+      gem "cleanup_target", "1.0"
+    G
+
+    extension_dir = Pathname.glob("#{vendored_gems}/extensions/*/*/native_child-1.0").first
+    expect(extension_dir).to exist
+
+    install_gemfile <<~G, env: { "BUNDLE_CLEAN" => "true", "BUNDLE_PATH" => "vendor/bundle", "RUBYOPT" => "-rnative_child" }
+      source "https://gem.repo4"
+      gem "native_parent"
+      gem "cleanup_target", "2.0"
+    G
+
+    expect(out).to include("Removing cleanup_target (1.0)")
+    expect(extension_dir).to exist
   end
 
   it "preserves lockfile versions conservatively" do

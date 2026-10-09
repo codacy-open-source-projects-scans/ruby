@@ -166,6 +166,18 @@ class TestTime < Test::Unit::TestCase
     }
   end
 
+  def test_new_from_string_modified_by_precision
+    str = "2020-12-25 00:00:00" + "0" * 1_000_000
+    obj = Object.new
+    obj.define_singleton_method(:to_int) do
+      str.clear
+      9
+    end
+    assert_raise_with_message(ArgumentError, /can't parse/) {
+      Time.new(str, precision: obj)
+    }
+  end
+
   def test_time_add()
     assert_equal(Time.utc(2000, 3, 21, 3, 30) + 3 * 3600,
                  Time.utc(2000, 3, 21, 6, 30))
@@ -722,7 +734,9 @@ class TestTime < Test::Unit::TestCase
     assert_predicate(zone, :valid_encoding?)
     if zone.ascii_only?
       assert_equal(Encoding::US_ASCII, zone.encoding)
-    else
+    elsif !/mswin|mingw/.match?(RUBY_PLATFORM)
+      # Windows takes the name from the CRT, which encodes it in the
+      # active code page rather than the locale one. [Bug #19383]
       enc = Encoding.default_internal || Encoding.find('locale')
       assert_equal(enc, zone.encoding)
     end
@@ -1434,9 +1448,12 @@ class TestTime < Test::Unit::TestCase
       end
     sizeof_vtm = RbConfig::SIZEOF["void*"] * 4 + 8
     data_size = GC::INTERNAL_CONSTANTS[:RVALUE_SIZE] + sizeof_timew + sizeof_vtm
-    # Round up to the smallest slot size that fits
-    slot_sizes = GC::INTERNAL_CONSTANTS[:HEAP_COUNT].times.map { |i| GC.stat_heap(i, :slot_size) }
-    expect = slot_sizes.find { |s| s >= data_size } || slot_sizes.last
+    expect = data_size
+    if GC::INTERNAL_CONSTANTS[:HEAP_COUNT]
+      # Round up to the smallest slot size that fits
+      slot_sizes = GC::INTERNAL_CONSTANTS[:HEAP_COUNT].times.map { |i| GC.stat_heap(i, :slot_size) }
+      expect = slot_sizes.find { |s| s >= data_size } || slot_sizes.last
+    end
     assert_operator ObjectSpace.memsize_of(t), :<=, expect
   rescue LoadError => e
     omit "failed to load objspace: #{e.message}"

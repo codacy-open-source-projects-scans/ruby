@@ -1,28 +1,124 @@
-use crate::cruby::{IseqPtr, VALUE, rb_gc_mark_movable, rb_gc_location};
+use std::alloc::{handle_alloc_error, Layout};
+use std::mem::{align_of, size_of};
+use std::ptr;
+
+use crate::cruby::{__IncompleteArrayField, IseqPtr, VALUE, rb_gc_mark_movable, rb_gc_location};
 use crate::cruby::zjit_jit_frame;
+use crate::codegen::iseq_may_write_block_code;
+use crate::options::get_option;
 use crate::state::ZJITState;
+use crate::stats::{incr_counter_by, Counter};
+use crate::virtualmem::VirtualMem;
 
 /// JITFrame struct is defined in zjit.h (the single source of truth) and
 /// imported into Rust via bindgen. See zjit.h for field documentation.
 pub type JITFrame = zjit_jit_frame;
 
+/// A bump allocator for JITFrame backed by address space below INT32_MAX.
+pub struct JITFrameAllocator {
+    /// Address space below `INT32_MAX`. Physical pages are mapped in on demand
+    /// and, since the region is never marked executable, stay read/write for the
+    /// life of the process.
+    virt_mem: VirtualMem,
+
+    /// Offset of the next free byte in `virt_mem`, or the region size once the
+    /// arena is exhausted.
+    cursor: usize,
+}
+
+impl JITFrameAllocator {
+    /// Reserve the arena's address space, or return None when the platform cannot
+    /// provide low memory.
+    pub fn new() -> Option<Self> {
+        // A tenth of --zjit-mem-size is reserved, not mapped: physical pages are
+        // mapped in one at a time as the bump cursor crosses into them. lobsters
+        // allocates up to 4MiB of JITFrames, well below the 12.8MiB default.
+        Some(JITFrameAllocator {
+            virt_mem: VirtualMem::alloc_low(get_option!(mem_bytes) / 10)?,
+            cursor: 0,
+        })
+    }
+
+    /// The number of bytes the allocator has mapped physical memory for.
+    pub fn mapped_bytes(&self) -> usize {
+        self.virt_mem.mapped_region_size()
+    }
+
+    /// Bump-allocate `layout` from the arena, or return null when it's full.
+    fn try_alloc(&mut self, layout: Layout) -> *mut u8 {
+        // The region start is page-aligned, so aligning the offset aligns the pointer.
+        debug_assert!(layout.align() <= self.virt_mem.system_page_size());
+        let start = self.cursor.next_multiple_of(layout.align());
+        let Some(end) = start.checked_add(layout.size()) else {
+            return ptr::null_mut();
+        };
+        if end > self.virt_mem.virtual_region_size() {
+            return ptr::null_mut();
+        }
+        // Touch the last byte of the allocation on first use: write_byte maps every
+        // page between the end of the mapped region and the byte it writes.
+        if end > self.virt_mem.mapped_region_size() {
+            let last_byte = self.virt_mem.start_ptr().add_bytes(end - 1);
+            if self.virt_mem.write_byte(last_byte, 0).is_err() {
+                // write_byte's bound check refuses the final page of the region, so
+                // treat any failure as permanent exhaustion instead of retrying on
+                // every allocation.
+                self.cursor = self.virt_mem.virtual_region_size();
+                return ptr::null_mut();
+            }
+        }
+        self.cursor = end;
+        self.virt_mem.start_ptr().add_bytes(start).raw_ptr(&self.virt_mem) as *mut u8
+    }
+}
+
 impl JITFrame {
-    /// Allocate a JITFrame on the heap, register it with ZJITState, and return
-    /// a raw pointer that remains valid for the lifetime of the process.
-    fn alloc(jit_frame: JITFrame) -> *const Self {
-        let raw_ptr = Box::into_raw(Box::new(jit_frame));
+    /// Allocate a JITFrame and its trailing stack map on the heap, register it
+    /// with ZJITState, and return a raw pointer that remains valid for the
+    /// lifetime of the process.
+    fn alloc(
+        pc: *const VALUE,
+        iseq: IseqPtr,
+        materialize_block_code: bool,
+        stack_size: usize,
+    ) -> *const Self {
+        // JITFrame ends with a flexible stack[] array, so allocate enough
+        // space for the fixed fields plus the requested stack map entries.
+        let frame_size = size_of::<JITFrame>()
+            .checked_add(stack_size.checked_mul(size_of::<VALUE>()).unwrap())
+            .unwrap();
+        let layout = Layout::from_size_align(frame_size, align_of::<JITFrame>()).unwrap();
+        // Prefer the low-address arena so that call sites can store this pointer
+        // as a 32-bit immediate. Falling back to the heap only costs code size.
+        let mut raw_ptr = match ZJITState::get_jit_frame_allocator() {
+            Some(arena) => arena.try_alloc(layout) as *mut JITFrame,
+            None => ptr::null_mut(),
+        };
+        if raw_ptr.is_null() {
+            raw_ptr = unsafe { std::alloc::alloc(layout) as *mut JITFrame };
+            if raw_ptr.is_null() {
+                handle_alloc_error(layout);
+            }
+            incr_counter_by(Counter::jit_frame_heap_bytes, layout.size() as u64);
+        }
+
+        unsafe {
+            ptr::write(raw_ptr, JITFrame {
+                pc,
+                iseq,
+                materialize_block_code,
+                stack_size: stack_size.try_into().unwrap(),
+                stack: __IncompleteArrayField::new(),
+            });
+        }
         ZJITState::get_jit_frames().push(raw_ptr);
         raw_ptr as *const _
     }
 
     /// Create a JITFrame for an ISEQ frame.
-    pub fn new_iseq(pc: *const VALUE, iseq: IseqPtr, materialize_block_code: bool) -> *const Self {
-        Self::alloc(JITFrame { pc, iseq, materialize_block_code })
-    }
-
-    /// Create a JITFrame for a C frame (no PC, no ISEQ).
-    pub fn new_cfunc() -> *const Self {
-        Self::alloc(JITFrame { pc: std::ptr::null(), iseq: std::ptr::null(), materialize_block_code: false })
+    pub fn new_iseq(pc: *const VALUE, iseq: IseqPtr, stack_size: usize) -> *const Self {
+        let materialize_block_code = !iseq_may_write_block_code(iseq);
+        Self::alloc(pc, iseq, materialize_block_code, stack_size)
     }
 
     /// Mark the iseq pointer for GC. Called from rb_zjit_root_mark.
@@ -85,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_materialize_two_frames() { // materialize caller frames on raise
-        // At the point of `resuce`, there are two lightweight frames on stack and both need to be
+        // At the point of `rescue`, there are two inline frames on stack and both need to be
         // materialized before passing control to interpreter.
         assert_snapshot!(inspect("
             def jit_entry = raise_and_rescue
@@ -95,6 +191,29 @@ mod tests {
             jit_entry
             jit_entry
         "), @"1");
+    }
+
+    // Direct JIT-to-JIT entry passes callee locals as native arguments. If the
+    // callee ISEQ has already escaped EP, later getlocal reads use EP memory,
+    // so JIT entry must materialize those locals into the callee frame.
+    #[test]
+    fn test_jit_entry_materializes_ep_escaped_locals() {
+        assert_snapshot!(inspect("
+            def poison(*) = nil
+
+            def victim(a, b, c)
+              lambda { a }
+              a
+            end
+
+            def jit_entry
+              poison([], [], [], [])
+              victim(:expected, 1, 2)
+            end
+
+            jit_entry
+            Array.new(100) { jit_entry }.uniq
+        "), @"[:expected]");
     }
 
     // Materialize frames on side exit: a type guard triggers a side exit with
@@ -126,11 +245,10 @@ mod tests {
         "#), @"100");
     }
 
-    // Side exit at the very start of a method, before any jit_return has been
-    // written by gen_save_pc_for_gc. The jit_return field should be 0 (from
-    // vm_push_frame), so materialization should be a no-op for that frame.
+    // Side exit at the very start of a method, before gen_save_pc_for_gc has
+    // updated the entry JITFrame.
     #[test]
-    fn test_side_exit_before_jit_return_write() {
+    fn test_side_exit_before_jit_frame_update() {
         assert_snapshot!(inspect("
             def entry(n) = n + 1
             entry(1)
@@ -242,6 +360,49 @@ mod tests {
             test
             test
         "#), @r#""no bar""#);
+    }
+
+    // This test makes a JIT control frame move cfp->sp from as set by gen_prepare_non_leaf_call()
+    // and then ask for materialization. A C function that calls back into Ruby (rb_const_missing
+    // here) pushes recv+args using jit_entry's cfp->sp via vm_call0_body(). A wrong arity makes
+    // vm_callee_setup_arg() raise before vm_call_iseq_setup_normal() restores cfp->sp, so cfp->sp
+    // is left 1+argc slots high while this frame is materialized for the rescue. At the time of
+    // materialization, the top most control frame is the JIT frame.
+    #[test]
+    fn test_stack_map_anchor_after_callee_arity_error() {
+        assert_snapshot!(inspect(r#"
+            class Holder
+              def self.const_missing(a, b) = nil # wrong arity: called with 1 arg
+            end
+            def jit_entry
+              [1, (begin # the 1 is live across the const_missing call
+                     Holder::NOPE
+                   rescue ArgumentError
+                     2
+                   end)]
+            end
+            jit_entry
+            jit_entry
+        "#), @"[1, 2]");
+    }
+
+    // Same displaced cfp->sp, but reaching across an inlined frame: `defined?`
+    // calls respond_to_missing? with 2 args, which raises on arity.
+    #[test]
+    fn test_stack_map_anchor_with_inlined_frame() {
+        assert_snapshot!(inspect(r#"
+            class BadResponder
+              def respond_to_missing?(name) = true # wrong arity: called with 2
+            end
+            class Test
+              def initialize = @o = BadResponder.new
+              def inner = defined?(@o.nope) # must have 0 locals
+              def outer = [1, inner] # the 1 is live across the inlined call
+            end
+            test = Test.new
+            test.outer
+            test.outer
+        "#), @"[1, nil]");
     }
 
     // Proc.new inside a block passed via invokeblock captures the caller's

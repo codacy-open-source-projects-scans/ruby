@@ -1,17 +1,16 @@
 use std::collections::HashSet;
 use std::ffi::CString;
-use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
 
-use mmtk::util::ObjectReference;
 use mmtk::MMTK;
+use mmtk::util::ObjectReference;
 
+use crate::Ruby;
 use crate::abi;
 use crate::abi::RubyBindingOptions;
 use crate::pinning_registry::PinningRegistry;
 use crate::weak_proc::WeakProcessor;
-use crate::Ruby;
 
 pub struct RubyBindingFast {
     pub suffix_size: usize,
@@ -26,26 +25,6 @@ impl Default for RubyBindingFast {
 impl RubyBindingFast {
     pub const fn new() -> Self {
         Self { suffix_size: 0 }
-    }
-}
-
-pub struct RubyConfiguration {
-    pub gc_enabled: AtomicBool,
-}
-
-impl Default for RubyConfiguration {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RubyConfiguration {
-    pub const fn new() -> Self {
-        Self {
-            // Mimic the old behavior when the gc_enabled flag was in mmtk-core.
-            // We may refactor it so that it is false by default.
-            gc_enabled: AtomicBool::new(true),
-        }
     }
 }
 

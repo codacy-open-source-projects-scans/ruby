@@ -2,6 +2,94 @@
 use super::*;
 
 #[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn test_size_of_insn() {
+        assert_eq!(std::mem::size_of::<Insn>(), 72);
+    }
+
+    #[test]
+    fn test_size_of_type() {
+        assert_eq!(std::mem::size_of::<Type>(), 16);
+    }
+
+    #[test]
+    fn test_size_of_send_fallback_reason() {
+        assert_eq!(std::mem::size_of::<SendFallbackReason>(), 4);
+    }
+}
+
+#[cfg(test)]
+mod printer_tests {
+    use super::*;
+
+    fn print_same_cfunc_twice(make_insn: impl Fn() -> Insn) -> (String, String) {
+        let mut ptr_map = PtrPrintMap::identity();
+        ptr_map.map_ptrs = true;
+
+        // Keep both printers alive so their cloned instructions cannot reuse storage.
+        let first = make_insn().print(&ptr_map, None);
+        let second = make_insn().print(&ptr_map, None);
+        (format!("{first}"), format!("{second}"))
+    }
+
+    #[test]
+    fn cfunc_pointer_printing_uses_the_pointer_value() {
+        let printed = crate::cruby::with_rubyvm(|| {
+            let cfunc = std::ptr::without_provenance::<u8>(0x1234);
+            let name = ID!(to_s);
+            let cme = unsafe { rb_callable_method_entry(rb_cInteger, name) };
+            assert!(!cme.is_null());
+
+            let ccall = print_same_cfunc_twice(|| Insn::CCall {
+                cfunc,
+                recv: InsnId(0),
+                args: vec![],
+                name,
+                owner: Qnil,
+                return_type: types::Any,
+                elidable: false,
+            });
+            let ccall_with_frame = print_same_cfunc_twice(|| {
+                Insn::CCallWithFrame(Box::new(CCallWithFrameData {
+                    cd: std::ptr::null(),
+                    cfunc,
+                    recv: InsnId(0),
+                    args: vec![],
+                    cme,
+                    name,
+                    state: InsnId(0),
+                    return_type: types::Any,
+                    elidable: false,
+                    block: None,
+                }))
+            });
+            let ccall_variadic = print_same_cfunc_twice(|| {
+                Insn::CCallVariadic(Box::new(CCallVariadicData {
+                    cfunc,
+                    recv: InsnId(0),
+                    args: vec![],
+                    cme,
+                    name,
+                    state: InsnId(0),
+                    return_type: types::Any,
+                    elidable: false,
+                    block: None,
+                }))
+            });
+
+            [ccall, ccall_with_frame, ccall_variadic]
+        });
+
+        for (first, second) in printed {
+            assert_eq!(first, second);
+        }
+    }
+}
+
+#[cfg(test)]
 mod snapshot_tests {
     use super::*;
     use insta::assert_snapshot;
@@ -45,15 +133,15 @@ mod snapshot_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v8:Any = Snapshot FrameState { pc: 0x1000, stack: [], locals: [] }
-          PatchPoint NoTracePoint
+          PatchPoint NoTracePoint, v8
           v10:Fixnum[1] = Const Value(1)
           v12:Fixnum[2] = Const Value(2)
           v13:Any = Snapshot FrameState { pc: 0x1008, stack: [v10, v12], locals: [] }
-          PatchPoint MethodRedefined(Integer@0x1010, +@0x1018, cme:0x1020)
-          v33:Fixnum[6] = Const Value(6)
-          v21:Any = Snapshot FrameState { pc: 0x1048, stack: [v33], locals: [] }
+          PatchPoint MethodRedefined(Integer@0x1010, +@0x1018, cme:0x1020), v13
+          v35:Fixnum[6] = Const Value(6)
+          v21:Any = Snapshot FrameState { pc: 0x1048, stack: [v35], locals: [] }
           CheckInterrupts
-          Return v33
+          Return v35
         ");
     }
 
@@ -80,19 +168,19 @@ mod snapshot_tests {
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
           v14:Any = Snapshot FrameState { pc: 0x1008, stack: [], locals: [a=v12, b=v13] }
           v15:Any = Snapshot FrameState { pc: 0x1010, stack: [], locals: [a=v12, b=v13] }
-          PatchPoint NoTracePoint
+          PatchPoint NoTracePoint, v15
           v17:Any = Snapshot FrameState { pc: 0x1018, stack: [v12], locals: [a=v12, b=v13] }
           v18:Any = Snapshot FrameState { pc: 0x1020, stack: [v12, v13], locals: [a=v12, b=v13] }
           v19:ArrayExact = NewArray v12, v13
           v20:Any = Snapshot FrameState { pc: 0x1028, stack: [v19], locals: [a=v12, b=v13] }
-          PatchPoint NoTracePoint
+          PatchPoint NoTracePoint, v20
           CheckInterrupts
           Return v19
         ");
     }
 
     #[test]
-    fn test_send_direct_with_reordered_kwargs_has_snapshot() {
+    fn test_send_with_reordered_kwargs_has_snapshot() {
         eval("
             def foo(a:, b:, c:) = [a, b, c]
             def test = foo(c: 3, a: 1, b: 2)
@@ -113,24 +201,28 @@ mod snapshot_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v8:Any = Snapshot FrameState { pc: 0x1000, stack: [], locals: [] }
-          PatchPoint NoTracePoint
+          PatchPoint NoTracePoint, v8
           v11:Fixnum[3] = Const Value(3)
           v13:Fixnum[1] = Const Value(1)
           v15:Fixnum[2] = Const Value(2)
           v16:Any = Snapshot FrameState { pc: 0x1008, stack: [v6, v11, v13, v15], locals: [] }
-          v23:Any = Snapshot FrameState { pc: 0x1008, stack: [v6, v13, v15, v11], locals: [] }
-          PatchPoint MethodRedefined(Object@0x1010, foo@0x1018, cme:0x1020)
-          v25:ObjectSubclass[class_exact*:Object@VALUE(0x1010)] = GuardType v6, ObjectSubclass[class_exact*:Object@VALUE(0x1010)]
-          v26:BasicObject = SendDirect v25, 0x1048, :foo (0x1058), v13, v15, v11
-          v18:Any = Snapshot FrameState { pc: 0x1060, stack: [v26], locals: [] }
-          PatchPoint NoTracePoint
+          PatchPoint MethodRedefined(Object@0x1010, foo@0x1018, cme:0x1020), v16
+          v24:ObjectSubclass[class_exact*:Object@VALUE(0x1010)] = GuardType v6, ObjectSubclass[class_exact*:Object@VALUE(0x1010)] recompile
+          v25:Any = Snapshot FrameState { pc: 0x1008, stack: [v24, v13, v15, v11], locals: [] }
+          v43:Fixnum[0] = Const Value(0)
+          v27:Any = Snapshot FrameState { pc: 0x1008, stack: [], locals: [] }
+          PushInlineFrame :foo, v24 (0x1048), num_args=3
+          v38:Any = Snapshot FrameState { pc: 0x1068, stack: [v13, v15, v11], locals: [a=v13, b=v15, c=v11, ID(0)=v43], caller: v27 }
+          v39:ArrayExact = NewArray v13, v15, v11
+          PopInlineFrame
+          v18:Any = Snapshot FrameState { pc: 0x1070, stack: [v39], locals: [] }
           CheckInterrupts
-          Return v26
+          Return v39
         ");
     }
 
     #[test]
-    fn test_send_direct_with_kwargs_in_order_has_snapshot() {
+    fn test_send_with_kwargs_in_order_has_snapshot() {
         eval("
             def foo(a:, b:) = [a, b]
             def test = foo(a: 1, b: 2)
@@ -151,17 +243,21 @@ mod snapshot_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v8:Any = Snapshot FrameState { pc: 0x1000, stack: [], locals: [] }
-          PatchPoint NoTracePoint
+          PatchPoint NoTracePoint, v8
           v11:Fixnum[1] = Const Value(1)
           v13:Fixnum[2] = Const Value(2)
           v14:Any = Snapshot FrameState { pc: 0x1008, stack: [v6, v11, v13], locals: [] }
-          PatchPoint MethodRedefined(Object@0x1010, foo@0x1018, cme:0x1020)
-          v22:ObjectSubclass[class_exact*:Object@VALUE(0x1010)] = GuardType v6, ObjectSubclass[class_exact*:Object@VALUE(0x1010)]
-          v23:BasicObject = SendDirect v22, 0x1048, :foo (0x1058), v11, v13
-          v16:Any = Snapshot FrameState { pc: 0x1060, stack: [v23], locals: [] }
-          PatchPoint NoTracePoint
+          PatchPoint MethodRedefined(Object@0x1010, foo@0x1018, cme:0x1020), v14
+          v22:ObjectSubclass[class_exact*:Object@VALUE(0x1010)] = GuardType v6, ObjectSubclass[class_exact*:Object@VALUE(0x1010)] recompile
+          v38:Fixnum[0] = Const Value(0)
+          v24:Any = Snapshot FrameState { pc: 0x1008, stack: [], locals: [] }
+          PushInlineFrame :foo, v22 (0x1048), num_args=2
+          v33:Any = Snapshot FrameState { pc: 0x1068, stack: [v11, v13], locals: [a=v11, b=v13, ID(0)=v38], caller: v24 }
+          v34:ArrayExact = NewArray v11, v13
+          PopInlineFrame
+          v16:Any = Snapshot FrameState { pc: 0x1070, stack: [v34], locals: [] }
           CheckInterrupts
-          Return v23
+          Return v34
         ");
     }
 
@@ -187,7 +283,7 @@ mod snapshot_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v8:Any = Snapshot FrameState { pc: 0x1000, stack: [], locals: [] }
-          PatchPoint NoTracePoint
+          PatchPoint NoTracePoint, v8
           v11:Fixnum[5] = Const Value(5)
           v13:Fixnum[6] = Const Value(6)
           v15:Fixnum[4] = Const Value(4)
@@ -197,11 +293,18 @@ mod snapshot_tests {
           v23:Fixnum[7] = Const Value(7)
           v25:Fixnum[8] = Const Value(8)
           v26:Any = Snapshot FrameState { pc: 0x1008, stack: [v6, v11, v13, v15, v17, v19, v21, v23, v25], locals: [] }
-          v27:BasicObject = Send v6, :foo, v11, v13, v15, v17, v19, v21, v23, v25 # SendFallbackReason: Too many arguments for LIR
-          v28:Any = Snapshot FrameState { pc: 0x1010, stack: [v27], locals: [] }
-          PatchPoint NoTracePoint
+          PatchPoint MethodRedefined(Object@0x1010, foo@0x1018, cme:0x1020), v26
+          v34:ObjectSubclass[class_exact*:Object@VALUE(0x1010)] = GuardType v6, ObjectSubclass[class_exact*:Object@VALUE(0x1010)] recompile
+          v35:Any = Snapshot FrameState { pc: 0x1008, stack: [v34, v11, v13, v19, v21, v17, v15, v23, v25], locals: [] }
+          v63:Fixnum[0] = Const Value(0)
+          v37:Any = Snapshot FrameState { pc: 0x1008, stack: [], locals: [] }
+          PushInlineFrame :foo, v34 (0x1048), num_args=8
+          v58:Any = Snapshot FrameState { pc: 0x1068, stack: [v19, v21, v17, v15, v11, v13, v23, v25], locals: [five=v11, six=v13, a=v19, b=v21, c=v17, d=v15, e=v23, f=v25, ID(0)=v63], caller: v37 }
+          v59:ArrayExact = NewArray v19, v21, v17, v15, v11, v13, v23, v25
+          PopInlineFrame
+          v28:Any = Snapshot FrameState { pc: 0x1070, stack: [v59], locals: [] }
           CheckInterrupts
-          Return v27
+          Return v59
         ");
     }
 }
@@ -296,7 +399,8 @@ pub(crate) mod hir_build_tests {
           v4:CPtr = LoadPC
           v5:CPtr[CPtr(0x1001)] = Const CPtr(0x1001)
           v6:CBool = IsBitEqual v4, v5
-          IfTrue v6, bb3(v1, v3)
+          CondBranch v6, bb3(v1, v3), bb6()
+        bb6():
           Jump bb5(v1, v3)
         bb2():
           EntryPoint JIT(0)
@@ -316,6 +420,17 @@ pub(crate) mod hir_build_tests {
           CheckInterrupts
           Return v29
         ");
+    }
+
+    #[test]
+    fn test_no_jit_entry_blocks_for_eval_iseqs() {
+        let wrapped_iseq = eval("eval('RubyVM::InstructionSequence.of(caller_locations(0, 1).first)')");
+        let eval_iseq = unsafe { rb_iseqw_to_iseq(wrapped_iseq) };
+        assert_eq!(unsafe { get_iseq_body_type(eval_iseq) }, ISEQ_TYPE_EVAL);
+        assert!(!iseq_supports_jit_entry(eval_iseq));
+        unsafe { crate::cruby::rb_zjit_profile_disable(eval_iseq) };
+        let eval_hir = hir_string_function(&iseq_to_hir(eval_iseq).unwrap());
+        assert!(!eval_hir.contains("EntryPoint JIT("), "{eval_hir}");
     }
 
     #[test]
@@ -368,20 +483,21 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
           v14:NilClass = Const Value(nil)
-          v18:BasicObject = GetConstantPath 0x1008
-          v20:BasicObject = CheckMatch v10, v18, CASE
-          CheckInterrupts
-          v23:CBool = Test v20
-          v24:Truthy = RefineType v20, Truthy
-          IfTrue v23, bb4(v9, v10, v14, v10)
-          v26:Falsy = RefineType v20, Falsy
-          v31:Fixnum[2] = Const Value(2)
-          CheckInterrupts
-          Return v31
+          PatchPoint StableConstantNames(0x1008, Integer)
+          v19:ClassSubclass[Integer@0x1010] = Const Value(VALUE(0x1010))
+          v21:BasicObject = CheckMatch v10, v19, CASE
+          v23:CBool = Test v21
+          v24:Truthy = RefineType v21, Truthy
+          CondBranch v23, bb4(v9, v10, v14, v10), bb5()
         bb4(v36:BasicObject, v37:BasicObject, v38:NilClass, v39:BasicObject):
           v44:Fixnum[1] = Const Value(1)
           CheckInterrupts
           Return v44
+        bb5():
+          v26:Falsy = RefineType v21, Falsy
+          v31:Fixnum[2] = Const Value(2)
+          CheckInterrupts
+          Return v31
         ");
     }
 
@@ -416,18 +532,18 @@ pub(crate) mod hir_build_tests {
           v16:ArrayExact[VALUE(0x1008)] = Const Value(VALUE(0x1008))
           v17:ArrayExact = ArrayDup v16
           v19:BasicObject = CheckMatch v10, v17, CASE|ARRAY
+          v21:CBool = Test v19
+          v22:Truthy = RefineType v19, Truthy
+          CondBranch v21, bb4(v9, v10, v10), bb5()
+        bb4(v33:BasicObject, v34:BasicObject, v35:BasicObject):
+          v40:Fixnum[1] = Const Value(1)
           CheckInterrupts
-          v22:CBool = Test v19
-          v23:Truthy = RefineType v19, Truthy
-          IfTrue v22, bb4(v9, v10, v10)
-          v25:Falsy = RefineType v19, Falsy
-          v29:Fixnum[2] = Const Value(2)
+          Return v40
+        bb5():
+          v24:Falsy = RefineType v19, Falsy
+          v28:Fixnum[2] = Const Value(2)
           CheckInterrupts
-          Return v29
-        bb4(v34:BasicObject, v35:BasicObject, v36:BasicObject):
-          v41:Fixnum[1] = Const Value(1)
-          CheckInterrupts
-          Return v41
+          Return v28
         ");
     }
 
@@ -460,18 +576,18 @@ pub(crate) mod hir_build_tests {
           v12:ArrayExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
           v13:ArrayExact = ArrayDup v12
           v15:BasicObject = CheckMatch v10, v13, WHEN|ARRAY
+          v17:CBool = Test v15
+          v18:Truthy = RefineType v15, Truthy
+          CondBranch v17, bb4(v6), bb5()
+        bb4(v28:BasicObject):
+          v32:Fixnum[1] = Const Value(1)
           CheckInterrupts
-          v18:CBool = Test v15
-          v19:Truthy = RefineType v15, Truthy
-          IfTrue v18, bb4(v6)
-          v21:Falsy = RefineType v15, Falsy
-          v24:Fixnum[2] = Const Value(2)
+          Return v32
+        bb5():
+          v20:Falsy = RefineType v15, Falsy
+          v23:Fixnum[2] = Const Value(2)
           CheckInterrupts
-          Return v24
-        bb4(v29:BasicObject):
-          v33:Fixnum[1] = Const Value(1)
-          CheckInterrupts
-          Return v33
+          Return v23
         ");
     }
 
@@ -744,7 +860,7 @@ pub(crate) mod hir_build_tests {
     #[test]
     fn test_string_copy() {
         eval("def test = \"hello\"");
-        assert_contains_opcode("test", YARVINSN_putchilledstring);
+        assert_contains_opcode("test", YARVINSN_dupchilledstring);
         assert_snapshot!(hir_string("test"), @"
         fn test@<compiled>:1:
         bb1():
@@ -1091,6 +1207,38 @@ pub(crate) mod hir_build_tests {
     }
 
     #[test]
+    fn test_setlocal_getlocal_no_operands_unification() {
+        eval_with_options("
+            def test(a)
+              x = a
+              x = 2
+              x
+            end
+        ", "{ operands_unification: false }");
+        assert_contains_opcodes("test", &[YARVINSN_getlocal, YARVINSN_setlocal]);
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:3:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :a@0x1000
+          v4:NilClass = Const Value(nil)
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :a@1
+          v9:NilClass = Const Value(nil)
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:NilClass):
+          v20:Fixnum[2] = Const Value(2)
+          CheckInterrupts
+          Return v20
+        ");
+    }
+
+    #[test]
     fn test_nested_setlocal_getlocal() {
         eval("
           l3 = 3
@@ -1161,7 +1309,8 @@ pub(crate) mod hir_build_tests {
           v5:CPtr = LoadPC
           v6:CPtr[CPtr(0x1001)] = Const CPtr(0x1001)
           v7:CBool = IsBitEqual v5, v6
-          IfTrue v7, bb3(v1, v3, v4)
+          CondBranch v7, bb3(v1, v3, v4), bb6()
+        bb6():
           Jump bb5(v1, v3, v4)
         bb2():
           EntryPoint JIT(0)
@@ -1203,7 +1352,8 @@ pub(crate) mod hir_build_tests {
           v5:CPtr = LoadPC
           v6:CPtr[CPtr(0x1001)] = Const CPtr(0x1001)
           v7:CBool = IsBitEqual v5, v6
-          IfTrue v7, bb3(v1, v3, v4)
+          CondBranch v7, bb3(v1, v3, v4), bb6()
+        bb6():
           Jump bb5(v1, v3, v4)
         bb2():
           EntryPoint JIT(0)
@@ -1241,7 +1391,8 @@ pub(crate) mod hir_build_tests {
           v4:CPtr = LoadPC
           v5:CPtr[CPtr(0x1001)] = Const CPtr(0x1001)
           v6:CBool = IsBitEqual v4, v5
-          IfTrue v6, bb3(v1, v3)
+          CondBranch v6, bb3(v1, v3), bb6()
+        bb6():
           Jump bb5(v1, v3)
         bb2():
           EntryPoint JIT(0)
@@ -1337,18 +1488,18 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v10:TrueClass|NilClass = DefinedIvar v6, :@foo
+          v12:CBool = Test v10
+          v13:NilClass = RefineType v10, Falsy
+          CondBranch v12, bb5(), bb4(v6)
+        bb5():
+          v15:TrueClass = RefineType v10, Truthy
+          v18:Fixnum[3] = Const Value(3)
           CheckInterrupts
-          v13:CBool = Test v10
-          v14:NilClass = RefineType v10, Falsy
-          IfFalse v13, bb4(v6)
-          v16:TrueClass = RefineType v10, Truthy
-          v19:Fixnum[3] = Const Value(3)
+          Return v18
+        bb4(v23:BasicObject):
+          v27:Fixnum[4] = Const Value(4)
           CheckInterrupts
-          Return v19
-        bb4(v24:BasicObject):
-          v28:Fixnum[4] = Const Value(4)
-          CheckInterrupts
-          Return v28
+          Return v27
         ");
     }
 
@@ -1454,18 +1605,18 @@ pub(crate) mod hir_build_tests {
           v7:BasicObject = LoadArg :cond@1
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
+          v15:CBool = Test v10
+          v16:Falsy = RefineType v10, Falsy
+          CondBranch v15, bb5(), bb4(v9, v16)
+        bb5():
+          v18:Truthy = RefineType v10, Truthy
+          v21:Fixnum[3] = Const Value(3)
           CheckInterrupts
-          v16:CBool = Test v10
-          v17:Falsy = RefineType v10, Falsy
-          IfFalse v16, bb4(v9, v17)
-          v19:Truthy = RefineType v10, Truthy
-          v22:Fixnum[3] = Const Value(3)
+          Return v21
+        bb4(v26:BasicObject, v27:Falsy):
+          v31:Fixnum[4] = Const Value(4)
           CheckInterrupts
-          Return v22
-        bb4(v27:BasicObject, v28:Falsy):
-          v32:Fixnum[4] = Const Value(4)
-          CheckInterrupts
-          Return v32
+          Return v31
         ");
     }
 
@@ -1497,20 +1648,19 @@ pub(crate) mod hir_build_tests {
           v9:NilClass = Const Value(nil)
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:NilClass):
+          v18:CBool = Test v12
+          v19:Falsy = RefineType v12, Falsy
+          CondBranch v18, bb6(), bb4(v11, v19, v13)
+        bb6():
+          v21:Truthy = RefineType v12, Truthy
+          v24:Fixnum[3] = Const Value(3)
+          Jump bb5(v11, v21, v24)
+        bb4(v28:BasicObject, v29:Falsy, v30:NilClass):
+          v34:Fixnum[4] = Const Value(4)
+          Jump bb5(v28, v29, v34)
+        bb5(v37:BasicObject, v38:BasicObject, v39:Fixnum):
           CheckInterrupts
-          v19:CBool = Test v12
-          v20:Falsy = RefineType v12, Falsy
-          IfFalse v19, bb4(v11, v20, v13)
-          v22:Truthy = RefineType v12, Truthy
-          v25:Fixnum[3] = Const Value(3)
-          CheckInterrupts
-          Jump bb5(v11, v22, v25)
-        bb4(v30:BasicObject, v31:Falsy, v32:NilClass):
-          v36:Fixnum[4] = Const Value(4)
-          Jump bb5(v30, v31, v36)
-        bb5(v39:BasicObject, v40:BasicObject, v41:Fixnum):
-          CheckInterrupts
-          Return v41
+          Return v39
         ");
     }
 
@@ -1835,25 +1985,25 @@ pub(crate) mod hir_build_tests {
         bb3(v10:BasicObject, v11:NilClass, v12:NilClass):
           v16:Fixnum[0] = Const Value(0)
           v20:Fixnum[10] = Const Value(10)
-          CheckInterrupts
           Jump bb5(v10, v16, v20)
-        bb5(v26:BasicObject, v27:BasicObject, v28:BasicObject):
-          v32:Fixnum[0] = Const Value(0)
-          v35:BasicObject = Send v28, :>, v32 # SendFallbackReason: Uncategorized(opt_gt)
+        bb5(v25:BasicObject, v26:BasicObject, v27:BasicObject):
+          v31:Fixnum[0] = Const Value(0)
+          v34:BasicObject = Send v27, :>, v31 # SendFallbackReason: Uncategorized(opt_gt)
           CheckInterrupts
-          v38:CBool = Test v35
-          v39:Truthy = RefineType v35, Truthy
-          IfTrue v38, bb4(v26, v27, v28)
-          v41:Falsy = RefineType v35, Falsy
-          v43:NilClass = Const Value(nil)
+          v37:CBool = Test v34
+          v38:Truthy = RefineType v34, Truthy
+          CondBranch v37, bb4(v25, v26, v27), bb6()
+        bb4(v50:BasicObject, v51:BasicObject, v52:BasicObject):
+          v57:Fixnum[1] = Const Value(1)
+          v60:BasicObject = Send v51, :+, v57 # SendFallbackReason: Uncategorized(opt_plus)
+          v65:Fixnum[1] = Const Value(1)
+          v68:BasicObject = Send v52, :-, v65 # SendFallbackReason: Uncategorized(opt_minus)
+          Jump bb5(v50, v60, v68)
+        bb6():
+          v40:Falsy = RefineType v34, Falsy
+          v42:NilClass = Const Value(nil)
           CheckInterrupts
-          Return v27
-        bb4(v51:BasicObject, v52:BasicObject, v53:BasicObject):
-          v58:Fixnum[1] = Const Value(1)
-          v61:BasicObject = Send v52, :+, v58 # SendFallbackReason: Uncategorized(opt_plus)
-          v66:Fixnum[1] = Const Value(1)
-          v69:BasicObject = Send v53, :-, v66 # SendFallbackReason: Uncategorized(opt_minus)
-          Jump bb5(v51, v61, v69)
+          Return v26
         ");
     }
 
@@ -1912,18 +2062,18 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v5, v6)
         bb3(v8:BasicObject, v9:NilClass):
           v13:TrueClass = Const Value(true)
+          v18:CBool[true] = Test v13
+          v19 = RefineType v13, Falsy
+          CondBranch v18, bb5(), bb4(v8, v19)
+        bb5():
+          v21:TrueClass = RefineType v13, Truthy
+          v24:Fixnum[3] = Const Value(3)
           CheckInterrupts
-          v19:CBool[true] = Test v13
-          v20 = RefineType v13, Falsy
-          IfFalse v19, bb4(v8, v20)
-          v22:TrueClass = RefineType v13, Truthy
-          v25:Fixnum[3] = Const Value(3)
+          Return v24
+        bb4(v29, v30):
+          v34 = Const Value(4)
           CheckInterrupts
-          Return v25
-        bb4(v30, v31):
-          v35 = Const Value(4)
-          CheckInterrupts
-          Return v35
+          Return v34
         ");
     }
 
@@ -1984,10 +2134,289 @@ pub(crate) mod hir_build_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v15:BasicObject = Send v10, 0x1008, :each # SendFallbackReason: Uncategorized(send)
           PatchPoint NoEPEscape(test)
-          v18:CPtr = LoadSP
-          v19:BasicObject = LoadField v18, :a@0x1000
           CheckInterrupts
           Return v15
+        ");
+    }
+
+    #[test]
+    fn test_send_with_block_reloads_only_written_locals() {
+        eval("
+            def foo = yield
+            def test
+              a = 1
+              b = 2
+              foo { a = 3 }
+              a + b
+            end
+            test
+        ");
+        // Only `a` is reloaded after the call; `b` is never written by the block,
+        // so it keeps its SSA value (the Fixnum constant) and is not reloaded.
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:4:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:NilClass = Const Value(nil)
+          v3:NilClass = Const Value(nil)
+          Jump bb3(v1, v2, v3)
+        bb2():
+          EntryPoint JIT(0)
+          v6:BasicObject = LoadArg :self@0
+          v7:NilClass = Const Value(nil)
+          v8:NilClass = Const Value(nil)
+          Jump bb3(v6, v7, v8)
+        bb3(v10:BasicObject, v11:NilClass, v12:NilClass):
+          v16:Fixnum[1] = Const Value(1)
+          v20:Fixnum[2] = Const Value(2)
+          v25:BasicObject = Send v10, 0x1000, :foo # SendFallbackReason: Uncategorized(send)
+          PatchPoint NoEPEscape(test)
+          v28:CPtr = LoadSP
+          v29:BasicObject = LoadField v28, :a@0x1020
+          PatchPoint NoEPEscape(test)
+          v38:BasicObject = Send v29, :+, v20 # SendFallbackReason: Uncategorized(opt_plus)
+          CheckInterrupts
+          Return v38
+        ");
+    }
+
+    #[test]
+    fn test_send_with_block_does_not_reload_read_only_local() {
+        eval("
+            def foo = yield
+            def test
+              a = 1
+              foo { a }
+              a
+            end
+            test
+        ");
+        // The block only reads `a`; it never assigns it, so `a` keeps its SSA value
+        // and is not reloaded after the call.
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:4:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:NilClass = Const Value(nil)
+          Jump bb3(v1, v2)
+        bb2():
+          EntryPoint JIT(0)
+          v5:BasicObject = LoadArg :self@0
+          v6:NilClass = Const Value(nil)
+          Jump bb3(v5, v6)
+        bb3(v8:BasicObject, v9:NilClass):
+          v13:Fixnum[1] = Const Value(1)
+          v18:BasicObject = Send v8, 0x1000, :foo # SendFallbackReason: Uncategorized(send)
+          PatchPoint NoEPEscape(test)
+          PatchPoint NoEPEscape(test)
+          CheckInterrupts
+          Return v13
+        ");
+    }
+
+    #[test]
+    fn test_send_reloads_referenced_block_param() {
+        eval("
+            def take(x) = x
+            def consume = yield
+            def test(&block)
+              consume { take(block) }
+              ::RubyVM::ZJIT.induce_side_exit!
+            end
+            test { 1 }
+        ");
+        // The block reads `block` (passed as a regular argument), so it references the
+        // block param. `getblockparam` is recorded as a read, but reading the block param
+        // materializes the captured block into its slot, so the block param must be
+        // reloaded after the call (this is the lazy_load_hooks miscompile scenario).
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:5:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :block@0x1000
+          Jump bb3(v1, v3)
+        bb2():
+          EntryPoint JIT(0)
+          v6:BasicObject = LoadArg :self@0
+          v7:BasicObject = LoadArg :block@1
+          Jump bb3(v6, v7)
+        bb3(v9:BasicObject, v10:BasicObject):
+          v15:BasicObject = Send v9, 0x1008, :consume # SendFallbackReason: Uncategorized(send)
+          PatchPoint NoEPEscape(test)
+          v18:CPtr = LoadSP
+          v19:BasicObject = LoadField v18, :block@0x1000
+          PatchPoint StableConstantNames(0x1028, ::RubyVM::ZJIT)
+          v24:ModuleSubclass[RubyVM::ZJIT@0x1030] = Const Value(VALUE(0x1030))
+          SideExit DirectiveInduced
+        ");
+    }
+
+    #[test]
+    fn test_send_does_not_reload_unreferenced_block_param() {
+        eval("
+            def consume = yield
+            def test(&block)
+              a = 1
+              consume { a }
+              ::RubyVM::ZJIT.induce_side_exit!
+            end
+            test { 1 }
+        ");
+        // The block only references `a`, never the block param, so the block param
+        // cannot have been materialized by the call and is not reloaded. (Before the
+        // reload filter was refined, the block param was reloaded after every
+        // send-with-block, even when the block could not have touched it.)
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:4:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :block@0x1000
+          v4:NilClass = Const Value(nil)
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :block@1
+          v9:NilClass = Const Value(nil)
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:NilClass):
+          v17:Fixnum[1] = Const Value(1)
+          v22:BasicObject = Send v11, 0x1008, :consume # SendFallbackReason: Uncategorized(send)
+          PatchPoint NoEPEscape(test)
+          PatchPoint StableConstantNames(0x1028, ::RubyVM::ZJIT)
+          v29:ModuleSubclass[RubyVM::ZJIT@0x1030] = Const Value(VALUE(0x1030))
+          SideExit DirectiveInduced
+        ");
+    }
+
+    #[test]
+    fn test_send_with_anonymous_block_param() {
+        eval("
+            def consume = yield
+            def test(&)
+              consume { consume(&) }
+              consume(&)
+            end
+            test { 1 }
+        ");
+        assert_contains_opcode("test", YARVINSN_send);
+        // An anonymous `&` block param can only be forwarded with `&`, which compiles to
+        // `getblockparamproxy` and reads the block from the EP. It never materializes the
+        // param into its slot, so the block param is read directly from the EP after the
+        // call and is not reloaded -- there is nothing a reload could recover.
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:4:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :&@0x1000
+          Jump bb3(v1, v3)
+        bb2():
+          EntryPoint JIT(0)
+          v6:BasicObject = LoadArg :self@0
+          v7:BasicObject = LoadArg :&@1
+          Jump bb3(v6, v7)
+        bb3(v9:BasicObject, v10:BasicObject):
+          v15:BasicObject = Send v9, 0x1008, :consume # SendFallbackReason: Uncategorized(send)
+          PatchPoint NoEPEscape(test)
+          v24:CPtr = GetEP 0
+          v25:CUInt64 = LoadField v24, :VM_ENV_DATA_INDEX_FLAGS@0x1028
+          v26:CBool = IsBlockParamModified v25
+          CondBranch v26, bb4(), bb5()
+        bb4():
+          v28:BasicObject = LoadField v24, :&@0x1029
+          Jump bb6(v28, v28)
+        bb5():
+          v30:CInt64 = LoadField v24, :VM_ENV_DATA_INDEX_SPECVAL@0x102a
+          v31:CInt64[1] = Const CInt64(1)
+          v32:CInt64 = IntAnd v30, v31
+          v33:CBool = IsBitEqual v32, v31
+          CondBranch v33, bb7(), bb8()
+        bb7():
+          v35:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1030))
+          Jump bb6(v35, v10)
+        bb8():
+          v37:CInt64[0] = Const CInt64(0)
+          v38:CBool = IsBitEqual v30, v37
+          CondBranch v38, bb9(), bb10()
+        bb9():
+          v40:NilClass = Const Value(nil)
+          Jump bb6(v40, v10)
+        bb10():
+          v42:CInt64[255] = Const CInt64(255)
+          v43:CInt64 = IntAnd v30, v42
+          v44:CInt64[12] = Const CInt64(12)
+          v45:CBool = IsBitEqual v43, v44
+          CondBranch v45, bb11(), bb12()
+        bb12():
+          v47:CUInt64 = LoadField v30, :RBASIC_FLAGS@0x1028
+          v48:CUInt64[31] = Const CUInt64(31)
+          v49:CInt64 = IntAnd v47, v48
+          v50:CUInt64[20] = Const CUInt64(20)
+          v51:CBool = IsBitEqual v49, v50
+          CondBranch v51, bb11(), bb13()
+        bb11():
+          v53:BasicObject = SymToProc :&, l0, EP@3
+          Jump bb6(v53, v53)
+        bb13():
+          v55:BasicObject = LoadField v24, :VM_ENV_DATA_INDEX_SPECVAL@0x102a
+          Jump bb6(v55, v10)
+        bb6(v22:BasicObject, v23:BasicObject):
+          v58:BasicObject = Send v9, &block, :consume, v22 # SendFallbackReason: Uncategorized(send)
+          CheckInterrupts
+          Return v58
+        ");
+    }
+
+    #[test]
+    fn test_send_reloads_local_written_by_nested_block() {
+        eval("
+            def foo = yield
+            def test
+              a = 1
+              b = 2
+              foo { foo { a = 3 } }
+              a + b
+            end
+            test
+        ");
+        assert_contains_opcode("test", YARVINSN_send);
+        // `a` is assigned only from a block nested inside the block argument, but the
+        // outer block's outer_variables table still records that write (the compiler
+        // aggregates writes up the nesting chain), so `a` is reloaded while the
+        // untouched `b` keeps its SSA value.
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:4:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:NilClass = Const Value(nil)
+          v3:NilClass = Const Value(nil)
+          Jump bb3(v1, v2, v3)
+        bb2():
+          EntryPoint JIT(0)
+          v6:BasicObject = LoadArg :self@0
+          v7:NilClass = Const Value(nil)
+          v8:NilClass = Const Value(nil)
+          Jump bb3(v6, v7, v8)
+        bb3(v10:BasicObject, v11:NilClass, v12:NilClass):
+          v16:Fixnum[1] = Const Value(1)
+          v20:Fixnum[2] = Const Value(2)
+          v25:BasicObject = Send v10, 0x1000, :foo # SendFallbackReason: Uncategorized(send)
+          PatchPoint NoEPEscape(test)
+          v28:CPtr = LoadSP
+          v29:BasicObject = LoadField v28, :a@0x1020
+          PatchPoint NoEPEscape(test)
+          v38:BasicObject = Send v29, :+, v20 # SendFallbackReason: Uncategorized(opt_plus)
+          CheckInterrupts
+          Return v38
         ");
     }
 
@@ -2012,12 +2441,27 @@ pub(crate) mod hir_build_tests {
         bb3(v6:BasicObject):
           v10:StringExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
           v12:Fixnum[123] = Const Value(123)
-          v15:BasicObject = ObjToString v12
-          v17:String = AnyToString v12, str: v15
-          v19:StringExact = StringConcat v10, v17
-          v21:Symbol = StringIntern v19
+          CondBranchHasType v12, String, bb4(), bb5()
+        bb4():
+          v16 = RefineType v12, String
+          Jump bb6(v16)
+        bb5():
+          v18:Fixnum[123] = RefineType v12, NotString
+          v19:BasicObject = Send v18, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb6(v19)
+        bb6(v21:BasicObject):
+          CondBranchHasType v21, String, bb7(), bb8()
+        bb7():
+          v24:String = RefineType v21, String
+          Jump bb9(v24)
+        bb8():
+          v26:StringExact = AnyToString v12
+          Jump bb9(v26)
+        bb9(v28:String):
+          v30:StringExact = StringConcat v10, v28
+          v32:Symbol = StringIntern v30
           CheckInterrupts
-          Return v21
+          Return v32
         ");
     }
 
@@ -2268,8 +2712,6 @@ pub(crate) mod hir_build_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v16:BasicObject = InvokeSuperForward v9, 0x1008, v10 # SendFallbackReason: InvokeSuperForward: not yet specialized
           PatchPoint NoEPEscape(test)
-          v19:CPtr = LoadSP
-          v20:BasicObject = LoadField v19, :...@0x1000
           CheckInterrupts
           Return v16
         ");
@@ -2372,17 +2814,13 @@ pub(crate) mod hir_build_tests {
           v7:BasicObject = LoadArg :a@1
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
-          v15:Class[VMFrozenCore] = Const Value(VALUE(0x1008))
-          v17:HashExact = NewHash
-          PatchPoint NoEPEscape(test)
-          v22:BasicObject = Send v15, :core#hash_merge_kwd, v17, v10 # SendFallbackReason: Uncategorized(opt_send_without_block)
-          v24:Class[VMFrozenCore] = Const Value(VALUE(0x1008))
-          v27:StaticSymbol[:b] = Const Value(VALUE(0x1010))
-          v29:Fixnum[1] = Const Value(1)
-          v31:BasicObject = Send v24, :core#hash_merge_ptr, v22, v27, v29 # SendFallbackReason: Uncategorized(opt_send_without_block)
-          v33:BasicObject = Send v9, :foo, v31 # SendFallbackReason: Uncategorized(opt_send_without_block)
+          v15:ClassSubclass[VMFrozenCore] = Const Value(VALUE(0x1008))
+          v18:StaticSymbol[:b] = Const Value(VALUE(0x1010))
+          v20:Fixnum[1] = Const Value(1)
+          v22:BasicObject = Send v15, :core#hash_merge_ptr, v10, v18, v20 # SendFallbackReason: Uncategorized(opt_send_without_block)
+          v24:BasicObject = Send v9, :foo, v22 # SendFallbackReason: Uncategorized(opt_send_without_block)
           CheckInterrupts
-          Return v33
+          Return v24
         ");
     }
 
@@ -2407,7 +2845,7 @@ pub(crate) mod hir_build_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v16:ArrayExact = ToNewArray v10
           v18:Fixnum[1] = Const Value(1)
-          v20:CUInt64 = LoadField v16, :_rbasic_flags@0x1001
+          v20:CUInt64 = LoadField v16, :RBASIC_FLAGS@0x1001
           v21:CUInt64 = GuardNoBitsSet v20, RUBY_FL_FREEZE=CUInt64(2048)
           ArrayPush v16, v18
           v24:BasicObject = Send v9, :foo, v16 # SendFallbackReason: Uncategorized(opt_send_without_block)
@@ -2471,18 +2909,47 @@ pub(crate) mod hir_build_tests {
           v29:ArrayExact = ToArray v19
           PatchPoint NoEPEscape(test)
           v36:CPtr = GetEP 0
-          v37:CUInt64 = LoadField v36, :_ep_flags@0x1004
+          v37:CUInt64 = LoadField v36, :VM_ENV_DATA_INDEX_FLAGS@0x1004
           v38:CBool = IsBlockParamModified v37
-          IfTrue v38, bb4()
-          Jump bb5()
+          CondBranch v38, bb4(), bb5()
         bb4():
-          v41:BasicObject = LoadField v36, :&@0x1005
-          Jump bb6(v41, v41)
+          v40:BasicObject = LoadField v36, :&@0x1005
+          Jump bb6(v40, v40)
         bb5():
-          v43:CInt64 = LoadField v36, :_env_data_index_specval@0x1006
-          v44:CInt64 = GuardAnyBitSet v43, CUInt64(1)
-          v45:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb6(v45, v21)
+          v42:CInt64 = LoadField v36, :VM_ENV_DATA_INDEX_SPECVAL@0x1006
+          v43:CInt64[1] = Const CInt64(1)
+          v44:CInt64 = IntAnd v42, v43
+          v45:CBool = IsBitEqual v44, v43
+          CondBranch v45, bb7(), bb8()
+        bb7():
+          v47:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v47, v21)
+        bb8():
+          v49:CInt64[0] = Const CInt64(0)
+          v50:CBool = IsBitEqual v42, v49
+          CondBranch v50, bb9(), bb10()
+        bb9():
+          v52:NilClass = Const Value(nil)
+          Jump bb6(v52, v21)
+        bb10():
+          v54:CInt64[255] = Const CInt64(255)
+          v55:CInt64 = IntAnd v42, v54
+          v56:CInt64[12] = Const CInt64(12)
+          v57:CBool = IsBitEqual v55, v56
+          CondBranch v57, bb11(), bb12()
+        bb12():
+          v59:CUInt64 = LoadField v42, :RBASIC_FLAGS@0x1004
+          v60:CUInt64[31] = Const CUInt64(31)
+          v61:CInt64 = IntAnd v59, v60
+          v62:CUInt64[20] = Const CUInt64(20)
+          v63:CBool = IsBitEqual v61, v62
+          CondBranch v63, bb11(), bb13()
+        bb11():
+          v65:BasicObject = SymToProc :&, l0, EP@4
+          Jump bb6(v65, v65)
+        bb13():
+          v67:BasicObject = LoadField v36, :VM_ENV_DATA_INDEX_SPECVAL@0x1006
+          Jump bb6(v67, v21)
         bb6(v34:BasicObject, v35:BasicObject):
           SideExit SplatKwNotProfiled
         ");
@@ -2506,20 +2973,20 @@ pub(crate) mod hir_build_tests {
           v4:BasicObject = LoadArg :self@0
           Jump bb3(v4)
         bb3(v6:BasicObject):
-          v10:BasicObject = GetConstantPath 0x1000
-          v12:NilClass = Const Value(nil)
-          v15:CBool = IsMethodCFunc v10, :new
-          IfFalse v15, bb4(v6, v12, v10)
-          v17:HeapBasicObject = ObjectAlloc v10
-          v19:BasicObject = Send v17, :initialize # SendFallbackReason: Uncategorized(opt_send_without_block)
+          v10:NilClass = Const Value(nil)
+          v12:BasicObject = GetConstantPath 0x1000
+          v14:CBool = IsMethodCFunc v12, :new
+          CondBranch v14, bb6(), bb4(v6, v10, v12)
+        bb6():
+          v16:HeapBasicObject = ObjectAlloc v12
+          v18:BasicObject = Send v16, :initialize # SendFallbackReason: Uncategorized(opt_send_without_block)
+          Jump bb5(v6, v16, v18)
+        bb4(v21:BasicObject, v22:NilClass, v23:BasicObject):
+          v26:BasicObject = Send v23, :new # SendFallbackReason: Uncategorized(opt_send_without_block)
+          Jump bb5(v21, v26, v22)
+        bb5(v29:BasicObject, v30:BasicObject, v31:BasicObject):
           CheckInterrupts
-          Jump bb5(v6, v17, v19)
-        bb4(v23:BasicObject, v24:NilClass, v25:BasicObject):
-          v28:BasicObject = Send v25, :new # SendFallbackReason: Uncategorized(opt_send_without_block)
-          Jump bb5(v23, v28, v24)
-        bb5(v31:BasicObject, v32:BasicObject, v33:BasicObject):
-          CheckInterrupts
-          Return v32
+          Return v30
         ");
     }
 
@@ -3206,10 +3673,12 @@ pub(crate) mod hir_build_tests {
           v4:BasicObject = LoadArg :self@0
           Jump bb3(v4)
         bb3(v6:BasicObject):
-          PatchPoint SingleRactorMode
-          v11:BasicObject = GetIvar v6, :@foo
+          v10:HeapBasicObject = GuardType v6, HeapBasicObject
+          v11:CShape = LoadField v10, :shape_id@0x1000
+          v12:CShape[0x1001] = GuardBitEquals v11, CShape(0x1001) recompile
+          v13:NilClass = Const Value(nil)
           CheckInterrupts
-          Return v11
+          Return v13
         ");
     }
 
@@ -3232,9 +3701,14 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v10:Fixnum[1] = Const Value(1)
-          PatchPoint SingleRactorMode
-          SetIvar v6, :@foo, v10
-          v15:HeapBasicObject = RefineType v6, HeapBasicObject
+          v13:HeapBasicObject = GuardType v6, HeapBasicObject
+          v14:CShape = LoadField v13, :shape_id@0x1000
+          v15:CShape[0x1001] = GuardBitEquals v14, CShape(0x1001) recompile
+          StoreField v13, :@foo@0x1002, v10
+          WriteBarrier v13, v10
+          v18:CShape[0x1003] = Const CShape(0x1003)
+          StoreField v13, :shape_id@0x1000, v18
+          v20:HeapBasicObject = RefineType v6, HeapBasicObject
           CheckInterrupts
           Return v10
         ");
@@ -3391,16 +3865,15 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
           v15:CPtr = GetEP 0
-          v16:CUInt64 = LoadField v15, :_ep_flags@0x1001
+          v16:CUInt64 = LoadField v15, :VM_ENV_DATA_INDEX_FLAGS@0x1001
           v17:CBool = IsBlockParamModified v16
-          IfTrue v17, bb4()
-          Jump bb5()
+          CondBranch v17, bb4(), bb5()
         bb4():
-          v20:BasicObject = LoadField v15, :block@0x1002
-          Jump bb6(v20)
+          v19:BasicObject = LoadField v15, :block@0x1002
+          Jump bb6(v19)
         bb5():
-          v22:BasicObject = GetBlockParam :block, l0, EP@3
-          Jump bb6(v22)
+          v21:BasicObject = GetBlockParam :block, l0, EP@3
+          Jump bb6(v21)
         bb6(v14:BasicObject):
           CheckInterrupts
           Return v14
@@ -3428,22 +3901,125 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
           v17:CPtr = GetEP 0
-          v18:CUInt64 = LoadField v17, :_ep_flags@0x1001
+          v18:CUInt64 = LoadField v17, :VM_ENV_DATA_INDEX_FLAGS@0x1001
           v19:CBool = IsBlockParamModified v18
-          IfTrue v19, bb4()
-          Jump bb5()
+          CondBranch v19, bb4(), bb5()
         bb4():
-          v22:BasicObject = LoadField v17, :block@0x1002
+          v21:BasicObject = LoadField v17, :block@0x1002
+          Jump bb6(v21, v21)
+        bb5():
+          v23:CInt64 = LoadField v17, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          v24:CInt64[1] = Const CInt64(1)
+          v25:CInt64 = IntAnd v23, v24
+          v26:CBool = IsBitEqual v25, v24
+          CondBranch v26, bb7(), bb8()
+        bb7():
+          v28:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v28, v10)
+        bb8():
+          v30:CInt64[0] = Const CInt64(0)
+          v31:CBool = IsBitEqual v23, v30
+          CondBranch v31, bb9(), bb10()
+        bb9():
+          v33:NilClass = Const Value(nil)
+          Jump bb6(v33, v10)
+        bb10():
+          v35:CInt64[255] = Const CInt64(255)
+          v36:CInt64 = IntAnd v23, v35
+          v37:CInt64[12] = Const CInt64(12)
+          v38:CBool = IsBitEqual v36, v37
+          CondBranch v38, bb11(), bb12()
+        bb12():
+          v40:CUInt64 = LoadField v23, :RBASIC_FLAGS@0x1001
+          v41:CUInt64[31] = Const CUInt64(31)
+          v42:CInt64 = IntAnd v40, v41
+          v43:CUInt64[20] = Const CUInt64(20)
+          v44:CBool = IsBitEqual v42, v43
+          CondBranch v44, bb11(), bb13()
+        bb11():
+          v46:BasicObject = SymToProc :block, l0, EP@3
+          Jump bb6(v46, v46)
+        bb13():
+          v48:BasicObject = LoadField v17, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          Jump bb6(v48, v10)
+        bb6(v15:BasicObject, v16:BasicObject):
+          v51:BasicObject = Send v9, &block, :tap, v15 # SendFallbackReason: Uncategorized(send)
+          CheckInterrupts
+          Return v51
+        ");
+    }
+
+    #[test]
+    fn test_getblockparamproxy_proc() {
+        eval("
+            val = proc { 1 }
+            def test(&block)
+              0.then(&block)
+            end
+            test(&val)
+        ");
+        assert_contains_opcode("test", YARVINSN_getblockparamproxy);
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:4:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :block@0x1000
+          Jump bb3(v1, v3)
+        bb2():
+          EntryPoint JIT(0)
+          v6:BasicObject = LoadArg :self@0
+          v7:BasicObject = LoadArg :block@1
+          Jump bb3(v6, v7)
+        bb3(v9:BasicObject, v10:BasicObject):
+          v14:Fixnum[0] = Const Value(0)
+          v18:CPtr = GetEP 0
+          v19:CUInt64 = LoadField v18, :VM_ENV_DATA_INDEX_FLAGS@0x1001
+          v20:CBool = IsBlockParamModified v19
+          CondBranch v20, bb4(), bb5()
+        bb4():
+          v22:BasicObject = LoadField v18, :block@0x1002
           Jump bb6(v22, v22)
         bb5():
-          v24:CInt64 = LoadField v17, :_env_data_index_specval@0x1003
-          v25:CInt64 = GuardAnyBitSet v24, CUInt64(1)
-          v26:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb6(v26, v10)
-        bb6(v15:BasicObject, v16:BasicObject):
-          v29:BasicObject = Send v9, &block, :tap, v15 # SendFallbackReason: Uncategorized(send)
+          v24:CInt64 = LoadField v18, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          v25:CInt64[1] = Const CInt64(1)
+          v26:CInt64 = IntAnd v24, v25
+          v27:CBool = IsBitEqual v26, v25
+          CondBranch v27, bb7(), bb8()
+        bb7():
+          v29:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v29, v10)
+        bb8():
+          v31:CInt64[0] = Const CInt64(0)
+          v32:CBool = IsBitEqual v24, v31
+          CondBranch v32, bb9(), bb10()
+        bb9():
+          v34:NilClass = Const Value(nil)
+          Jump bb6(v34, v10)
+        bb10():
+          v36:CInt64[255] = Const CInt64(255)
+          v37:CInt64 = IntAnd v24, v36
+          v38:CInt64[12] = Const CInt64(12)
+          v39:CBool = IsBitEqual v37, v38
+          CondBranch v39, bb11(), bb12()
+        bb12():
+          v41:CUInt64 = LoadField v24, :RBASIC_FLAGS@0x1001
+          v42:CUInt64[31] = Const CUInt64(31)
+          v43:CInt64 = IntAnd v41, v42
+          v44:CUInt64[20] = Const CUInt64(20)
+          v45:CBool = IsBitEqual v43, v44
+          CondBranch v45, bb11(), bb13()
+        bb11():
+          v47:BasicObject = SymToProc :block, l0, EP@3
+          Jump bb6(v47, v47)
+        bb13():
+          v49:BasicObject = LoadField v18, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          Jump bb6(v49, v10)
+        bb6(v16:BasicObject, v17:BasicObject):
+          v52:BasicObject = Send v14, &block, :then, v16 # SendFallbackReason: Uncategorized(send)
           CheckInterrupts
-          Return v29
+          Return v52
         ");
     }
 
@@ -3473,34 +4049,62 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:NilClass):
           v18:CPtr = GetEP 0
-          v19:CUInt64 = LoadField v18, :_ep_flags@0x1001
+          v19:CUInt64 = LoadField v18, :VM_ENV_DATA_INDEX_FLAGS@0x1001
           v20:CBool = IsBlockParamModified v19
-          IfTrue v20, bb4()
-          Jump bb5()
+          CondBranch v20, bb4(), bb5()
         bb4():
-          v23:BasicObject = LoadField v18, :block@0x1002
-          Jump bb6(v23)
+          v22:BasicObject = LoadField v18, :block@0x1002
+          Jump bb6(v22)
         bb5():
-          v25:BasicObject = GetBlockParam :block, l0, EP@4
-          Jump bb6(v25)
+          v24:BasicObject = GetBlockParam :block, l0, EP@4
+          Jump bb6(v24)
         bb6(v17:BasicObject):
-          v33:CPtr = GetEP 0
-          v34:CUInt64 = LoadField v33, :_ep_flags@0x1001
-          v35:CBool = IsBlockParamModified v34
-          IfTrue v35, bb7()
-          Jump bb8()
+          v32:CPtr = GetEP 0
+          v33:CUInt64 = LoadField v32, :VM_ENV_DATA_INDEX_FLAGS@0x1001
+          v34:CBool = IsBlockParamModified v33
+          CondBranch v34, bb7(), bb8()
         bb7():
-          v38:BasicObject = LoadField v33, :block@0x1002
-          Jump bb9(v38, v38)
+          v36:BasicObject = LoadField v32, :block@0x1002
+          Jump bb9(v36, v36)
         bb8():
-          v40:CInt64 = LoadField v33, :_env_data_index_specval@0x1003
-          v41:CInt64 = GuardAnyBitSet v40, CUInt64(1)
-          v42:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb9(v42, v17)
-        bb9(v31:BasicObject, v32:BasicObject):
-          v45:BasicObject = Send v11, &block, :tap, v31 # SendFallbackReason: Uncategorized(send)
+          v38:CInt64 = LoadField v32, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          v39:CInt64[1] = Const CInt64(1)
+          v40:CInt64 = IntAnd v38, v39
+          v41:CBool = IsBitEqual v40, v39
+          CondBranch v41, bb10(), bb11()
+        bb10():
+          v43:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb9(v43, v17)
+        bb11():
+          v45:CInt64[0] = Const CInt64(0)
+          v46:CBool = IsBitEqual v38, v45
+          CondBranch v46, bb12(), bb13()
+        bb12():
+          v48:NilClass = Const Value(nil)
+          Jump bb9(v48, v17)
+        bb13():
+          v50:CInt64[255] = Const CInt64(255)
+          v51:CInt64 = IntAnd v38, v50
+          v52:CInt64[12] = Const CInt64(12)
+          v53:CBool = IsBitEqual v51, v52
+          CondBranch v53, bb14(), bb15()
+        bb15():
+          v55:CUInt64 = LoadField v38, :RBASIC_FLAGS@0x1001
+          v56:CUInt64[31] = Const CUInt64(31)
+          v57:CInt64 = IntAnd v55, v56
+          v58:CUInt64[20] = Const CUInt64(20)
+          v59:CBool = IsBitEqual v57, v58
+          CondBranch v59, bb14(), bb16()
+        bb14():
+          v61:BasicObject = SymToProc :block, l0, EP@4
+          Jump bb9(v61, v61)
+        bb16():
+          v63:BasicObject = LoadField v32, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          Jump bb9(v63, v17)
+        bb9(v30:BasicObject, v31:BasicObject):
+          v66:BasicObject = Send v11, &block, :tap, v30 # SendFallbackReason: Uncategorized(send)
           CheckInterrupts
-          Return v45
+          Return v66
         ");
     }
 
@@ -3528,34 +4132,62 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v5, v6)
         bb3(v8:BasicObject, v9:NilClass):
           v14:CPtr = GetEP 1
-          v15:CUInt64 = LoadField v14, :_ep_flags@0x1000
+          v15:CUInt64 = LoadField v14, :VM_ENV_DATA_INDEX_FLAGS@0x1000
           v16:CBool = IsBlockParamModified v15
-          IfTrue v16, bb4()
-          Jump bb5()
+          CondBranch v16, bb4(), bb5()
         bb4():
-          v19:BasicObject = LoadField v14, :block@0x1001
-          Jump bb6(v19)
+          v18:BasicObject = LoadField v14, :block@0x1001
+          Jump bb6(v18)
         bb5():
-          v21:BasicObject = GetBlockParam :block, l1, EP@3
-          Jump bb6(v21)
+          v20:BasicObject = GetBlockParam :block, l1, EP@3
+          Jump bb6(v20)
         bb6(v13:BasicObject):
-          v28:CPtr = GetEP 1
-          v29:CUInt64 = LoadField v28, :_ep_flags@0x1000
-          v30:CBool = IsBlockParamModified v29
-          IfTrue v30, bb7()
-          Jump bb8()
+          v27:CPtr = GetEP 1
+          v28:CUInt64 = LoadField v27, :VM_ENV_DATA_INDEX_FLAGS@0x1000
+          v29:CBool = IsBlockParamModified v28
+          CondBranch v29, bb7(), bb8()
         bb7():
-          v33:BasicObject = LoadField v28, :block@0x1001
-          Jump bb9(v33)
+          v31:BasicObject = LoadField v27, :block@0x1001
+          Jump bb9(v31)
         bb8():
-          v35:CInt64 = LoadField v28, :_env_data_index_specval@0x1002
-          v36:CInt64 = GuardAnyBitSet v35, CUInt64(1)
-          v37:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb9(v37)
-        bb9(v27:BasicObject):
-          v40:BasicObject = Send v8, &block, :tap, v27 # SendFallbackReason: Uncategorized(send)
+          v33:CInt64 = LoadField v27, :VM_ENV_DATA_INDEX_SPECVAL@0x1002
+          v34:CInt64[1] = Const CInt64(1)
+          v35:CInt64 = IntAnd v33, v34
+          v36:CBool = IsBitEqual v35, v34
+          CondBranch v36, bb10(), bb11()
+        bb10():
+          v38:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb9(v38)
+        bb11():
+          v40:CInt64[0] = Const CInt64(0)
+          v41:CBool = IsBitEqual v33, v40
+          CondBranch v41, bb12(), bb13()
+        bb12():
+          v43:NilClass = Const Value(nil)
+          Jump bb9(v43)
+        bb13():
+          v45:CInt64[255] = Const CInt64(255)
+          v46:CInt64 = IntAnd v33, v45
+          v47:CInt64[12] = Const CInt64(12)
+          v48:CBool = IsBitEqual v46, v47
+          CondBranch v48, bb14(), bb15()
+        bb15():
+          v50:CUInt64 = LoadField v33, :RBASIC_FLAGS@0x1000
+          v51:CUInt64[31] = Const CUInt64(31)
+          v52:CInt64 = IntAnd v50, v51
+          v53:CUInt64[20] = Const CUInt64(20)
+          v54:CBool = IsBitEqual v52, v53
+          CondBranch v54, bb14(), bb16()
+        bb14():
+          v56:BasicObject = SymToProc :block, l1, EP@3
+          Jump bb9(v56)
+        bb16():
+          v58:BasicObject = LoadField v27, :VM_ENV_DATA_INDEX_SPECVAL@0x1002
+          Jump bb9(v58)
+        bb9(v26:BasicObject):
+          v61:BasicObject = Send v8, &block, :tap, v26 # SendFallbackReason: Uncategorized(send)
           CheckInterrupts
-          Return v40
+          Return v61
         ");
     }
 
@@ -3587,33 +4219,128 @@ pub(crate) mod hir_build_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v14:Fixnum[0] = Const Value(0)
           v18:CPtr = GetEP 0
-          v19:CUInt64 = LoadField v18, :_ep_flags@0x1001
+          v19:CUInt64 = LoadField v18, :VM_ENV_DATA_INDEX_FLAGS@0x1001
           v20:CBool = IsBlockParamModified v19
-          IfTrue v20, bb4()
-          Jump bb5()
+          CondBranch v20, bb4(), bb5()
         bb4():
-          v23:BasicObject = LoadField v18, :block@0x1002
-          Jump bb6(v23, v23)
+          v22:BasicObject = LoadField v18, :block@0x1002
+          Jump bb6(v22, v22)
         bb5():
-          v25:CInt64 = LoadField v18, :_env_data_index_specval@0x1003
-          v26:CInt64[1] = Const CInt64(1)
-          v27:CInt64 = IntAnd v25, v26
-          v28:CBool = IsBitEqual v27, v26
-          IfTrue v28, bb7()
-          v32:CInt64[0] = Const CInt64(0)
-          v33:CBool = IsBitEqual v25, v32
-          IfTrue v33, bb8()
-          SideExit BlockParamProxyProfileNotCovered
+          v24:CInt64 = LoadField v18, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          v25:CInt64[1] = Const CInt64(1)
+          v26:CInt64 = IntAnd v24, v25
+          v27:CBool = IsBitEqual v26, v25
+          CondBranch v27, bb7(), bb8()
         bb7():
-          v30:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb6(v30, v10)
+          v29:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v29, v10)
         bb8():
-          v35:NilClass = Const Value(nil)
-          Jump bb6(v35, v10)
+          v31:CInt64[0] = Const CInt64(0)
+          v32:CBool = IsBitEqual v24, v31
+          CondBranch v32, bb9(), bb10()
+        bb9():
+          v34:NilClass = Const Value(nil)
+          Jump bb6(v34, v10)
+        bb10():
+          v36:CInt64[255] = Const CInt64(255)
+          v37:CInt64 = IntAnd v24, v36
+          v38:CInt64[12] = Const CInt64(12)
+          v39:CBool = IsBitEqual v37, v38
+          CondBranch v39, bb11(), bb12()
+        bb12():
+          v41:CUInt64 = LoadField v24, :RBASIC_FLAGS@0x1001
+          v42:CUInt64[31] = Const CUInt64(31)
+          v43:CInt64 = IntAnd v41, v42
+          v44:CUInt64[20] = Const CUInt64(20)
+          v45:CBool = IsBitEqual v43, v44
+          CondBranch v45, bb11(), bb13()
+        bb11():
+          v47:BasicObject = SymToProc :block, l0, EP@3
+          Jump bb6(v47, v47)
+        bb13():
+          v49:BasicObject = LoadField v18, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          Jump bb6(v49, v10)
         bb6(v16:BasicObject, v17:BasicObject):
-          v39:BasicObject = Send v14, &block, :then, v16 # SendFallbackReason: Uncategorized(send)
+          v52:BasicObject = Send v14, &block, :then, v16 # SendFallbackReason: Uncategorized(send)
           CheckInterrupts
-          Return v39
+          Return v52
+        ");
+    }
+
+    #[test]
+    fn test_getblockparamproxy_polymorphic_none_and_iseq_and_proc() {
+        set_call_threshold(4);
+        eval("
+            val = proc { 3 }
+            def test(&block)
+              0.then(&block)
+            end
+            test
+            test { 1 }
+            test(&val)
+        ");
+        assert_contains_opcode("test", YARVINSN_getblockparamproxy);
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:4:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :block@0x1000
+          Jump bb3(v1, v3)
+        bb2():
+          EntryPoint JIT(0)
+          v6:BasicObject = LoadArg :self@0
+          v7:BasicObject = LoadArg :block@1
+          Jump bb3(v6, v7)
+        bb3(v9:BasicObject, v10:BasicObject):
+          v14:Fixnum[0] = Const Value(0)
+          v18:CPtr = GetEP 0
+          v19:CUInt64 = LoadField v18, :VM_ENV_DATA_INDEX_FLAGS@0x1001
+          v20:CBool = IsBlockParamModified v19
+          CondBranch v20, bb4(), bb5()
+        bb4():
+          v22:BasicObject = LoadField v18, :block@0x1002
+          Jump bb6(v22, v22)
+        bb5():
+          v24:CInt64 = LoadField v18, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          v25:CInt64[1] = Const CInt64(1)
+          v26:CInt64 = IntAnd v24, v25
+          v27:CBool = IsBitEqual v26, v25
+          CondBranch v27, bb7(), bb8()
+        bb7():
+          v29:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v29, v10)
+        bb8():
+          v31:CInt64[0] = Const CInt64(0)
+          v32:CBool = IsBitEqual v24, v31
+          CondBranch v32, bb9(), bb10()
+        bb9():
+          v34:NilClass = Const Value(nil)
+          Jump bb6(v34, v10)
+        bb10():
+          v36:CInt64[255] = Const CInt64(255)
+          v37:CInt64 = IntAnd v24, v36
+          v38:CInt64[12] = Const CInt64(12)
+          v39:CBool = IsBitEqual v37, v38
+          CondBranch v39, bb11(), bb12()
+        bb12():
+          v41:CUInt64 = LoadField v24, :RBASIC_FLAGS@0x1001
+          v42:CUInt64[31] = Const CUInt64(31)
+          v43:CInt64 = IntAnd v41, v42
+          v44:CUInt64[20] = Const CUInt64(20)
+          v45:CBool = IsBitEqual v43, v44
+          CondBranch v45, bb11(), bb13()
+        bb11():
+          v47:BasicObject = SymToProc :block, l0, EP@3
+          Jump bb6(v47, v47)
+        bb13():
+          v49:BasicObject = LoadField v18, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
+          Jump bb6(v49, v10)
+        bb6(v16:BasicObject, v17:BasicObject):
+          v52:BasicObject = Send v14, &block, :then, v16 # SendFallbackReason: Uncategorized(send)
+          CheckInterrupts
+          Return v52
         ");
     }
 
@@ -3638,16 +4365,15 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v11:CPtr = GetEP 1
-          v12:CUInt64 = LoadField v11, :_ep_flags@0x1000
+          v12:CUInt64 = LoadField v11, :VM_ENV_DATA_INDEX_FLAGS@0x1000
           v13:CBool = IsBlockParamModified v12
-          IfTrue v13, bb4()
-          Jump bb5()
+          CondBranch v13, bb4(), bb5()
         bb4():
-          v16:BasicObject = LoadField v11, :block@0x1001
-          Jump bb6(v16)
+          v15:BasicObject = LoadField v11, :block@0x1001
+          Jump bb6(v15)
         bb5():
-          v18:BasicObject = GetBlockParam :block, l1, EP@3
-          Jump bb6(v18)
+          v17:BasicObject = GetBlockParam :block, l1, EP@3
+          Jump bb6(v17)
         bb6(v10:BasicObject):
           CheckInterrupts
           Return v10
@@ -3679,10 +4405,10 @@ pub(crate) mod hir_build_tests {
           v14:NilClass = Const Value(nil)
           SetLocal :block, l0, EP@3, v14
           v18:CPtr = GetEP 0
-          v19:CInt64 = LoadField v18, :_env_data_index_flags@0x1001
+          v19:CInt64 = LoadField v18, :VM_ENV_DATA_INDEX_FLAGS@0x1001
           v20:CInt64[512] = Const CInt64(512)
           v21:CInt64 = IntOr v19, v20
-          StoreField v18, :_env_data_index_flags@0x1001, v21
+          StoreField v18, :VM_ENV_DATA_INDEX_FLAGS@0x1001, v21
           CheckInterrupts
           Return v14
         ");
@@ -3711,10 +4437,10 @@ pub(crate) mod hir_build_tests {
           v10:NilClass = Const Value(nil)
           SetLocal :block, l1, EP@3, v10
           v14:CPtr = GetEP 1
-          v15:CInt64 = LoadField v14, :_env_data_index_flags@0x1000
+          v15:CInt64 = LoadField v14, :VM_ENV_DATA_INDEX_FLAGS@0x1000
           v16:CInt64[512] = Const CInt64(512)
           v17:CInt64 = IntOr v15, v16
-          StoreField v14, :_env_data_index_flags@0x1000, v17
+          StoreField v14, :VM_ENV_DATA_INDEX_FLAGS@0x1000, v17
           CheckInterrupts
           Return v10
         ");
@@ -3744,18 +4470,47 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
           v21:CPtr = GetEP 0
-          v22:CUInt64 = LoadField v21, :_ep_flags@0x1002
+          v22:CUInt64 = LoadField v21, :VM_ENV_DATA_INDEX_FLAGS@0x1002
           v23:CBool = IsBlockParamModified v22
-          IfTrue v23, bb4()
-          Jump bb5()
+          CondBranch v23, bb4(), bb5()
         bb4():
-          v26:BasicObject = LoadField v21, :b@0x1003
-          Jump bb6(v26, v26)
+          v25:BasicObject = LoadField v21, :b@0x1003
+          Jump bb6(v25, v25)
         bb5():
-          v28:CInt64 = LoadField v21, :_env_data_index_specval@0x1004
-          v29:CInt64 = GuardAnyBitSet v28, CUInt64(1)
-          v30:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb6(v30, v13)
+          v27:CInt64 = LoadField v21, :VM_ENV_DATA_INDEX_SPECVAL@0x1004
+          v28:CInt64[1] = Const CInt64(1)
+          v29:CInt64 = IntAnd v27, v28
+          v30:CBool = IsBitEqual v29, v28
+          CondBranch v30, bb7(), bb8()
+        bb7():
+          v32:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v32, v13)
+        bb8():
+          v34:CInt64[0] = Const CInt64(0)
+          v35:CBool = IsBitEqual v27, v34
+          CondBranch v35, bb9(), bb10()
+        bb9():
+          v37:NilClass = Const Value(nil)
+          Jump bb6(v37, v13)
+        bb10():
+          v39:CInt64[255] = Const CInt64(255)
+          v40:CInt64 = IntAnd v27, v39
+          v41:CInt64[12] = Const CInt64(12)
+          v42:CBool = IsBitEqual v40, v41
+          CondBranch v42, bb11(), bb12()
+        bb12():
+          v44:CUInt64 = LoadField v27, :RBASIC_FLAGS@0x1002
+          v45:CUInt64[31] = Const CUInt64(31)
+          v46:CInt64 = IntAnd v44, v45
+          v47:CUInt64[20] = Const CUInt64(20)
+          v48:CBool = IsBitEqual v46, v47
+          CondBranch v48, bb11(), bb13()
+        bb11():
+          v50:BasicObject = SymToProc :b, l0, EP@3
+          Jump bb6(v50, v50)
+        bb13():
+          v52:BasicObject = LoadField v21, :VM_ENV_DATA_INDEX_SPECVAL@0x1004
+          Jump bb6(v52, v13)
         bb6(v19:BasicObject, v20:BasicObject):
           SideExit SplatKwNotProfiled
         ");
@@ -3794,23 +4549,52 @@ pub(crate) mod hir_build_tests {
           v29:ArrayExact = ToArray v19
           PatchPoint NoEPEscape(test)
           v36:CPtr = GetEP 0
-          v37:CUInt64 = LoadField v36, :_ep_flags@0x1004
+          v37:CUInt64 = LoadField v36, :VM_ENV_DATA_INDEX_FLAGS@0x1004
           v38:CBool = IsBlockParamModified v37
-          IfTrue v38, bb4()
-          Jump bb5()
+          CondBranch v38, bb4(), bb5()
         bb4():
-          v41:BasicObject = LoadField v36, :&@0x1005
-          Jump bb6(v41, v41)
+          v40:BasicObject = LoadField v36, :&@0x1005
+          Jump bb6(v40, v40)
         bb5():
-          v43:CInt64 = LoadField v36, :_env_data_index_specval@0x1006
-          v44:CInt64[0] = GuardBitEquals v43, CInt64(0)
-          v45:NilClass = Const Value(nil)
-          Jump bb6(v45, v21)
+          v42:CInt64 = LoadField v36, :VM_ENV_DATA_INDEX_SPECVAL@0x1006
+          v43:CInt64[1] = Const CInt64(1)
+          v44:CInt64 = IntAnd v42, v43
+          v45:CBool = IsBitEqual v44, v43
+          CondBranch v45, bb7(), bb8()
+        bb7():
+          v47:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v47, v21)
+        bb8():
+          v49:CInt64[0] = Const CInt64(0)
+          v50:CBool = IsBitEqual v42, v49
+          CondBranch v50, bb9(), bb10()
+        bb9():
+          v52:NilClass = Const Value(nil)
+          Jump bb6(v52, v21)
+        bb10():
+          v54:CInt64[255] = Const CInt64(255)
+          v55:CInt64 = IntAnd v42, v54
+          v56:CInt64[12] = Const CInt64(12)
+          v57:CBool = IsBitEqual v55, v56
+          CondBranch v57, bb11(), bb12()
+        bb12():
+          v59:CUInt64 = LoadField v42, :RBASIC_FLAGS@0x1004
+          v60:CUInt64[31] = Const CUInt64(31)
+          v61:CInt64 = IntAnd v59, v60
+          v62:CUInt64[20] = Const CUInt64(20)
+          v63:CBool = IsBitEqual v61, v62
+          CondBranch v63, bb11(), bb13()
+        bb11():
+          v65:BasicObject = SymToProc :&, l0, EP@4
+          Jump bb6(v65, v65)
+        bb13():
+          v67:BasicObject = LoadField v36, :VM_ENV_DATA_INDEX_SPECVAL@0x1006
+          Jump bb6(v67, v21)
         bb6(v34:BasicObject, v35:BasicObject):
-          v48:NilClass = GuardType v20, NilClass
-          v50:BasicObject = Send v17, &block, :foo, v18, v29, v48, v34 # SendFallbackReason: Uncategorized(send)
+          v70:NilClass = GuardType v20, NilClass
+          v72:BasicObject = Send v17, &block, :foo, v18, v29, v70, v34 # SendFallbackReason: Uncategorized(send)
           CheckInterrupts
-          Return v50
+          Return v72
         ");
     }
 
@@ -3839,23 +4623,52 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
           v21:CPtr = GetEP 0
-          v22:CUInt64 = LoadField v21, :_ep_flags@0x1002
+          v22:CUInt64 = LoadField v21, :VM_ENV_DATA_INDEX_FLAGS@0x1002
           v23:CBool = IsBlockParamModified v22
-          IfTrue v23, bb4()
-          Jump bb5()
+          CondBranch v23, bb4(), bb5()
         bb4():
-          v26:BasicObject = LoadField v21, :b@0x1003
-          Jump bb6(v26, v26)
+          v25:BasicObject = LoadField v21, :b@0x1003
+          Jump bb6(v25, v25)
         bb5():
-          v28:CInt64 = LoadField v21, :_env_data_index_specval@0x1004
-          v29:CInt64 = GuardAnyBitSet v28, CUInt64(1)
-          v30:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb6(v30, v13)
+          v27:CInt64 = LoadField v21, :VM_ENV_DATA_INDEX_SPECVAL@0x1004
+          v28:CInt64[1] = Const CInt64(1)
+          v29:CInt64 = IntAnd v27, v28
+          v30:CBool = IsBitEqual v29, v28
+          CondBranch v30, bb7(), bb8()
+        bb7():
+          v32:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v32, v13)
+        bb8():
+          v34:CInt64[0] = Const CInt64(0)
+          v35:CBool = IsBitEqual v27, v34
+          CondBranch v35, bb9(), bb10()
+        bb9():
+          v37:NilClass = Const Value(nil)
+          Jump bb6(v37, v13)
+        bb10():
+          v39:CInt64[255] = Const CInt64(255)
+          v40:CInt64 = IntAnd v27, v39
+          v41:CInt64[12] = Const CInt64(12)
+          v42:CBool = IsBitEqual v40, v41
+          CondBranch v42, bb11(), bb12()
+        bb12():
+          v44:CUInt64 = LoadField v27, :RBASIC_FLAGS@0x1002
+          v45:CUInt64[31] = Const CUInt64(31)
+          v46:CInt64 = IntAnd v44, v45
+          v47:CUInt64[20] = Const CUInt64(20)
+          v48:CBool = IsBitEqual v46, v47
+          CondBranch v48, bb11(), bb13()
+        bb11():
+          v50:BasicObject = SymToProc :b, l0, EP@3
+          Jump bb6(v50, v50)
+        bb13():
+          v52:BasicObject = LoadField v21, :VM_ENV_DATA_INDEX_SPECVAL@0x1004
+          Jump bb6(v52, v13)
         bb6(v19:BasicObject, v20:BasicObject):
-          v33:HashExact = GuardType v12, HashExact
-          v35:BasicObject = Send v11, &block, :foo, v33, v19 # SendFallbackReason: Uncategorized(send)
+          v55:HashExact = GuardType v12, HashExact
+          v57:BasicObject = Send v11, &block, :foo, v55, v19 # SendFallbackReason: Uncategorized(send)
           CheckInterrupts
-          Return v35
+          Return v57
         ");
     }
 
@@ -3884,23 +4697,52 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
           v21:CPtr = GetEP 0
-          v22:CUInt64 = LoadField v21, :_ep_flags@0x1002
+          v22:CUInt64 = LoadField v21, :VM_ENV_DATA_INDEX_FLAGS@0x1002
           v23:CBool = IsBlockParamModified v22
-          IfTrue v23, bb4()
-          Jump bb5()
+          CondBranch v23, bb4(), bb5()
         bb4():
-          v26:BasicObject = LoadField v21, :b@0x1003
-          Jump bb6(v26, v26)
+          v25:BasicObject = LoadField v21, :b@0x1003
+          Jump bb6(v25, v25)
         bb5():
-          v28:CInt64 = LoadField v21, :_env_data_index_specval@0x1004
-          v29:CInt64 = GuardAnyBitSet v28, CUInt64(1)
-          v30:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb6(v30, v13)
+          v27:CInt64 = LoadField v21, :VM_ENV_DATA_INDEX_SPECVAL@0x1004
+          v28:CInt64[1] = Const CInt64(1)
+          v29:CInt64 = IntAnd v27, v28
+          v30:CBool = IsBitEqual v29, v28
+          CondBranch v30, bb7(), bb8()
+        bb7():
+          v32:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v32, v13)
+        bb8():
+          v34:CInt64[0] = Const CInt64(0)
+          v35:CBool = IsBitEqual v27, v34
+          CondBranch v35, bb9(), bb10()
+        bb9():
+          v37:NilClass = Const Value(nil)
+          Jump bb6(v37, v13)
+        bb10():
+          v39:CInt64[255] = Const CInt64(255)
+          v40:CInt64 = IntAnd v27, v39
+          v41:CInt64[12] = Const CInt64(12)
+          v42:CBool = IsBitEqual v40, v41
+          CondBranch v42, bb11(), bb12()
+        bb12():
+          v44:CUInt64 = LoadField v27, :RBASIC_FLAGS@0x1002
+          v45:CUInt64[31] = Const CUInt64(31)
+          v46:CInt64 = IntAnd v44, v45
+          v47:CUInt64[20] = Const CUInt64(20)
+          v48:CBool = IsBitEqual v46, v47
+          CondBranch v48, bb11(), bb13()
+        bb11():
+          v50:BasicObject = SymToProc :b, l0, EP@3
+          Jump bb6(v50, v50)
+        bb13():
+          v52:BasicObject = LoadField v21, :VM_ENV_DATA_INDEX_SPECVAL@0x1004
+          Jump bb6(v52, v13)
         bb6(v19:BasicObject, v20:BasicObject):
-          v33:HashExact = GuardType v12, HashExact
-          v35:BasicObject = Send v11, &block, :foo, v33, v19 # SendFallbackReason: Uncategorized(send)
+          v55:HashExact = GuardType v12, HashExact
+          v57:BasicObject = Send v11, &block, :foo, v55, v19 # SendFallbackReason: Uncategorized(send)
           CheckInterrupts
-          Return v35
+          Return v57
         ");
     }
 
@@ -3939,18 +4781,47 @@ pub(crate) mod hir_build_tests {
           v29:ArrayExact = ToArray v19
           PatchPoint NoEPEscape(test)
           v36:CPtr = GetEP 0
-          v37:CUInt64 = LoadField v36, :_ep_flags@0x1004
+          v37:CUInt64 = LoadField v36, :VM_ENV_DATA_INDEX_FLAGS@0x1004
           v38:CBool = IsBlockParamModified v37
-          IfTrue v38, bb4()
-          Jump bb5()
+          CondBranch v38, bb4(), bb5()
         bb4():
-          v41:BasicObject = LoadField v36, :&@0x1005
-          Jump bb6(v41, v41)
+          v40:BasicObject = LoadField v36, :&@0x1005
+          Jump bb6(v40, v40)
         bb5():
-          v43:CInt64 = LoadField v36, :_env_data_index_specval@0x1006
-          v44:CInt64[0] = GuardBitEquals v43, CInt64(0)
-          v45:NilClass = Const Value(nil)
-          Jump bb6(v45, v21)
+          v42:CInt64 = LoadField v36, :VM_ENV_DATA_INDEX_SPECVAL@0x1006
+          v43:CInt64[1] = Const CInt64(1)
+          v44:CInt64 = IntAnd v42, v43
+          v45:CBool = IsBitEqual v44, v43
+          CondBranch v45, bb7(), bb8()
+        bb7():
+          v47:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v47, v21)
+        bb8():
+          v49:CInt64[0] = Const CInt64(0)
+          v50:CBool = IsBitEqual v42, v49
+          CondBranch v50, bb9(), bb10()
+        bb9():
+          v52:NilClass = Const Value(nil)
+          Jump bb6(v52, v21)
+        bb10():
+          v54:CInt64[255] = Const CInt64(255)
+          v55:CInt64 = IntAnd v42, v54
+          v56:CInt64[12] = Const CInt64(12)
+          v57:CBool = IsBitEqual v55, v56
+          CondBranch v57, bb11(), bb12()
+        bb12():
+          v59:CUInt64 = LoadField v42, :RBASIC_FLAGS@0x1004
+          v60:CUInt64[31] = Const CUInt64(31)
+          v61:CInt64 = IntAnd v59, v60
+          v62:CUInt64[20] = Const CUInt64(20)
+          v63:CBool = IsBitEqual v61, v62
+          CondBranch v63, bb11(), bb13()
+        bb11():
+          v65:BasicObject = SymToProc :&, l0, EP@4
+          Jump bb6(v65, v65)
+        bb13():
+          v67:BasicObject = LoadField v36, :VM_ENV_DATA_INDEX_SPECVAL@0x1006
+          Jump bb6(v67, v21)
         bb6(v34:BasicObject, v35:BasicObject):
           SideExit SplatKwPolymorphic
         ");
@@ -3983,18 +4854,47 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
           v21:CPtr = GetEP 0
-          v22:CUInt64 = LoadField v21, :_ep_flags@0x1002
+          v22:CUInt64 = LoadField v21, :VM_ENV_DATA_INDEX_FLAGS@0x1002
           v23:CBool = IsBlockParamModified v22
-          IfTrue v23, bb4()
-          Jump bb5()
+          CondBranch v23, bb4(), bb5()
         bb4():
-          v26:BasicObject = LoadField v21, :block@0x1003
-          Jump bb6(v26, v26)
+          v25:BasicObject = LoadField v21, :block@0x1003
+          Jump bb6(v25, v25)
         bb5():
-          v28:CInt64 = LoadField v21, :_env_data_index_specval@0x1004
-          v29:CInt64 = GuardAnyBitSet v28, CUInt64(1)
-          v30:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb6(v30, v13)
+          v27:CInt64 = LoadField v21, :VM_ENV_DATA_INDEX_SPECVAL@0x1004
+          v28:CInt64[1] = Const CInt64(1)
+          v29:CInt64 = IntAnd v27, v28
+          v30:CBool = IsBitEqual v29, v28
+          CondBranch v30, bb7(), bb8()
+        bb7():
+          v32:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb6(v32, v13)
+        bb8():
+          v34:CInt64[0] = Const CInt64(0)
+          v35:CBool = IsBitEqual v27, v34
+          CondBranch v35, bb9(), bb10()
+        bb9():
+          v37:NilClass = Const Value(nil)
+          Jump bb6(v37, v13)
+        bb10():
+          v39:CInt64[255] = Const CInt64(255)
+          v40:CInt64 = IntAnd v27, v39
+          v41:CInt64[12] = Const CInt64(12)
+          v42:CBool = IsBitEqual v40, v41
+          CondBranch v42, bb11(), bb12()
+        bb12():
+          v44:CUInt64 = LoadField v27, :RBASIC_FLAGS@0x1002
+          v45:CUInt64[31] = Const CUInt64(31)
+          v46:CInt64 = IntAnd v44, v45
+          v47:CUInt64[20] = Const CUInt64(20)
+          v48:CBool = IsBitEqual v46, v47
+          CondBranch v48, bb11(), bb13()
+        bb11():
+          v50:BasicObject = SymToProc :block, l0, EP@3
+          Jump bb6(v50, v50)
+        bb13():
+          v52:BasicObject = LoadField v21, :VM_ENV_DATA_INDEX_SPECVAL@0x1004
+          Jump bb6(v52, v13)
         bb6(v19:BasicObject, v20:BasicObject):
           SideExit SplatKwNotNilOrHash
         ");
@@ -4077,7 +4977,7 @@ pub(crate) mod hir_build_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v15:ArrayExact = ToNewArray v10
           v17:Fixnum[1] = Const Value(1)
-          v19:CUInt64 = LoadField v15, :_rbasic_flags@0x1001
+          v19:CUInt64 = LoadField v15, :RBASIC_FLAGS@0x1001
           v20:CUInt64 = GuardNoBitsSet v19, RUBY_FL_FREEZE=CUInt64(2048)
           ArrayPush v15, v17
           CheckInterrupts
@@ -4109,7 +5009,7 @@ pub(crate) mod hir_build_tests {
           v17:Fixnum[1] = Const Value(1)
           v19:Fixnum[2] = Const Value(2)
           v21:Fixnum[3] = Const Value(3)
-          v23:CUInt64 = LoadField v15, :_rbasic_flags@0x1001
+          v23:CUInt64 = LoadField v15, :RBASIC_FLAGS@0x1001
           v24:CUInt64 = GuardNoBitsSet v23, RUBY_FL_FREEZE=CUInt64(2048)
           ArrayPush v15, v17
           ArrayPush v15, v19
@@ -4360,7 +5260,7 @@ pub(crate) mod hir_build_tests {
           v4:BasicObject = LoadArg :self@0
           Jump bb3(v4)
         bb3(v6:BasicObject):
-          v10:Class[VMFrozenCore] = Const Value(VALUE(0x1000))
+          v10:ClassSubclass[VMFrozenCore] = Const Value(VALUE(0x1000))
           v12:BasicObject = PutSpecialObject CBase
           v14:StaticSymbol[:aliased] = Const Value(VALUE(0x1008))
           v16:StaticSymbol[:__callee__] = Const Value(VALUE(0x1010))
@@ -4402,16 +5302,8 @@ pub(crate) mod hir_build_tests {
           v10:NilClass = Const Value(nil)
           Jump bb3(v7, v8, v9, v10)
         bb3(v12:BasicObject, v13:NilClass, v14:NilClass, v15:NilClass):
-          PatchPoint SingleRactorMode
-          v20:BasicObject = GetIvar v12, :@a
-          PatchPoint SingleRactorMode
-          v23:BasicObject = GetIvar v12, :@b
-          PatchPoint SingleRactorMode
-          v26:BasicObject = GetIvar v12, :@c
-          PatchPoint NoEPEscape(reverse_odd)
-          v38:ArrayExact = NewArray v20, v23, v26
-          CheckInterrupts
-          Return v38
+          v19:HeapBasicObject = GuardType v12, HeapBasicObject
+          SideExit NoProfileGetIvar recompile
 
         fn reverse_even@<compiled>:8:
         bb1():
@@ -4431,18 +5323,8 @@ pub(crate) mod hir_build_tests {
           v12:NilClass = Const Value(nil)
           Jump bb3(v8, v9, v10, v11, v12)
         bb3(v14:BasicObject, v15:NilClass, v16:NilClass, v17:NilClass, v18:NilClass):
-          PatchPoint SingleRactorMode
-          v23:BasicObject = GetIvar v14, :@a
-          PatchPoint SingleRactorMode
-          v26:BasicObject = GetIvar v14, :@b
-          PatchPoint SingleRactorMode
-          v29:BasicObject = GetIvar v14, :@c
-          PatchPoint SingleRactorMode
-          v32:BasicObject = GetIvar v14, :@d
-          PatchPoint NoEPEscape(reverse_even)
-          v46:ArrayExact = NewArray v23, v26, v29, v32
-          CheckInterrupts
-          Return v46
+          v22:HeapBasicObject = GuardType v14, HeapBasicObject
+          SideExit NoProfileGetIvar recompile
         ");
     }
 
@@ -4466,16 +5348,15 @@ pub(crate) mod hir_build_tests {
           v7:BasicObject = LoadArg :x@1
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
+          v16:NilClass = Const Value(nil)
+          CondBranchHasType v10, NilClass, bb4(v9, v16, v16), bb5()
+        bb5():
+          v18:NotNil = RefineType v10, NotNil
+          v20:BasicObject = Send v18, :itself # SendFallbackReason: Uncategorized(opt_send_without_block)
+          Jump bb4(v9, v18, v20)
+        bb4(v22:BasicObject, v23:BasicObject, v24:BasicObject):
           CheckInterrupts
-          v17:CBool = IsNil v10
-          v18:NilClass = Const Value(nil)
-          IfTrue v17, bb4(v9, v18, v18)
-          v20:NotNil = RefineType v10, NotNil
-          v22:BasicObject = Send v20, :itself # SendFallbackReason: Uncategorized(opt_send_without_block)
-          Jump bb4(v9, v20, v22)
-        bb4(v24:BasicObject, v25:BasicObject, v26:BasicObject):
-          CheckInterrupts
-          Return v26
+          Return v24
         ");
     }
 
@@ -4506,25 +5387,24 @@ pub(crate) mod hir_build_tests {
           v7:BasicObject = LoadArg :x@1
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
+          v15:CBool = Test v10
+          v16:Falsy = RefineType v10, Falsy
+          CondBranch v15, bb6(), bb4(v9, v16)
+        bb6():
+          v18:Truthy = RefineType v10, Truthy
+          v23:NilClass = Const Value(nil)
+          CondBranchHasType v18, NilClass, bb5(v9, v23, v23), bb7()
+        bb7():
+          v25:Truthy = RefineType v18, NotNil
+          v27:BasicObject = Send v25, :itself # SendFallbackReason: Uncategorized(opt_send_without_block)
           CheckInterrupts
-          v16:CBool = Test v10
-          v17:Falsy = RefineType v10, Falsy
-          IfFalse v16, bb4(v9, v17)
-          v19:Truthy = RefineType v10, Truthy
+          Return v27
+        bb4(v32:BasicObject, v33:Falsy):
+          v37:Fixnum[4] = Const Value(4)
+          Jump bb5(v32, v33, v37)
+        bb5(v39:BasicObject, v40:Falsy, v41:Fixnum[4]):
           CheckInterrupts
-          v25:CBool[false] = IsNil v19
-          v26:NilClass = Const Value(nil)
-          IfTrue v25, bb5(v9, v26, v26)
-          v28:Truthy = RefineType v19, NotNil
-          v30:BasicObject = Send v28, :itself # SendFallbackReason: Uncategorized(opt_send_without_block)
-          CheckInterrupts
-          Return v30
-        bb4(v35:BasicObject, v36:Falsy):
-          v40:Fixnum[4] = Const Value(4)
-          Jump bb5(v35, v36, v40)
-        bb5(v42:BasicObject, v43:Falsy, v44:Fixnum[4]):
-          CheckInterrupts
-          Return v44
+          Return v41
         ");
     }
 
@@ -4561,41 +5441,41 @@ pub(crate) mod hir_build_tests {
           v7:BasicObject = LoadArg :x@1
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
+          v15:CBool = Test v10
+          v16:Falsy = RefineType v10, Falsy
+          CondBranch v15, bb7(), bb6(v9, v16)
+        bb7():
+          v18:Truthy = RefineType v10, Truthy
+          v22:CBool[true] = Test v18
+          v23 = RefineType v18, Falsy
+          CondBranch v22, bb8(), bb5(v9, v23)
+        bb8():
+          v25:Truthy = RefineType v18, Truthy
+          v29:CBool[true] = Test v25
+          v30 = RefineType v25, Falsy
+          CondBranch v29, bb9(), bb4(v9, v30)
+        bb9():
+          v32:Truthy = RefineType v25, Truthy
+          v35:Fixnum[3] = Const Value(3)
           CheckInterrupts
-          v16:CBool = Test v10
-          v17:Falsy = RefineType v10, Falsy
-          IfFalse v16, bb6(v9, v17)
-          v19:Truthy = RefineType v10, Truthy
+          Return v35
+        bb4(v60, v61):
+          v65 = Const Value(4)
           CheckInterrupts
-          v24:CBool[true] = Test v19
-          v25 = RefineType v19, Falsy
-          IfFalse v24, bb5(v9, v25)
-          v27:Truthy = RefineType v19, Truthy
+          Return v65
+        bb5(v50, v51):
+          v55 = Const Value(5)
           CheckInterrupts
-          v32:CBool[true] = Test v27
-          v33 = RefineType v27, Falsy
-          IfFalse v32, bb4(v9, v33)
-          v35:Truthy = RefineType v27, Truthy
-          v38:Fixnum[3] = Const Value(3)
+          Return v55
+        bb6(v40:BasicObject, v41:Falsy):
+          v45:Fixnum[6] = Const Value(6)
           CheckInterrupts
-          Return v38
-        bb6(v43:BasicObject, v44:Falsy):
-          v48:Fixnum[6] = Const Value(6)
-          CheckInterrupts
-          Return v48
-        bb5(v53, v54):
-          v58 = Const Value(5)
-          CheckInterrupts
-          Return v58
-        bb4(v63, v64):
-          v68 = Const Value(4)
-          CheckInterrupts
-          Return v68
+          Return v45
         ");
     }
 
     #[test]
-    fn test_invokebuiltin_delegate_annotated() {
+    fn test_invokebuiltin_delegate_annotated_float() {
         assert_contains_opcode("Float", YARVINSN_opt_invokebuiltin_delegate_leave);
         assert_snapshot!(hir_string("Float"), @"
         fn Float@<internal:kernel>:
@@ -4616,11 +5496,60 @@ pub(crate) mod hir_build_tests {
           v12:BasicObject = LoadField v11, :<empty>@0x1003
           Jump bb3(v8, v9, v10, v12)
         bb3(v14:BasicObject, v15:BasicObject, v16:BasicObject, v17:BasicObject):
-          v21:Float = InvokeBuiltin rb_f_float, v14, v15, v16
+          v21:NilClass|Float = InvokeBuiltin rb_f_float, v14, v15, v16
           Jump bb4(v14, v15, v16, v17, v21)
-        bb4(v23:BasicObject, v24:BasicObject, v25:BasicObject, v26:BasicObject, v27:Float):
+        bb4(v23:BasicObject, v24:BasicObject, v25:BasicObject, v26:BasicObject, v27:NilClass|Float):
           CheckInterrupts
           Return v27
+        ");
+    }
+
+    #[test]
+    fn test_invokebuiltin_delegate_annotated_integer() {
+        assert_contains_opcode("Integer", YARVINSN_opt_invokebuiltin_delegate_leave);
+        assert_snapshot!(hir_string("Integer"), @"
+        fn Integer@<internal:kernel>:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :arg@0x1000
+          v4:BasicObject = LoadField v2, :base@0x1001
+          v5:BasicObject = LoadField v2, :exception@0x1002
+          v6:BasicObject = LoadField v2, :<empty>@0x1003
+          v7:CPtr = LoadPC
+          v8:CPtr[CPtr(0x1004)] = Const CPtr(0x1004)
+          v9:CBool = IsBitEqual v7, v8
+          CondBranch v9, bb3(v1, v3, v4, v5, v6), bb7()
+        bb7():
+          Jump bb5(v1, v3, v4, v5, v6)
+        bb2():
+          EntryPoint JIT(0)
+          v13:BasicObject = LoadArg :self@0
+          v14:BasicObject = LoadArg :arg@1
+          v15:NilClass = Const Value(nil)
+          v16:BasicObject = LoadArg :exception@2
+          v17:CPtr = GetEP 0
+          v18:BasicObject = LoadField v17, :<empty>@0x1005
+          Jump bb3(v13, v14, v15, v16, v18)
+        bb3(v28:BasicObject, v29:BasicObject, v30:BasicObject, v31:BasicObject, v32:BasicObject):
+          v35:Fixnum[0] = Const Value(0)
+          Jump bb5(v28, v29, v35, v31, v32)
+        bb4():
+          EntryPoint JIT(1)
+          v21:BasicObject = LoadArg :self@0
+          v22:BasicObject = LoadArg :arg@1
+          v23:BasicObject = LoadArg :base@2
+          v24:BasicObject = LoadArg :exception@3
+          v25:CPtr = GetEP 0
+          v26:BasicObject = LoadField v25, :<empty>@0x1005
+          Jump bb5(v21, v22, v23, v24, v26)
+        bb5(v38:BasicObject, v39:BasicObject, v40:BasicObject, v41:BasicObject, v42:BasicObject):
+          v46:NilClass|Integer = InvokeBuiltin rb_f_integer, v38, v39, v40, v41
+          Jump bb6(v38, v39, v40, v41, v42, v46)
+        bb6(v48:BasicObject, v49:BasicObject, v50:BasicObject, v51:BasicObject, v52:BasicObject, v53:NilClass|Integer):
+          CheckInterrupts
+          Return v53
         ");
     }
 
@@ -4638,9 +5567,9 @@ pub(crate) mod hir_build_tests {
           v4:BasicObject = LoadArg :self@0
           Jump bb3(v4)
         bb3(v6:BasicObject):
-          v10:HeapObject = InvokeBuiltin leaf <inline_expr>, v6
+          v10:Class = InvokeBuiltin leaf <inline_expr>, v6
           Jump bb4(v6, v10)
-        bb4(v12:BasicObject, v13:HeapObject):
+        bb4(v12:BasicObject, v13:Class):
           CheckInterrupts
           Return v13
         ");
@@ -4678,31 +5607,60 @@ pub(crate) mod hir_build_tests {
           v27:BasicObject = InvokeBuiltin dir_s_open, v18, v19, v20
           PatchPoint NoEPEscape(open)
           v35:CPtr = GetEP 0
-          v36:CUInt64 = LoadField v35, :_ep_flags@0x1004
+          v36:CUInt64 = LoadField v35, :VM_ENV_DATA_INDEX_FLAGS@0x1004
           v37:CBool = IsBlockParamModified v36
-          IfTrue v37, bb5()
-          Jump bb6()
-        bb5():
-          v40:BasicObject = LoadField v35, :block@0x1005
-          Jump bb7(v40, v40)
+          CondBranch v37, bb6(), bb7()
         bb6():
-          v42:CInt64 = LoadField v35, :_env_data_index_specval@0x1006
-          v43:CInt64 = GuardAnyBitSet v42, CUInt64(1)
-          v44:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
-          Jump bb7(v44, v22)
-        bb7(v33:BasicObject, v34:BasicObject):
+          v39:BasicObject = LoadField v35, :block@0x1005
+          Jump bb8(v39, v39)
+        bb7():
+          v41:CInt64 = LoadField v35, :VM_ENV_DATA_INDEX_SPECVAL@0x1006
+          v42:CInt64[1] = Const CInt64(1)
+          v43:CInt64 = IntAnd v41, v42
+          v44:CBool = IsBitEqual v43, v42
+          CondBranch v44, bb9(), bb10()
+        bb9():
+          v46:ObjectSubclass[BlockParamProxy] = Const Value(VALUE(0x1008))
+          Jump bb8(v46, v22)
+        bb10():
+          v48:CInt64[0] = Const CInt64(0)
+          v49:CBool = IsBitEqual v41, v48
+          CondBranch v49, bb11(), bb12()
+        bb11():
+          v51:NilClass = Const Value(nil)
+          Jump bb8(v51, v22)
+        bb12():
+          v53:CInt64[255] = Const CInt64(255)
+          v54:CInt64 = IntAnd v41, v53
+          v55:CInt64[12] = Const CInt64(12)
+          v56:CBool = IsBitEqual v54, v55
+          CondBranch v56, bb13(), bb14()
+        bb14():
+          v58:CUInt64 = LoadField v41, :RBASIC_FLAGS@0x1004
+          v59:CUInt64[31] = Const CUInt64(31)
+          v60:CInt64 = IntAnd v58, v59
+          v61:CUInt64[20] = Const CUInt64(20)
+          v62:CBool = IsBitEqual v60, v61
+          CondBranch v62, bb13(), bb15()
+        bb13():
+          v64:BasicObject = SymToProc :block, l0, EP@4
+          Jump bb8(v64, v64)
+        bb15():
+          v66:BasicObject = LoadField v35, :VM_ENV_DATA_INDEX_SPECVAL@0x1006
+          Jump bb8(v66, v22)
+        bb8(v33:BasicObject, v34:BasicObject):
+          v69:CBool = Test v33
+          v70:Falsy = RefineType v33, Falsy
+          CondBranch v69, bb16(), bb4(v18, v19, v20, v21, v34, v27)
+        bb16():
+          v72:Truthy = RefineType v33, Truthy
+          v76:BasicObject = InvokeBlock v27 # SendFallbackReason: InvokeBlock: not yet specialized
+          v79:BasicObject = InvokeBuiltin dir_s_close, v18, v27
           CheckInterrupts
-          v48:CBool = Test v33
-          v49:Falsy = RefineType v33, Falsy
-          IfFalse v48, bb4(v18, v19, v20, v21, v34, v27)
-          v51:Truthy = RefineType v33, Truthy
-          v55:BasicObject = InvokeBlock, v27 # SendFallbackReason: InvokeBlock: not yet specialized
-          v58:BasicObject = InvokeBuiltin dir_s_close, v18, v27
+          Return v76
+        bb4(v85:BasicObject, v86:BasicObject, v87:BasicObject, v88:BasicObject, v89:BasicObject, v90:BasicObject):
           CheckInterrupts
-          Return v55
-        bb4(v64:BasicObject, v65:BasicObject, v66:BasicObject, v67:BasicObject, v68:BasicObject, v69:BasicObject):
-          CheckInterrupts
-          Return v69
+          Return v90
         ");
     }
 
@@ -4744,22 +5702,24 @@ pub(crate) mod hir_build_tests {
           v3:BasicObject = LoadField v2, :full_mark@0x1000
           v4:BasicObject = LoadField v2, :immediate_mark@0x1001
           v5:BasicObject = LoadField v2, :immediate_sweep@0x1002
-          v6:BasicObject = LoadField v2, :<empty>@0x1003
-          Jump bb3(v1, v3, v4, v5, v6)
+          v6:BasicObject = LoadField v2, :global@0x1003
+          v7:BasicObject = LoadField v2, :<empty>@0x1004
+          Jump bb3(v1, v3, v4, v5, v6, v7)
         bb2():
           EntryPoint JIT(0)
-          v9:BasicObject = LoadArg :self@0
-          v10:BasicObject = LoadArg :full_mark@1
-          v11:BasicObject = LoadArg :immediate_mark@2
-          v12:BasicObject = LoadArg :immediate_sweep@3
-          v13:CPtr = GetEP 0
-          v14:BasicObject = LoadField v13, :<empty>@0x1004
-          Jump bb3(v9, v10, v11, v12, v14)
-        bb3(v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject, v20:BasicObject):
-          v27:FalseClass = Const Value(false)
-          v29:BasicObject = InvokeBuiltin gc_start_internal, v16, v17, v18, v19, v27
+          v10:BasicObject = LoadArg :self@0
+          v11:BasicObject = LoadArg :full_mark@1
+          v12:BasicObject = LoadArg :immediate_mark@2
+          v13:BasicObject = LoadArg :immediate_sweep@3
+          v14:BasicObject = LoadArg :global@4
+          v15:CPtr = GetEP 0
+          v16:BasicObject = LoadField v15, :<empty>@0x1005
+          Jump bb3(v10, v11, v12, v13, v14, v16)
+        bb3(v18:BasicObject, v19:BasicObject, v20:BasicObject, v21:BasicObject, v22:BasicObject, v23:BasicObject):
+          v30:FalseClass = Const Value(false)
+          v33:BasicObject = InvokeBuiltin gc_start_internal, v18, v19, v20, v21, v30, v22
           CheckInterrupts
-          Return v29
+          Return v33
         ");
     }
 
@@ -4768,7 +5728,7 @@ pub(crate) mod hir_build_tests {
         let iseq = crate::cruby::with_rubyvm(|| get_instance_method_iseq("Symbol", "name"));
         let function = iseq_to_hir(iseq).unwrap();
         assert_snapshot!(hir_string_function(&function), @"
-        fn name@<internal:symbol>:
+        fn to_s@<internal:symbol>:
         bb1():
           EntryPoint interpreter
           v1:BasicObject = LoadSelf
@@ -4833,18 +5793,18 @@ pub(crate) mod hir_build_tests {
           v17:Fixnum[0] = Const Value(0)
           v19:Fixnum[1] = Const Value(1)
           v22:BasicObject = Send v10, :[], v17, v19 # SendFallbackReason: Uncategorized(opt_send_without_block)
+          v25:CBool = Test v22
+          v26:Truthy = RefineType v22, Truthy
+          CondBranch v25, bb4(v9, v10, v14, v10, v17, v19, v26), bb5()
+        bb4(v40:BasicObject, v41:BasicObject, v42:NilClass, v43:BasicObject, v44:Fixnum[0], v45:Fixnum[1], v46:Truthy):
           CheckInterrupts
-          v26:CBool = Test v22
-          v27:Truthy = RefineType v22, Truthy
-          IfTrue v26, bb4(v9, v10, v14, v10, v17, v19, v27)
-          v29:Falsy = RefineType v22, Falsy
-          v32:Fixnum[2] = Const Value(2)
-          v35:BasicObject = Send v10, :[]=, v17, v19, v32 # SendFallbackReason: Uncategorized(opt_send_without_block)
+          Return v46
+        bb5():
+          v28:Falsy = RefineType v22, Falsy
+          v31:Fixnum[2] = Const Value(2)
+          v34:BasicObject = Send v10, :[]=, v17, v19, v31 # SendFallbackReason: Uncategorized(opt_send_without_block)
           CheckInterrupts
-          Return v32
-        bb4(v41:BasicObject, v42:BasicObject, v43:NilClass, v44:BasicObject, v45:Fixnum[0], v46:Fixnum[1], v47:Truthy):
-          CheckInterrupts
-          Return v47
+          Return v31
         ");
     }
 
@@ -4867,11 +5827,26 @@ pub(crate) mod hir_build_tests {
         bb3(v6:BasicObject):
           v10:StringExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
           v12:Fixnum[1] = Const Value(1)
-          v15:BasicObject = ObjToString v12
-          v17:String = AnyToString v12, str: v15
-          v19:StringExact = StringConcat v10, v17
+          CondBranchHasType v12, String, bb4(), bb5()
+        bb4():
+          v16 = RefineType v12, String
+          Jump bb6(v16)
+        bb5():
+          v18:Fixnum[1] = RefineType v12, NotString
+          v19:BasicObject = Send v18, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb6(v19)
+        bb6(v21:BasicObject):
+          CondBranchHasType v21, String, bb7(), bb8()
+        bb7():
+          v24:String = RefineType v21, String
+          Jump bb9(v24)
+        bb8():
+          v26:StringExact = AnyToString v12
+          Jump bb9(v26)
+        bb9(v28:String):
+          v30:StringExact = StringConcat v10, v28
           CheckInterrupts
-          Return v19
+          Return v30
         ");
     }
 
@@ -4893,17 +5868,62 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v10:Fixnum[1] = Const Value(1)
-          v13:BasicObject = ObjToString v10
-          v15:String = AnyToString v10, str: v13
-          v17:Fixnum[2] = Const Value(2)
-          v20:BasicObject = ObjToString v17
-          v22:String = AnyToString v17, str: v20
-          v24:Fixnum[3] = Const Value(3)
-          v27:BasicObject = ObjToString v24
-          v29:String = AnyToString v24, str: v27
-          v31:StringExact = StringConcat v15, v22, v29
+          CondBranchHasType v10, String, bb4(), bb5()
+        bb4():
+          v14 = RefineType v10, String
+          Jump bb6(v14)
+        bb5():
+          v16:Fixnum[1] = RefineType v10, NotString
+          v17:BasicObject = Send v16, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb6(v17)
+        bb6(v19:BasicObject):
+          CondBranchHasType v19, String, bb7(), bb8()
+        bb7():
+          v22:String = RefineType v19, String
+          Jump bb9(v22)
+        bb8():
+          v24:StringExact = AnyToString v10
+          Jump bb9(v24)
+        bb9(v26:String):
+          v28:Fixnum[2] = Const Value(2)
+          CondBranchHasType v28, String, bb10(), bb11()
+        bb10():
+          v32 = RefineType v28, String
+          Jump bb12(v32)
+        bb11():
+          v34:Fixnum[2] = RefineType v28, NotString
+          v35:BasicObject = Send v34, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb12(v35)
+        bb12(v37:BasicObject):
+          CondBranchHasType v37, String, bb13(), bb14()
+        bb13():
+          v40:String = RefineType v37, String
+          Jump bb15(v40)
+        bb14():
+          v42:StringExact = AnyToString v28
+          Jump bb15(v42)
+        bb15(v44:String):
+          v46:Fixnum[3] = Const Value(3)
+          CondBranchHasType v46, String, bb16(), bb17()
+        bb16():
+          v50 = RefineType v46, String
+          Jump bb18(v50)
+        bb17():
+          v52:Fixnum[3] = RefineType v46, NotString
+          v53:BasicObject = Send v52, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb18(v53)
+        bb18(v55:BasicObject):
+          CondBranchHasType v55, String, bb19(), bb20()
+        bb19():
+          v58:String = RefineType v55, String
+          Jump bb21(v58)
+        bb20():
+          v60:StringExact = AnyToString v46
+          Jump bb21(v60)
+        bb21(v62:String):
+          v64:StringExact = StringConcat v26, v44, v62
           CheckInterrupts
-          Return v31
+          Return v64
         ");
     }
 
@@ -4926,11 +5946,26 @@ pub(crate) mod hir_build_tests {
         bb3(v6:BasicObject):
           v10:StringExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
           v12:NilClass = Const Value(nil)
-          v15:BasicObject = ObjToString v12
-          v17:String = AnyToString v12, str: v15
-          v19:StringExact = StringConcat v10, v17
+          CondBranchHasType v12, String, bb4(), bb5()
+        bb4():
+          v16 = RefineType v12, String
+          Jump bb6(v16)
+        bb5():
+          v18:NilClass = RefineType v12, NotString
+          v19:BasicObject = Send v18, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb6(v19)
+        bb6(v21:BasicObject):
+          CondBranchHasType v21, String, bb7(), bb8()
+        bb7():
+          v24:String = RefineType v21, String
+          Jump bb9(v24)
+        bb8():
+          v26:StringExact = AnyToString v12
+          Jump bb9(v26)
+        bb9(v28:String):
+          v30:StringExact = StringConcat v10, v28
           CheckInterrupts
-          Return v19
+          Return v30
         ");
     }
 
@@ -4952,17 +5987,62 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v10:Fixnum[1] = Const Value(1)
-          v13:BasicObject = ObjToString v10
-          v15:String = AnyToString v10, str: v13
-          v17:Fixnum[2] = Const Value(2)
-          v20:BasicObject = ObjToString v17
-          v22:String = AnyToString v17, str: v20
-          v24:Fixnum[3] = Const Value(3)
-          v27:BasicObject = ObjToString v24
-          v29:String = AnyToString v24, str: v27
-          v31:RegexpExact = ToRegexp v15, v22, v29
+          CondBranchHasType v10, String, bb4(), bb5()
+        bb4():
+          v14 = RefineType v10, String
+          Jump bb6(v14)
+        bb5():
+          v16:Fixnum[1] = RefineType v10, NotString
+          v17:BasicObject = Send v16, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb6(v17)
+        bb6(v19:BasicObject):
+          CondBranchHasType v19, String, bb7(), bb8()
+        bb7():
+          v22:String = RefineType v19, String
+          Jump bb9(v22)
+        bb8():
+          v24:StringExact = AnyToString v10
+          Jump bb9(v24)
+        bb9(v26:String):
+          v28:Fixnum[2] = Const Value(2)
+          CondBranchHasType v28, String, bb10(), bb11()
+        bb10():
+          v32 = RefineType v28, String
+          Jump bb12(v32)
+        bb11():
+          v34:Fixnum[2] = RefineType v28, NotString
+          v35:BasicObject = Send v34, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb12(v35)
+        bb12(v37:BasicObject):
+          CondBranchHasType v37, String, bb13(), bb14()
+        bb13():
+          v40:String = RefineType v37, String
+          Jump bb15(v40)
+        bb14():
+          v42:StringExact = AnyToString v28
+          Jump bb15(v42)
+        bb15(v44:String):
+          v46:Fixnum[3] = Const Value(3)
+          CondBranchHasType v46, String, bb16(), bb17()
+        bb16():
+          v50 = RefineType v46, String
+          Jump bb18(v50)
+        bb17():
+          v52:Fixnum[3] = RefineType v46, NotString
+          v53:BasicObject = Send v52, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb18(v53)
+        bb18(v55:BasicObject):
+          CondBranchHasType v55, String, bb19(), bb20()
+        bb19():
+          v58:String = RefineType v55, String
+          Jump bb21(v58)
+        bb20():
+          v60:StringExact = AnyToString v46
+          Jump bb21(v60)
+        bb21(v62:String):
+          v64:RegexpExact = ToRegexp v26, v44, v62
           CheckInterrupts
-          Return v31
+          Return v64
         ");
     }
 
@@ -4984,14 +6064,44 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v4)
         bb3(v6:BasicObject):
           v10:Fixnum[1] = Const Value(1)
-          v13:BasicObject = ObjToString v10
-          v15:String = AnyToString v10, str: v13
-          v17:Fixnum[2] = Const Value(2)
-          v20:BasicObject = ObjToString v17
-          v22:String = AnyToString v17, str: v20
-          v24:RegexpExact = ToRegexp v15, v22, MULTILINE|IGNORECASE|EXTENDED|NOENCODING
+          CondBranchHasType v10, String, bb4(), bb5()
+        bb4():
+          v14 = RefineType v10, String
+          Jump bb6(v14)
+        bb5():
+          v16:Fixnum[1] = RefineType v10, NotString
+          v17:BasicObject = Send v16, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb6(v17)
+        bb6(v19:BasicObject):
+          CondBranchHasType v19, String, bb7(), bb8()
+        bb7():
+          v22:String = RefineType v19, String
+          Jump bb9(v22)
+        bb8():
+          v24:StringExact = AnyToString v10
+          Jump bb9(v24)
+        bb9(v26:String):
+          v28:Fixnum[2] = Const Value(2)
+          CondBranchHasType v28, String, bb10(), bb11()
+        bb10():
+          v32 = RefineType v28, String
+          Jump bb12(v32)
+        bb11():
+          v34:Fixnum[2] = RefineType v28, NotString
+          v35:BasicObject = Send v34, :to_s # SendFallbackReason: ObjToString: result is not a string
+          Jump bb12(v35)
+        bb12(v37:BasicObject):
+          CondBranchHasType v37, String, bb13(), bb14()
+        bb13():
+          v40:String = RefineType v37, String
+          Jump bb15(v40)
+        bb14():
+          v42:StringExact = AnyToString v28
+          Jump bb15(v42)
+        bb15(v44:String):
+          v46:RegexpExact = ToRegexp v26, v44, MULTILINE|IGNORECASE|EXTENDED|NOENCODING
           CheckInterrupts
-          Return v24
+          Return v46
         ");
     }
 
@@ -5079,7 +6189,7 @@ pub(crate) mod hir_build_tests {
           v9:BasicObject = LoadArg :y@2
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
-          v19:BasicObject = InvokeBlock, v12, v13 # SendFallbackReason: InvokeBlock: not yet specialized
+          v19:BasicObject = InvokeBlock v12, v13 # SendFallbackReason: InvokeBlock: not yet specialized
           CheckInterrupts
           Return v19
         ");
@@ -5113,12 +6223,10 @@ pub(crate) mod hir_build_tests {
         bb3(v13:BasicObject, v14:BasicObject, v15:NilClass, v16:NilClass):
           v22:ArrayExact = GuardType v14, ArrayExact
           v23:CInt64 = ArrayLength v22
-          v24:CInt64[2] = Const CInt64(2)
-          v25:CInt64 = GuardGreaterEq v23, v24
-          v26:CInt64[1] = Const CInt64(1)
-          v27:BasicObject = ArrayAref v22, v26
-          v28:CInt64[0] = Const CInt64(0)
-          v29:BasicObject = ArrayAref v22, v28
+          v24:CInt64[1] = Const CInt64(1)
+          v25:BasicObject = ArrayArefChecked v22, v24, v23
+          v26:CInt64[0] = Const CInt64(0)
+          v27:BasicObject = ArrayArefChecked v22, v26, v23
           PatchPoint NoEPEscape(test)
           CheckInterrupts
           Return v14
@@ -5211,18 +6319,18 @@ pub(crate) mod hir_build_tests {
           Jump bb3(v7, v8, v10)
         bb3(v12:BasicObject, v13:BasicObject, v14:BasicObject):
           v17:BoolExact = FixnumBitCheck v14, 0
+          v19:CBool = Test v17
+          v20:TrueClass = RefineType v17, Truthy
+          CondBranch v19, bb4(v12, v13, v14), bb5()
+        bb5():
+          v22:FalseClass = RefineType v17, Falsy
+          v24:Fixnum[1] = Const Value(1)
+          v26:Fixnum[1] = Const Value(1)
+          v29:BasicObject = Send v24, :+, v26 # SendFallbackReason: Uncategorized(opt_plus)
+          Jump bb4(v12, v29, v14)
+        bb4(v32:BasicObject, v33:BasicObject, v34:BasicObject):
           CheckInterrupts
-          v20:CBool = Test v17
-          v21:TrueClass = RefineType v17, Truthy
-          IfTrue v20, bb4(v12, v13, v14)
-          v23:FalseClass = RefineType v17, Falsy
-          v25:Fixnum[1] = Const Value(1)
-          v27:Fixnum[1] = Const Value(1)
-          v30:BasicObject = Send v25, :+, v27 # SendFallbackReason: Uncategorized(opt_plus)
-          Jump bb4(v12, v30, v14)
-        bb4(v33:BasicObject, v34:BasicObject, v35:BasicObject):
-          CheckInterrupts
-          Return v34
+          Return v33
         ");
     }
 
@@ -5342,33 +6450,41 @@ pub(crate) mod hir_build_tests {
           v15:TrueClass|NilClass = Defined yield, v13
           v17:CBool = Test v15
           v18:NilClass = RefineType v15, Falsy
-          IfFalse v17, bb4(v8, v9)
+          CondBranch v17, bb9(), bb4(v8, v9)
+        bb9():
           v20:TrueClass = RefineType v15, Truthy
           Jump bb6(v8, v9)
+        bb6(v30:BasicObject, v31:NilClass):
+          v35:Fixnum[0] = Const Value(0)
+          Jump bb8(v30, v35)
+        bb8(v48:BasicObject, v49:Fixnum):
+          v52:Array = RefineType v48, Array
+          v53:CInt64 = ArrayLength v52
+          v54:Fixnum = BoxFixnum v53
+          v55:BoolExact = FixnumGe v49, v54
+          v57:CBool = Test v55
+          v58:FalseClass = RefineType v55, Falsy
+          CondBranch v57, bb11(), bb7(v48, v49)
+        bb11():
+          v60:TrueClass = RefineType v55, Truthy
+          v62:NilClass = Const Value(nil)
+          CheckInterrupts
+          Return v48
+        bb7(v70:BasicObject, v71:Fixnum):
+          v75:Array = RefineType v70, Array
+          v76:CInt64 = UnboxFixnum v71
+          v77:BasicObject = ArrayAref v75, v76
+          v79:BasicObject = InvokeBlock v77 # SendFallbackReason: InvokeBlock: not yet specialized
+          v83:Fixnum[1] = Const Value(1)
+          v84:Fixnum = FixnumAdd v71, v83
+          PatchPoint NoEPEscape(each)
+          Jump bb8(v70, v84)
         bb4(v23:BasicObject, v24:NilClass):
           v28:BasicObject = InvokeBuiltin <inline_expr>, v23
           Jump bb5(v23, v24, v28)
         bb5(v40:BasicObject, v41:NilClass, v42:BasicObject):
           CheckInterrupts
           Return v42
-        bb6(v30:BasicObject, v31:NilClass):
-          v35:Fixnum[0] = Const Value(0)
-          Jump bb8(v30, v35)
-        bb8(v48:BasicObject, v49:Fixnum):
-          v52:BoolExact = InvokeBuiltin rb_jit_ary_at_end, v48, v49
-          v54:CBool = Test v52
-          v55:FalseClass = RefineType v52, Falsy
-          IfFalse v54, bb7(v48, v49)
-          v57:TrueClass = RefineType v52, Truthy
-          v59:NilClass = Const Value(nil)
-          CheckInterrupts
-          Return v48
-        bb7(v67:BasicObject, v68:Fixnum):
-          v72:BasicObject = InvokeBuiltin rb_jit_ary_at, v67, v68
-          v74:BasicObject = InvokeBlock, v72 # SendFallbackReason: InvokeBlock: not yet specialized
-          v78:Fixnum = InvokeBuiltin rb_jit_fixnum_inc, v67, v68
-          PatchPoint NoEPEscape(each)
-          Jump bb8(v67, v78)
         ");
     }
 
@@ -5396,7 +6512,7 @@ pub(crate) mod hir_build_tests {
         bb3(v6:BasicObject):
           v10:BasicObject = GetConstantPath 0x1000
           v12:BasicObject = Send v10, :induce_side_exit! # SendFallbackReason: Uncategorized(opt_send_without_block)
-          v16:BasicObject = GetConstantPath 0x1000
+          v16:BasicObject = GetConstantPath 0x1010
           SideExit DirectiveInduced
         ");
     }
@@ -5515,6 +6631,181 @@ pub(crate) mod hir_build_tests {
         assert!(hir.contains("BreakPoint"));
         assert!(hir.contains("Return v"));
     }
+
+    #[test]
+    fn test_getspecialnumber() {
+      eval("
+        def test(a)
+          a =~/(hello)/
+          $1
+        end
+      ");
+      assert_snapshot!(hir_string("test"), @"
+      fn test@<compiled>:3:
+      bb1():
+        EntryPoint interpreter
+        v1:BasicObject = LoadSelf
+        v2:CPtr = LoadSP
+        v3:BasicObject = LoadField v2, :a@0x1000
+        Jump bb3(v1, v3)
+      bb2():
+        EntryPoint JIT(0)
+        v6:BasicObject = LoadArg :self@0
+        v7:BasicObject = LoadArg :a@1
+        Jump bb3(v6, v7)
+      bb3(v9:BasicObject, v10:BasicObject):
+        v15:RegexpExact[VALUE(0x1008)] = Const Value(VALUE(0x1008))
+        v18:BasicObject = Send v10, :=~, v15 # SendFallbackReason: Uncategorized(opt_regexpmatch2)
+        v22:StringExact|NilClass = GetSpecialNumber 2
+        CheckInterrupts
+        Return v22
+      ");
+    }
+
+    #[test]
+    fn test_getspecialsymbol() {
+      eval("
+        def test(a)
+          a =~/(hello)/
+          $&
+        end
+      ");
+      assert_snapshot!(hir_string("test"), @"
+      fn test@<compiled>:3:
+      bb1():
+        EntryPoint interpreter
+        v1:BasicObject = LoadSelf
+        v2:CPtr = LoadSP
+        v3:BasicObject = LoadField v2, :a@0x1000
+        Jump bb3(v1, v3)
+      bb2():
+        EntryPoint JIT(0)
+        v6:BasicObject = LoadArg :self@0
+        v7:BasicObject = LoadArg :a@1
+        Jump bb3(v6, v7)
+      bb3(v9:BasicObject, v10:BasicObject):
+        v15:RegexpExact[VALUE(0x1008)] = Const Value(VALUE(0x1008))
+        v18:BasicObject = Send v10, :=~, v15 # SendFallbackReason: Uncategorized(opt_regexpmatch2)
+        v22:StringExact|NilClass = GetSpecialSymbol LastMatch
+        CheckInterrupts
+        Return v22
+      ");
+    }
+
+    #[test]
+    fn test_once_not_done_side_exits() {
+        eval("
+            def test = /#{'a'.upcase}/o
+        ");
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:2:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          Jump bb3(v1)
+        bb2():
+          EntryPoint JIT(0)
+          v4:BasicObject = LoadArg :self@0
+          Jump bb3(v4)
+        bb3(v6:BasicObject):
+          SideExit OnceNotDone recompile
+        ");
+        // Running the method fills in the once cache, so a recompile sees the
+        // cached value instead of side-exiting.
+        eval("test");
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:2:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          Jump bb3(v1)
+        bb2():
+          EntryPoint JIT(0)
+          v4:BasicObject = LoadArg :self@0
+          Jump bb3(v4)
+        bb3(v6:BasicObject):
+          v10:RegexpExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
+          CheckInterrupts
+          Return v10
+        ");
+    }
+
+    #[test]
+    fn test_once_done_returns_value() {
+        eval("
+            def test = /#{'a'.upcase}/o
+            test
+        ");
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:2:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          Jump bb3(v1)
+        bb2():
+          EntryPoint JIT(0)
+          v4:BasicObject = LoadArg :self@0
+          Jump bb3(v4)
+        bb3(v6:BasicObject):
+          v10:RegexpExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
+          CheckInterrupts
+          Return v10
+        ");
+    }
+
+    #[test]
+    fn test_opt_case_dispatch() {
+        eval("
+            def test(o)
+              case o
+              when 1 then :one
+              when 2 then :two
+              else :other
+              end
+            end
+        ");
+        assert_contains_opcode("test", YARVINSN_opt_case_dispatch);
+        assert_snapshot!(hir_string("test"), @"
+        fn test@<compiled>:3:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          Jump bb3(v1, v3)
+        bb2():
+          EntryPoint JIT(0)
+          v6:BasicObject = LoadArg :self@0
+          v7:BasicObject = LoadArg :o@1
+          Jump bb3(v6, v7)
+        bb3(v9:BasicObject, v10:BasicObject):
+          v17:Fixnum[1] = Const Value(1)
+          v20:BasicObject = Send v17, :===, v10 # SendFallbackReason: Uncategorized(opt_send_without_block)
+          v22:CBool = Test v20
+          v23:Truthy = RefineType v20, Truthy
+          CondBranch v22, bb4(v9, v10, v10), bb6()
+        bb4(v44:BasicObject, v45:BasicObject, v46:BasicObject):
+          v51:StaticSymbol[:one] = Const Value(VALUE(0x1008))
+          CheckInterrupts
+          Return v51
+        bb6():
+          v25:Falsy = RefineType v20, Falsy
+          v27:Fixnum[2] = Const Value(2)
+          v30:BasicObject = Send v27, :===, v10 # SendFallbackReason: Uncategorized(opt_send_without_block)
+          v32:CBool = Test v30
+          v33:Truthy = RefineType v30, Truthy
+          CondBranch v32, bb5(v9, v10, v10), bb7()
+        bb5(v56:BasicObject, v57:BasicObject, v58:BasicObject):
+          v63:StaticSymbol[:two] = Const Value(VALUE(0x1010))
+          CheckInterrupts
+          Return v63
+        bb7():
+          v35:Falsy = RefineType v30, Falsy
+          v39:StaticSymbol[:other] = Const Value(VALUE(0x1018))
+          CheckInterrupts
+          Return v39
+        ");
+    }
 }
 
  /// Test successor and predecessor set computations.
@@ -5547,7 +6838,7 @@ pub(crate) mod hir_build_tests {
 
         assert!(cfi.is_preceded_by(bb1, bb2));
         assert!(cfi.is_succeeded_by(bb2, bb1));
-        assert!(cfi.predecessors(bb3).eq([bb2]));
+        assert!(cfi.predecessors(bb3).eq(&[bb2]));
      }
 
      #[test]
@@ -5560,8 +6851,7 @@ pub(crate) mod hir_build_tests {
         let bb3 = function.new_block(0);
 
         let v1 = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb0, Insn::IfTrue { val: v1, target: edge(bb2)});
-        function.push_insn(bb0, Insn::Jump(edge(bb1)));
+        let _ = function.push_insn(bb0, Insn::CondBranch { val: v1, if_true: edge(bb2), if_false: edge(bb1) });
         function.push_insn(bb1, Insn::Jump(edge(bb3)));
         function.push_insn(bb2, Insn::Jump(edge(bb3)));
 
@@ -5587,8 +6877,7 @@ pub(crate) mod hir_build_tests {
 
          // Construct two separate jump instructions.
          let v1 = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
-         let _ = function.push_insn(bb0, Insn::IfTrue { val: v1, target: edge(bb1)});
-         function.push_insn(bb0, Insn::Jump(edge(bb1)));
+         let _ = function.push_insn(bb0, Insn::CondBranch { val: v1, if_true: edge(bb1), if_false: edge(bb1)});
 
          let retval = function.push_insn(bb1, Insn::Const { val: Const::CBool(true) });
          function.push_insn(bb1, Insn::Return { val: retval });
@@ -5596,8 +6885,8 @@ pub(crate) mod hir_build_tests {
          function.seal_entries();
          let cfi = ControlFlowInfo::new(&function);
 
-         assert_eq!(cfi.predecessors(bb1).collect::<Vec<_>>().len(), 1);
-         assert_eq!(cfi.successors(bb0).collect::<Vec<_>>().len(), 1);
+         assert_eq!(cfi.predecessors(bb1).len(), 1);
+         assert_eq!(cfi.successors(bb0).len(), 1);
      }
  }
 
@@ -5614,7 +6903,7 @@ pub(crate) mod hir_build_tests {
      fn assert_dominators_contains_self(function: &Function, dominators: &Dominators) {
          for (i, _) in function.blocks.iter().enumerate() {
              // Ensure that each dominating set contains the block itself.
-             assert!(dominators.is_dominated_by(BlockId(i), BlockId(i)));
+             assert!(dominators.is_dominated_by(BlockId::from(i), BlockId::from(i)));
          }
      }
 
@@ -5668,8 +6957,7 @@ pub(crate) mod hir_build_tests {
         let bb3 = function.new_block(0);
 
         let val = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb0, Insn::IfTrue { val, target: edge(bb1)});
-        function.push_insn(bb0, Insn::Jump(edge(bb2)));
+        let _ = function.push_insn(bb0, Insn::CondBranch { val, if_true: edge(bb1), if_false: edge(bb2) });
 
         function.push_insn(bb2, Insn::Jump(edge(bb3)));
         function.push_insn(bb1, Insn::Jump(edge(bb3)));
@@ -5682,15 +6970,14 @@ pub(crate) mod hir_build_tests {
         fn <manual>:
         bb1():
           v0:Any = Const Value(false)
-          IfTrue v0, bb2()
-          Jump bb3()
+          CondBranch v0, bb2(), bb3()
         bb2():
           Jump bb4()
         bb3():
           Jump bb4()
         bb4():
-          v5:Any = Const CBool(true)
-          Return v5
+          v4:Any = Const CBool(true)
+          Return v4
         ");
 
         let dominators = Dominators::new(&function);
@@ -5718,14 +7005,12 @@ pub(crate) mod hir_build_tests {
         function.push_insn(bb0, Insn::Jump(edge(bb1)));
 
         let v0 = function.push_insn(bb1, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb1, Insn::IfTrue { val: v0, target: edge(bb2)});
-        function.push_insn(bb1, Insn::Jump(edge(bb4)));
+        let _ = function.push_insn(bb1, Insn::CondBranch { val: v0, if_true: edge(bb2), if_false: edge(bb4) });
 
         function.push_insn(bb2, Insn::Jump(edge(bb3)));
 
         let v1 = function.push_insn(bb3, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb3, Insn::IfTrue { val: v1, target: edge(bb5)});
-        function.push_insn(bb3, Insn::Jump(edge(bb7)));
+        let _ = function.push_insn(bb3, Insn::CondBranch { val: v1, if_true: edge(bb5), if_false: edge(bb7) });
 
         function.push_insn(bb4, Insn::Jump(edge(bb5)));
 
@@ -5743,14 +7028,12 @@ pub(crate) mod hir_build_tests {
           Jump bb2()
         bb2():
           v1:Any = Const Value(false)
-          IfTrue v1, bb3()
-          Jump bb5()
+          CondBranch v1, bb3(), bb5()
         bb3():
           Jump bb4()
         bb4():
-          v5:Any = Const Value(false)
-          IfTrue v5, bb6()
-          Jump bb8()
+          v4:Any = Const Value(false)
+          CondBranch v4, bb6(), bb8()
         bb5():
           Jump bb6()
         bb6():
@@ -5758,8 +7041,8 @@ pub(crate) mod hir_build_tests {
         bb7():
           Jump bb8()
         bb8():
-          v11:Any = Const CBool(true)
-          Return v11
+          v9:Any = Const CBool(true)
+          Return v9
         ");
 
         let dominators = Dominators::new(&function);
@@ -5787,20 +7070,17 @@ pub(crate) mod hir_build_tests {
         let bb5 = function.new_block(0);
 
         let v0 = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb0, Insn::IfTrue { val: v0, target: edge(bb1)});
-        function.push_insn(bb0, Insn::Jump(edge(bb4)));
+        let _ = function.push_insn(bb0, Insn::CondBranch { val: v0, if_true: edge(bb1), if_false: edge(bb4) });
 
         let v1 = function.push_insn(bb1, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb1, Insn::IfTrue { val: v1, target: edge(bb2)});
-        function.push_insn(bb1, Insn::Jump(edge(bb3)));
+        let _ = function.push_insn(bb1, Insn::CondBranch { val: v1, if_true: edge(bb2), if_false: edge(bb3) });
 
         function.push_insn(bb2, Insn::Jump(edge(bb3)));
 
         function.push_insn(bb4, Insn::Jump(edge(bb5)));
 
         let v2 = function.push_insn(bb5, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb5, Insn::IfTrue { val: v2, target: edge(bb3)});
-        function.push_insn(bb5, Insn::Jump(edge(bb4)));
+        let _ = function.push_insn(bb5, Insn::CondBranch { val: v2, if_true: edge(bb3), if_false: edge(bb4) });
 
         let retval = function.push_insn(bb3, Insn::Const { val: Const::CBool(true) });
         function.push_insn(bb3, Insn::Return { val: retval });
@@ -5810,23 +7090,20 @@ pub(crate) mod hir_build_tests {
         fn <manual>:
         bb1():
           v0:Any = Const Value(false)
-          IfTrue v0, bb2()
-          Jump bb5()
+          CondBranch v0, bb2(), bb5()
         bb2():
-          v3:Any = Const Value(false)
-          IfTrue v3, bb3()
-          Jump bb4()
+          v2:Any = Const Value(false)
+          CondBranch v2, bb3(), bb4()
         bb3():
           Jump bb4()
         bb5():
           Jump bb6()
         bb6():
-          v8:Any = Const Value(false)
-          IfTrue v8, bb4()
-          Jump bb5()
+          v6:Any = Const Value(false)
+          CondBranch v6, bb4(), bb5()
         bb4():
-          v11:Any = Const CBool(true)
-          Return v11
+          v8:Any = Const CBool(true)
+          Return v8
         ");
 
         let dominators = Dominators::new(&function);
@@ -5891,45 +7168,50 @@ mod loop_info_tests {
 
     #[test]
     fn test_loop_depth() {
-        // ┌─────┐
-        // │ bb0 │
-        // └──┬──┘
-        //    │
-        // ┌──▼──┐      ┌─────┐
-        // │ bb2 ◄──────┼ bb1 ◄─┐
-        // └──┬──┘      └─────┘ │
-        //    └─────────────────┘
+        //    ┌─────┐
+        //    │ bb0 │
+        //    └──┬──┘
+        //       │
+        //    ┌──▼──┐      ┌─────┐
+        //  ┌►│ bb2 ├─────►│ bb1 │
+        //  │ └──┬──┘  T   └──┬──┘
+        //  │   F│            │
+        //  │ ┌──▼──┐         │
+        //  │ │ bb3 │         │
+        //  │ └─────┘         │
+        //  └─────────────────┘
         let mut function = Function::new(std::ptr::null());
 
         let bb0 = function.entry_block;
         let bb1 = function.new_block(0);
         let bb2 = function.new_block(0);
+        let bb3 = function.new_block(0);
 
         function.push_insn(bb0, Insn::Jump(edge(bb2)));
 
-        let val = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb2, Insn::IfTrue { val, target: edge(bb1)});
-        let retval = function.push_insn(bb2, Insn::Const { val: Const::CBool(true) });
-        let _ = function.push_insn(bb2, Insn::Return { val: retval });
+        let val = function.push_insn(bb2, Insn::Const { val: Const::Value(Qfalse) });
+        let _ = function.push_insn(bb2, Insn::CondBranch { val, if_true: edge(bb1), if_false: edge(bb3) });
+        let retval = function.push_insn(bb3, Insn::Const { val: Const::CBool(true) });
+        let _ = function.push_insn(bb3, Insn::Return { val: retval });
 
         function.push_insn(bb1, Insn::Jump(edge(bb2)));
 
         function.seal_entries();
-        let cfi = ControlFlowInfo::new(&function);
         let dominators = Dominators::new(&function);
-        let loop_info = LoopInfo::new(&cfi, &dominators);
+        let loop_info = LoopInfo::new(&dominators);
 
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
         fn <manual>:
         bb1():
           Jump bb3()
-          v1:Any = Const Value(false)
         bb3():
-          IfTrue v1, bb2()
-          v3:Any = Const CBool(true)
-          Return v3
+          v1:Any = Const Value(false)
+          CondBranch v1, bb2(), bb4()
         bb2():
           Jump bb3()
+        bb4():
+          v3:Any = Const CBool(true)
+          Return v3
         ");
 
         assert!(loop_info.is_loop_header(bb2));
@@ -5971,20 +7253,17 @@ mod loop_info_tests {
         function.push_insn(bb1, Insn::Jump(edge(bb2)));
 
         let cond = function.push_insn(bb2, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb2, Insn::IfTrue { val: cond, target: edge(bb1) });
-        function.push_insn(bb2, Insn::Jump(edge(bb3)));
+        let _ = function.push_insn(bb2, Insn::CondBranch { val: cond, if_true: edge(bb1), if_false: edge(bb3) });
 
         let cond = function.push_insn(bb3, Insn::Const { val: Const::Value(Qtrue) });
-        let _ = function.push_insn(bb3, Insn::IfTrue { val: cond, target: edge(bb0) });
-        function.push_insn(bb3, Insn::Jump(edge(bb4)));
+        let _ = function.push_insn(bb3, Insn::CondBranch { val: cond, if_true: edge(bb0), if_false: edge(bb4) });
 
         let retval = function.push_insn(bb4, Insn::Const { val: Const::CBool(true) });
         let _ = function.push_insn(bb4, Insn::Return { val: retval });
 
         function.seal_entries();
-        let cfi = ControlFlowInfo::new(&function);
         let dominators = Dominators::new(&function);
-        let loop_info = LoopInfo::new(&cfi, &dominators);
+        let loop_info = LoopInfo::new(&dominators);
 
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
         fn <manual>:
@@ -5994,15 +7273,13 @@ mod loop_info_tests {
           Jump bb3()
         bb3():
           v2:Any = Const Value(false)
-          IfTrue v2, bb2()
-          Jump bb4()
+          CondBranch v2, bb2(), bb4()
         bb4():
-          v5:Any = Const Value(true)
-          IfTrue v5, bb1()
-          Jump bb5()
+          v4:Any = Const Value(true)
+          CondBranch v4, bb1(), bb5()
         bb5():
-          v8:Any = Const CBool(true)
-          Return v8
+          v6:Any = Const CBool(true)
+          Return v6
         ");
 
         assert!(loop_info.is_loop_header(bb0));
@@ -6050,52 +7327,43 @@ mod loop_info_tests {
         let bb6 = function.new_block(0);
 
         let cond = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb0, Insn::IfTrue { val: cond, target: edge(bb1) });
-        function.push_insn(bb0, Insn::Jump(edge(bb3)));
+        let _ = function.push_insn(bb0, Insn::CondBranch { val: cond, if_true: edge(bb1), if_false: edge(bb3) });
 
         function.push_insn(bb1, Insn::Jump(edge(bb2)));
 
-        let _ = function.push_insn(bb2, Insn::IfTrue { val: cond, target: edge(bb1) });
-        function.push_insn(bb2, Insn::Jump(edge(bb5)));
+        let _ = function.push_insn(bb2, Insn::CondBranch { val: cond, if_true: edge(bb1), if_false: edge(bb5) });
 
         function.push_insn(bb3, Insn::Jump(edge(bb4)));
 
-        let _ = function.push_insn(bb4, Insn::IfTrue { val: cond, target: edge(bb3) });
-        function.push_insn(bb4, Insn::Jump(edge(bb5)));
+        let _ = function.push_insn(bb4, Insn::CondBranch { val: cond, if_true: edge(bb3), if_false: edge(bb5) });
 
-        let _ = function.push_insn(bb5, Insn::IfTrue { val: cond, target: edge(bb0) });
-        function.push_insn(bb5, Insn::Jump(edge(bb6)));
+        let _ = function.push_insn(bb5, Insn::CondBranch { val: cond, if_true: edge(bb0), if_false: edge(bb6) });
 
         let retval = function.push_insn(bb6, Insn::Const { val: Const::CBool(true) });
         let _ = function.push_insn(bb6, Insn::Return { val: retval });
 
         function.seal_entries();
-        let cfi = ControlFlowInfo::new(&function);
         let dominators = Dominators::new(&function);
-        let loop_info = LoopInfo::new(&cfi, &dominators);
+        let loop_info = LoopInfo::new(&dominators);
 
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
         fn <manual>:
         bb1():
           v0:Any = Const Value(false)
-          IfTrue v0, bb2()
-          Jump bb4()
+          CondBranch v0, bb2(), bb4()
         bb2():
           Jump bb3()
         bb3():
-          IfTrue v0, bb2()
-          Jump bb6()
+          CondBranch v0, bb2(), bb6()
         bb4():
           Jump bb5()
         bb5():
-          IfTrue v0, bb4()
-          Jump bb6()
+          CondBranch v0, bb4(), bb6()
         bb6():
-          IfTrue v0, bb1()
-          Jump bb7()
+          CondBranch v0, bb1(), bb7()
         bb7():
-          v11:Any = Const CBool(true)
-          Return v11
+          v7:Any = Const CBool(true)
+          Return v7
         ");
 
         assert!(loop_info.is_loop_header(bb0));
@@ -6145,9 +7413,8 @@ mod loop_info_tests {
         let _ = function.push_insn(bb2, Insn::Return { val: retval });
 
         function.seal_entries();
-        let cfi = ControlFlowInfo::new(&function);
         let dominators = Dominators::new(&function);
-        let loop_info = LoopInfo::new(&cfi, &dominators);
+        let loop_info = LoopInfo::new(&dominators);
 
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
         fn <manual>:
@@ -6206,16 +7473,16 @@ mod loop_info_tests {
         let bb3 = function.new_block(0);
         let bb4 = function.new_block(0);
         let bb5 = function.new_block(0);
+        let bb6 = function.new_block(0);
 
         let cond = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
         let _ = function.push_insn(bb0, Insn::Jump(edge(bb1)));
         let _ = function.push_insn(bb1, Insn::Jump(edge(bb2)));
         let _ = function.push_insn(bb2, Insn::Jump(edge(bb3)));
-        let _ = function.push_insn(bb3, Insn::Jump(edge(bb4)));
-        let _ = function.push_insn(bb3, Insn::IfTrue {val: cond, target: edge(bb2)});
-        let _ = function.push_insn(bb4, Insn::Jump(edge(bb5)));
-        let _ = function.push_insn(bb4, Insn::IfTrue {val: cond, target: edge(bb1)});
-        let _ = function.push_insn(bb5, Insn::IfTrue {val: cond, target: edge(bb0)});
+        let _ = function.push_insn(bb3, Insn::CondBranch {val: cond, if_true: edge(bb2), if_false: edge(bb4) });
+        let _ = function.push_insn(bb4, Insn::CondBranch {val: cond, if_true: edge(bb1), if_false: edge(bb5) });
+        let _ = function.push_insn(bb5, Insn::CondBranch {val: cond, if_true: edge(bb0), if_false: edge(bb6) });
+        function.push_insn(bb6, Insn::Unreachable);
 
         function.seal_entries();
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
@@ -6228,18 +7495,17 @@ mod loop_info_tests {
         bb3():
           Jump bb4()
         bb4():
-          Jump bb5()
-          IfTrue v0, bb3()
+          CondBranch v0, bb3(), bb5()
         bb5():
-          Jump bb6()
-          IfTrue v0, bb2()
+          CondBranch v0, bb2(), bb6()
         bb6():
-          IfTrue v0, bb1()
+          CondBranch v0, bb1(), bb7()
+        bb7():
+          Unreachable
         ");
 
-        let cfi = ControlFlowInfo::new(&function);
         let dominators = Dominators::new(&function);
-        let loop_info = LoopInfo::new(&cfi, &dominators);
+        let loop_info = LoopInfo::new(&dominators);
 
         assert!(!loop_info.is_back_edge_source(bb0));
         assert!(!loop_info.is_back_edge_source(bb1));
@@ -6281,9 +7547,10 @@ mod iongraph_tests {
 
         let retval = function.push_insn(bb0, Insn::Const { val: Const::CBool(true) });
         function.push_insn(bb0, Insn::Return { val: retval });
+        function.seal_entries();
 
         let json = function.to_iongraph_pass("simple");
-        assert_snapshot!(json.to_string(), @r#"{"name":"simple", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
+        assert_snapshot!(json.to_string(), @r#"{"name":"simple", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[1], "instructions":[{"ptr":4098, "id":2, "opcode":"Entries bb1", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4097, "id":1, "loopDepth":0, "attributes":[], "predecessors":[0], "successors":[], "instructions":[{"ptr":4096, "id":0, "opcode":"Const CBool(true)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4097, "id":1, "opcode":"Return v0", "attributes":[], "inputs":[0], "uses":[], "memInputs":[], "type":""}]}]}, "lir":{"blocks":[]}}"#);
     }
 
     #[test]
@@ -6297,8 +7564,9 @@ mod iongraph_tests {
         let retval = function.push_insn(bb1, Insn::Const { val: Const::CBool(false) });
         function.push_insn(bb1, Insn::Return { val: retval });
 
+        function.seal_entries();
         let json = function.to_iongraph_pass("two_blocks");
-        assert_snapshot!(json.to_string(), @r#"{"name":"two_blocks", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
+        assert_snapshot!(json.to_string(), @r#"{"name":"two_blocks", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[1], "instructions":[{"ptr":4099, "id":3, "opcode":"Entries bb1", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4097, "id":1, "loopDepth":0, "attributes":[], "predecessors":[0], "successors":[2], "instructions":[{"ptr":4096, "id":0, "opcode":"Jump bb2()", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4098, "id":2, "loopDepth":0, "attributes":[], "predecessors":[1], "successors":[], "instructions":[{"ptr":4097, "id":1, "opcode":"Const CBool(false)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4098, "id":2, "opcode":"Return v1", "attributes":[], "inputs":[1], "uses":[], "memInputs":[], "type":""}]}]}, "lir":{"blocks":[]}}"#);
     }
 
     #[test]
@@ -6309,8 +7577,9 @@ mod iongraph_tests {
         let val1 = function.push_insn(bb0, Insn::Const { val: Const::CBool(true) });
         function.push_insn(bb0, Insn::Return { val: val1 });
 
+        function.seal_entries();
         let json = function.to_iongraph_pass("multiple_instructions");
-        assert_snapshot!(json.to_string(), @r#"{"name":"multiple_instructions", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
+        assert_snapshot!(json.to_string(), @r#"{"name":"multiple_instructions", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[1], "instructions":[{"ptr":4098, "id":2, "opcode":"Entries bb1", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4097, "id":1, "loopDepth":0, "attributes":[], "predecessors":[0], "successors":[], "instructions":[{"ptr":4096, "id":0, "opcode":"Const CBool(true)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4097, "id":1, "opcode":"Return v0", "attributes":[], "inputs":[0], "uses":[], "memInputs":[], "type":""}]}]}, "lir":{"blocks":[]}}"#);
     }
 
     #[test]
@@ -6318,18 +7587,20 @@ mod iongraph_tests {
         let mut function = Function::new(std::ptr::null());
         let bb0 = function.entry_block;
         let bb1 = function.new_block(0);
+        let bb2 = function.new_block(0);
 
         let cond = function.push_insn(bb0, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb0, Insn::IfTrue { val: cond, target: edge(bb1) });
+        function.push_insn(bb0, Insn::CondBranch { val: cond, if_true: edge(bb1), if_false: edge(bb2) });
 
-        let retval1 = function.push_insn(bb0, Insn::Const { val: Const::CBool(false) });
-        function.push_insn(bb0, Insn::Return { val: retval1 });
+        let retval1 = function.push_insn(bb2, Insn::Const { val: Const::CBool(false) });
+        function.push_insn(bb2, Insn::Return { val: retval1 });
 
         let retval2 = function.push_insn(bb1, Insn::Const { val: Const::CBool(true) });
         function.push_insn(bb1, Insn::Return { val: retval2 });
 
+        function.seal_entries();
         let json = function.to_iongraph_pass("conditional_branch");
-        assert_snapshot!(json.to_string(), @r#"{"name":"conditional_branch", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
+        assert_snapshot!(json.to_string(), @r#"{"name":"conditional_branch", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[1], "instructions":[{"ptr":4102, "id":6, "opcode":"Entries bb1", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4097, "id":1, "loopDepth":0, "attributes":[], "predecessors":[0], "successors":[2, 3], "instructions":[{"ptr":4096, "id":0, "opcode":"Const CBool(true)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4097, "id":1, "opcode":"CondBranch v0, bb2(), bb3()", "attributes":[], "inputs":[0], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4098, "id":2, "loopDepth":0, "attributes":[], "predecessors":[1], "successors":[], "instructions":[{"ptr":4100, "id":4, "opcode":"Const CBool(true)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4101, "id":5, "opcode":"Return v4", "attributes":[], "inputs":[4], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4099, "id":3, "loopDepth":0, "attributes":[], "predecessors":[1], "successors":[], "instructions":[{"ptr":4098, "id":2, "opcode":"Const CBool(false)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4099, "id":3, "opcode":"Return v2", "attributes":[], "inputs":[2], "uses":[], "memInputs":[], "type":""}]}]}, "lir":{"blocks":[]}}"#);
     }
 
     #[test]
@@ -6339,18 +7610,20 @@ mod iongraph_tests {
         let bb0 = function.entry_block;
         let bb1 = function.new_block(0);
         let bb2 = function.new_block(0);
+        let bb3 = function.new_block(0);
 
         function.push_insn(bb0, Insn::Jump(edge(bb2)));
 
-        let val = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
-        let _ = function.push_insn(bb2, Insn::IfTrue { val, target: edge(bb1)});
-        let retval = function.push_insn(bb2, Insn::Const { val: Const::CBool(true) });
-        let _ = function.push_insn(bb2, Insn::Return { val: retval });
+        let val = function.push_insn(bb2, Insn::Const { val: Const::Value(Qfalse) });
+        let _ = function.push_insn(bb2, Insn::CondBranch { val, if_true: edge(bb1), if_false: edge(bb3) });
+        let retval = function.push_insn(bb3, Insn::Const { val: Const::CBool(true) });
+        let _ = function.push_insn(bb3, Insn::Return { val: retval });
 
         function.push_insn(bb1, Insn::Jump(edge(bb2)));
 
+        function.seal_entries();
         let json = function.to_iongraph_pass("loop_structure");
-        assert_snapshot!(json.to_string(), @r#"{"name":"loop_structure", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
+        assert_snapshot!(json.to_string(), @r#"{"name":"loop_structure", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[1], "instructions":[{"ptr":4102, "id":6, "opcode":"Entries bb1", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4097, "id":1, "loopDepth":0, "attributes":[], "predecessors":[0], "successors":[3], "instructions":[{"ptr":4096, "id":0, "opcode":"Jump bb3()", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4099, "id":3, "loopDepth":1, "attributes":["loopheader"], "predecessors":[1, 2], "successors":[2, 4], "instructions":[{"ptr":4097, "id":1, "opcode":"Const Value(false)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4098, "id":2, "opcode":"CondBranch v1, bb2(), bb4()", "attributes":[], "inputs":[1], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4098, "id":2, "loopDepth":1, "attributes":["backedge"], "predecessors":[3], "successors":[3], "instructions":[{"ptr":4101, "id":5, "opcode":"Jump bb3()", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4100, "id":4, "loopDepth":0, "attributes":[], "predecessors":[3], "successors":[], "instructions":[{"ptr":4099, "id":3, "opcode":"Const CBool(true)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4100, "id":4, "opcode":"Return v3", "attributes":[], "inputs":[3], "uses":[], "memInputs":[], "type":""}]}]}, "lir":{"blocks":[]}}"#);
     }
 
     #[test]
@@ -6361,8 +7634,7 @@ mod iongraph_tests {
         let bb2 = function.new_block(0);
 
         let cond = function.push_insn(bb0, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb0, Insn::IfTrue { val: cond, target: edge(bb1) });
-        function.push_insn(bb0, Insn::Jump(edge(bb2)));
+        function.push_insn(bb0, Insn::CondBranch { val: cond, if_true: edge(bb1), if_false: edge(bb2) });
 
         let retval1 = function.push_insn(bb1, Insn::Const { val: Const::CBool(true) });
         function.push_insn(bb1, Insn::Return { val: retval1 });
@@ -6370,7 +7642,8 @@ mod iongraph_tests {
         let retval2 = function.push_insn(bb2, Insn::Const { val: Const::CBool(false) });
         function.push_insn(bb2, Insn::Return { val: retval2 });
 
+        function.seal_entries();
         let json = function.to_iongraph_pass("multiple_successors");
-        assert_snapshot!(json.to_string(), @r#"{"name":"multiple_successors", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
+        assert_snapshot!(json.to_string(), @r#"{"name":"multiple_successors", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[1], "instructions":[{"ptr":4102, "id":6, "opcode":"Entries bb1", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4097, "id":1, "loopDepth":0, "attributes":[], "predecessors":[0], "successors":[2, 3], "instructions":[{"ptr":4096, "id":0, "opcode":"Const CBool(true)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4097, "id":1, "opcode":"CondBranch v0, bb2(), bb3()", "attributes":[], "inputs":[0], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4098, "id":2, "loopDepth":0, "attributes":[], "predecessors":[1], "successors":[], "instructions":[{"ptr":4098, "id":2, "opcode":"Const CBool(true)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4099, "id":3, "opcode":"Return v2", "attributes":[], "inputs":[2], "uses":[], "memInputs":[], "type":""}]}, {"ptr":4099, "id":3, "loopDepth":0, "attributes":[], "predecessors":[1], "successors":[], "instructions":[{"ptr":4100, "id":4, "opcode":"Const CBool(false)", "attributes":[], "inputs":[], "uses":[], "memInputs":[], "type":"Any"}, {"ptr":4101, "id":5, "opcode":"Return v4", "attributes":[], "inputs":[4], "uses":[], "memInputs":[], "type":""}]}]}, "lir":{"blocks":[]}}"#);
     }
  }

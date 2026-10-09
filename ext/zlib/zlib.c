@@ -25,7 +25,7 @@
 # define VALGRIND_MAKE_MEM_UNDEFINED(p, n) 0
 #endif
 
-#define RUBY_ZLIB_VERSION "3.2.3"
+#define RUBY_ZLIB_VERSION "3.2.4"
 
 #ifndef RB_PASS_CALLED_KEYWORDS
 # define rb_class_new_instance_kw(argc, argv, klass, kw_splat) rb_class_new_instance(argc, argv, klass)
@@ -651,6 +651,7 @@ zstream_init(struct zstream *z, const struct zstream_funcs *func)
     z->stream.avail_in = 0;
     z->stream.next_out = Z_NULL;
     z->stream.avail_out = 0;
+    z->stream.state = Z_NULL;
     z->func = func;
 }
 

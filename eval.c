@@ -20,7 +20,7 @@
 #include "eval_intern.h"
 #include "internal.h"
 #include "internal/class.h"
-#include "internal/cont.h"
+#include "internal/jit.h"
 #include "internal/error.h"
 #include "internal/eval.h"
 #include "internal/gc.h"
@@ -30,6 +30,7 @@
 #include "internal/object.h"
 #include "internal/thread.h"
 #include "internal/variable.h"
+#include "internal/vm.h"
 #include "ruby/fiber/scheduler.h"
 #include "iseq.h"
 #include "probes.h"
@@ -77,11 +78,15 @@ ruby_setup(void)
 #if defined(__linux__) && defined(PR_SET_THP_DISABLE)
     prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
 #endif
+#if defined(_WIN32)
+    rb_w32_init_long_paths();
+#endif
     Init_BareVM();
+    Init_default_shapes();
     rb_vm_encoded_insn_data_table_init();
     Init_enable_box();
     Init_vm_objects();
-    Init_root_box();
+    Init_master_box();
     Init_fstring_table();
 
     EC_PUSH_TAG(GET_EC());
@@ -147,15 +152,26 @@ rb_ec_fiber_scheduler_finalize(rb_execution_context_t *ec)
 static void
 rb_ec_teardown(rb_execution_context_t *ec)
 {
+    enum ruby_tag_type state = TAG_NONE;
+    volatile VALUE trap_errinfo = Qnil;
+
     // If the user code defined a scheduler for the top level thread, run it:
     rb_ec_fiber_scheduler_finalize(ec);
 
     EC_PUSH_TAG(ec);
-    if (EC_EXEC_TAG() == TAG_NONE) {
+    if ((state = EC_EXEC_TAG()) == TAG_NONE) {
         rb_vm_trap_exit(rb_ec_vm_ptr(ec));
+    }
+    else {
+        trap_errinfo = ec->errinfo;
+        ec->errinfo = Qnil;
     }
     EC_POP_TAG();
     rb_ec_exec_end_proc(ec);
+    if (!NIL_P(trap_errinfo)) {
+        error_handle(ec, trap_errinfo, state);
+        ec->errinfo = trap_errinfo;
+    }
     rb_ec_clear_all_trace_func(ec);
 }
 
@@ -441,6 +457,7 @@ rb_class_modify_check(VALUE klass)
         }
         rb_error_frozen_object(klass);
     }
+    rb_class_owner_check(klass);
 }
 
 NORETURN(static void rb_longjmp(rb_execution_context_t *, enum ruby_tag_type, volatile VALUE, VALUE));
@@ -1056,12 +1073,14 @@ rb_rescue2(VALUE (* b_proc) (VALUE), VALUE data1,
 
 VALUE
 rb_vrescue2(VALUE (* b_proc) (VALUE), VALUE data1,
-            VALUE (* r_proc) (VALUE, VALUE), VALUE data2,
+            VALUE (* r_proc_arg) (VALUE, VALUE), VALUE data2_arg,
             va_list args)
 {
     enum ruby_tag_type state;
     rb_execution_context_t * volatile ec = GET_EC();
     rb_control_frame_t *volatile cfp = ec->cfp;
+    VALUE (* volatile r_proc)(VALUE, VALUE) = r_proc_arg;
+    volatile VALUE data2 = data2_arg;
     volatile VALUE result = Qfalse;
     volatile VALUE e_info = ec->errinfo;
 
@@ -1123,12 +1142,13 @@ rb_rescue(VALUE (* b_proc)(VALUE), VALUE data1,
 }
 
 VALUE
-rb_protect(VALUE (* proc) (VALUE), VALUE data, int *pstate)
+rb_protect(VALUE (* proc) (VALUE), VALUE data, int *pstate_arg)
 {
     volatile VALUE result = Qnil;
     volatile enum ruby_tag_type state;
     rb_execution_context_t * volatile ec = GET_EC();
     rb_control_frame_t *volatile cfp = ec->cfp;
+    int * volatile pstate = pstate_arg;
 
     EC_PUSH_TAG(ec);
     if ((state = EC_EXEC_TAG()) == TAG_NONE) {
@@ -1144,9 +1164,12 @@ rb_protect(VALUE (* proc) (VALUE), VALUE data, int *pstate)
 }
 
 VALUE
-rb_ec_ensure(rb_execution_context_t *ec, VALUE (*b_proc)(VALUE), VALUE data1, VALUE (*e_proc)(VALUE), VALUE data2)
+rb_ec_ensure(rb_execution_context_t *ec_arg, VALUE (*b_proc)(VALUE), VALUE data1, VALUE (*e_proc_arg)(VALUE), VALUE data2_arg)
 {
     enum ruby_tag_type state;
+    rb_execution_context_t * volatile ec = ec_arg;
+    VALUE (* volatile e_proc)(VALUE) = e_proc_arg;
+    volatile VALUE data2 = data2_arg;
     volatile VALUE result = Qnil;
     VALUE errinfo;
     EC_PUSH_TAG(ec);
@@ -1308,8 +1331,8 @@ rb_mod_include(int argc, VALUE *argv, VALUE module)
         }
     }
     while (argc--) {
-        rb_funcall(argv[argc], id_append_features, 1, module);
-        rb_funcall(argv[argc], id_included, 1, module);
+        rb_funcallv_uncached(argv[argc], id_append_features, 1, &module);
+        rb_funcallv_uncached(argv[argc], id_included, 1, &module);
     }
     return module;
 }
@@ -1365,8 +1388,8 @@ rb_mod_prepend(int argc, VALUE *argv, VALUE module)
         }
     }
     while (argc--) {
-        rb_funcall(argv[argc], id_prepend_features, 1, module);
-        rb_funcall(argv[argc], id_prepended, 1, module);
+        rb_funcallv_uncached(argv[argc], id_prepend_features, 1, &module);
+        rb_funcallv_uncached(argv[argc], id_prepended, 1, &module);
     }
     return module;
 }
@@ -1451,15 +1474,20 @@ using_refinement(VALUE klass, VALUE module, VALUE arg)
     return ST_CONTINUE;
 }
 
-static void
-using_module_recursive(const rb_cref_t *cref, VALUE klass)
+/*!
+ * \private
+ * rb_using_module without the refinement method cache flush, for a fresh
+ * cref that no call site references yet (Proc#refined).
+ */
+void
+rb_using_module_recursive(rb_cref_t *cref, VALUE klass)
 {
     ID id_refinements;
     VALUE super, module, refinements;
 
     super = RCLASS_SUPER(klass);
     if (super) {
-        using_module_recursive(cref, super);
+        rb_using_module_recursive(cref, super);
     }
     switch (BUILTIN_TYPE(klass)) {
       case T_MODULE:
@@ -1485,17 +1513,11 @@ using_module_recursive(const rb_cref_t *cref, VALUE klass)
  * \private
  */
 static void
-rb_using_module(const rb_cref_t *cref, VALUE module)
+rb_using_module(rb_cref_t *cref, VALUE module)
 {
     Check_Type(module, T_MODULE);
-    using_module_recursive(cref, module);
+    rb_using_module_recursive(cref, module);
     rb_clear_all_refinement_method_cache();
-}
-
-void
-rb_vm_using_module(VALUE module)
-{
-    rb_using_module(rb_vm_cref_replace_with_duplicated_cref(), module);
 }
 
 /*
@@ -1616,6 +1638,11 @@ rb_mod_refine(VALUE module, VALUE klass)
 
     ensure_class_or_module(klass);
 
+    // refine installs refined method entries into the target's method table, and
+    // rb_refinement_setup writes the refinement tables into the receiver
+    rb_class_owner_check(module);
+    rb_class_owner_check(klass);
+
     rb_refinement_setup(&data, module, klass);
 
     rb_yield_refine_block(data.refinement, data.refinements);
@@ -1631,6 +1658,21 @@ ignored_block(VALUE module, const char *klass)
         anon = ", maybe for Module.new";
     }
     rb_warn("%s""using doesn't call the given block""%s.", klass, anon);
+}
+
+/* Reject `using` anywhere inside a refined proc's body: the procs sharing
+ * the memoized iseq copy (and its call caches) must all run under the same
+ * refinement set. */
+static void
+check_not_refined_proc_scope(const char *using_name)
+{
+    const rb_cref_t *cref;
+    for (cref = rb_vm_cref(); cref; cref = CREF_NEXT(cref)) {
+        if (CREF_REFINED_PROC(cref)) {
+            rb_raise(rb_eRuntimeError,
+                     "%s is not permitted in a proc with refinements", using_name);
+        }
+    }
 }
 
 /*
@@ -1656,6 +1698,7 @@ mod_using(VALUE self, VALUE module)
     if (rb_block_given_p()) {
         ignored_block(module, "Module#");
     }
+    check_not_refined_proc_scope("Module#using");
     rb_using_module(rb_vm_cref_replace_with_duplicated_cref(), module);
     return self;
 }
@@ -1946,8 +1989,8 @@ rb_obj_extend(int argc, VALUE *argv, VALUE obj)
         }
     }
     while (argc--) {
-        rb_funcall(argv[argc], id_extend_object, 1, obj);
-        rb_funcall(argv[argc], id_extended, 1, obj);
+        rb_funcallv_uncached(argv[argc], id_extend_object, 1, &obj);
+        rb_funcallv_uncached(argv[argc], id_extended, 1, &obj);
     }
     return obj;
 }
@@ -1999,6 +2042,7 @@ top_using(VALUE self, VALUE module)
     if (rb_block_given_p()) {
         ignored_block(module, "main.");
     }
+    check_not_refined_proc_scope("main.using");
     rb_using_module(rb_vm_cref_replace_with_duplicated_cref(), module);
     return self;
 }
@@ -2223,6 +2267,9 @@ Init_eval(void)
 
     rb_gvar_ractor_local("$@");
     rb_gvar_ractor_local("$!");
+
+    rb_gvar_box_dynamic("$@");
+    rb_gvar_box_dynamic("$!");
 
     rb_define_global_function("raise", f_raise, -1);
     rb_define_global_function("fail", f_raise, -1);
