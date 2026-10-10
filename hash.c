@@ -1771,7 +1771,7 @@ rb_zjit_hash_new_size(VALUE *flags_out, size_t size)
 }
 
 bool
-rb_zjit_hash_dup_can_fastpath(VALUE hash, size_t *alloc_size_out, VALUE *flags_out, VALUE *ifnone_out, long *bound_out)
+rb_zjit_hash_dup_can_fastpath(VALUE hash, size_t *alloc_size_out, VALUE *flags_out, VALUE *ifnone_out, rb_len_t *bound_out)
 {
     if (!RHASH_AR_TABLE_P(hash)) return false;
     if (rb_hash_compare_by_id_p(hash)) return false;
@@ -1783,7 +1783,7 @@ rb_zjit_hash_dup_can_fastpath(VALUE hash, size_t *alloc_size_out, VALUE *flags_o
         | ((VALUE)RHASH_AR_TABLE_SIZE(hash) << RHASH_AR_TABLE_SIZE_SHIFT)
         | ((VALUE)bound << RHASH_AR_TABLE_BOUND_SHIFT);
     *ifnone_out = RHASH_IFNONE(hash);
-    *bound_out = (long)bound;
+    *bound_out = (rb_len_t)bound;
     return true;
 }
 #endif
@@ -1967,7 +1967,7 @@ rb_hash_init(rb_execution_context_t *ec, VALUE hash, VALUE capa_value, VALUE ifn
 }
 
 static VALUE rb_hash_to_a(VALUE hash);
-static VALUE hash_new_with_bulk_insert(VALUE klass, long argc, const VALUE *argv);
+static VALUE hash_new_with_bulk_insert(VALUE klass, rb_len_t argc, const VALUE *argv);
 
 /*
  *  call-seq:
@@ -5407,7 +5407,7 @@ rb_hash_bulk_insert(rb_len_t argc, const VALUE *argv, VALUE hash)
 }
 
 static VALUE
-hash_new_with_bulk_insert(VALUE klass, long argc, const VALUE *argv)
+hash_new_with_bulk_insert(VALUE klass, rb_len_t argc, const VALUE *argv)
 {
     VALUE val = hash_new_capa(klass, argc / 2);
     rb_hash_bulk_insert(argc, argv, val);
@@ -5415,13 +5415,13 @@ hash_new_with_bulk_insert(VALUE klass, long argc, const VALUE *argv)
 }
 
 VALUE
-rb_hash_new_with_bulk_insert(long argc, const VALUE *argv)
+rb_hash_new_with_bulk_insert(rb_len_t argc, const VALUE *argv)
 {
     return hash_new_with_bulk_insert(rb_cHash, argc, argv);
 }
 
 VALUE
-rb_hash_merge2_bulk(VALUE hash, long argc, const VALUE *argv, bool dup)
+rb_hash_merge2_bulk(VALUE hash, rb_len_t argc, const VALUE *argv, bool dup)
 {
     VALUE val = hash;
     if (dup) {
@@ -5488,7 +5488,7 @@ env_encoding(void)
 }
 
 static VALUE
-env_enc_str_new(const char *ptr, long len, rb_encoding *enc)
+env_enc_str_new(const char *ptr, rb_len_t len, rb_encoding *enc)
 {
     VALUE str = rb_external_str_new_with_enc(ptr, len, enc);
 
@@ -5497,7 +5497,7 @@ env_enc_str_new(const char *ptr, long len, rb_encoding *enc)
 }
 
 static VALUE
-env_str_new(const char *ptr, long len, rb_encoding *enc)
+env_str_new(const char *ptr, rb_len_t len, rb_encoding *enc)
 {
     return env_enc_str_new(ptr, len, enc);
 }
@@ -6691,7 +6691,7 @@ env_has_value(VALUE dmy, VALUE obj)
         while (*env) {
             char *s = strchr(*env, '=');
             if (s++) {
-                long len = strlen(s);
+                rb_len_t len = strlen(s);
                 if (RSTRING_LEN(obj) == len && strncmp(s, RSTRING_PTR(obj), len) == 0) {
                     ret = Qtrue;
                     break;
@@ -6734,7 +6734,7 @@ env_rassoc(VALUE dmy, VALUE obj)
             const char *p = *env;
             const char *s = strchr(p, '=');
             if (s++) {
-                long len = strlen(s);
+                rb_len_t len = strlen(s);
                 if (RSTRING_LEN(obj) == len && strncmp(s, RSTRING_PTR(obj), len) == 0) {
                     result = rb_assoc_new(rb_str_new(p, s-p-1), obj);
                     break;
@@ -6776,7 +6776,7 @@ env_key(VALUE dmy, VALUE value)
         while (*env) {
             char *s = strchr(*env, '=');
             if (s++) {
-                long len = strlen(s);
+                rb_len_t len = strlen(s);
                 if (RSTRING_LEN(value) == len && strncmp(s, RSTRING_PTR(value), len) == 0) {
                     str = env_str_new(*env, s-*env-1, enc);
                     break;

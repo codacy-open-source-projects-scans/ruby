@@ -293,14 +293,14 @@ rb_gc_get_objspace(void)
 }
 
 void
-rb_gc_run_obj_finalizer(VALUE objid, long count, VALUE (*callback)(long i, void *data), void *data)
+rb_gc_run_obj_finalizer(VALUE objid, rb_len_t count, VALUE (*callback)(rb_len_t i, void *data), void *data)
 {
     volatile struct {
         VALUE errinfo;
         VALUE final;
         rb_control_frame_t *cfp;
         VALUE *sp;
-        long finished;
+        rb_len_t finished;
     } saved;
 
     rb_execution_context_t * volatile ec = GET_EC();
@@ -330,7 +330,7 @@ rb_gc_run_obj_finalizer(VALUE objid, long count, VALUE (*callback)(long i, void 
         }
     }
 
-    for (long i = saved.finished; RESTORE_FINALIZER(), i < count; saved.finished = ++i) {
+    for (rb_len_t i = saved.finished; RESTORE_FINALIZER(), i < count; saved.finished = ++i) {
         saved.final = callback(i, data);
         rb_check_funcall(saved.final, idCall, 1, &objid);
     }
@@ -3755,6 +3755,9 @@ gc_mark_classext_iclass(rb_classext_t *ext, bool prime, VALUE box_value, void *a
     }
     if (RCLASSEXT_INCLUDER(ext)) {
         gc_mark_internal(ctx, RCLASSEXT_INCLUDER(ext));
+    }
+    if (RCLASSEXT_MODULE_REFINEMENT_ICLASSES(ext)) {
+        gc_mark_internal(ctx, RCLASSEXT_MODULE_REFINEMENT_ICLASSES(ext));
     }
     mark_m_tbl(ctx, RCLASSEXT_CALLABLE_M_TBL(ext));
     gc_mark_internal(ctx, RCLASSEXT_CC_TBL(ext));
